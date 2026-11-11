@@ -2,13 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
-import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, TableDesign } from "../api/types";
+import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, TableDesign } from "../api/types";
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
 import { isMod } from "../lib/platform";
 import { Dialog } from "./Dialog";
 
 type Section = "columns" | "indexes" | "foreignKeys" | "options" | "ddl";
+
+/** Index types each engine supports; SQLite has no FULLTEXT/SPATIAL indexes, methods or comments. */
+const INDEX_KINDS: Record<"sqlite" | "mysql", IndexKind[]> = { sqlite: ["normal", "unique"], mysql: ["normal", "unique", "fulltext", "spatial"] };
+const INDEX_METHODS: IndexMethod[] = ["btree", "hash"];
 
 const blankColumn = (): ColumnDesign => ({
   originalName: null,
@@ -227,21 +231,54 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
         {section === "indexes" && (
           <>
             <table className="list-table design-table">
-              <thead><tr><th>Name</th><th>Columns (comma separated)</th><th>Unique</th><th style={{ width: 40 }} /></tr></thead>
+              <thead>
+                <tr>
+                  <th>Name</th><th>Columns (comma separated)</th><th>Index Type</th>
+                  {!sqlite && <><th>Index Method</th><th>Comment</th></>}
+                  <th style={{ width: 40 }} />
+                </tr>
+              </thead>
               <tbody>
                 {design.indexes.map((x, i) => (
                   <tr key={i}>
                     <td><input className="cell-input" value={x.name} aria-label="Index name" onChange={(e) => setIndex(i, { name: e.target.value })} /></td>
                     <td><ColumnList value={x.columns} options={columnNames} onChange={(columns) => setIndex(i, { columns })} /></td>
-                    <td className="center"><input type="checkbox" checked={x.unique} aria-label="Unique" onChange={(e) => setIndex(i, { unique: e.target.checked })} /></td>
+                    <td>
+                      <select
+                        className="cell-input"
+                        value={x.kind}
+                        aria-label="Index type"
+                        // FULLTEXT and SPATIAL indexes have a fixed structure, so they take no method.
+                        onChange={(e) => { const kind = e.target.value as IndexKind; setIndex(i, { kind, method: kind === "normal" || kind === "unique" ? x.method : null }); }}
+                      >
+                        {INDEX_KINDS[sqlite ? "sqlite" : "mysql"].map((k) => <option key={k} value={k}>{k.toUpperCase()}</option>)}
+                      </select>
+                    </td>
+                    {!sqlite && (
+                      <>
+                        <td>
+                          <select
+                            className="cell-input"
+                            value={x.method ?? ""}
+                            aria-label="Index method"
+                            disabled={x.kind === "fulltext" || x.kind === "spatial"}
+                            onChange={(e) => setIndex(i, { method: (e.target.value || null) as IndexMethod | null })}
+                          >
+                            <option value="" />
+                            {INDEX_METHODS.map((m) => <option key={m} value={m}>{m.toUpperCase()}</option>)}
+                          </select>
+                        </td>
+                        <td><input className="cell-input" value={x.comment ?? ""} aria-label="Index comment" onChange={(e) => setIndex(i, { comment: e.target.value || null })} /></td>
+                      </>
+                    )}
                     <td><button className="icon-btn danger" title="Delete index" onClick={() => patch({ indexes: design.indexes.filter((_, j) => j !== i) })}><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
-                {design.indexes.length === 0 && <tr><td colSpan={4} className="muted">No indexes</td></tr>}
+                {design.indexes.length === 0 && <tr><td colSpan={sqlite ? 4 : 6} className="muted">No indexes</td></tr>}
               </tbody>
             </table>
             <div className="designer-add">
-              <button className="btn sm" onClick={() => patch({ indexes: [...design.indexes, { name: `ix_${design.name || "table"}_${design.indexes.length + 1}`, columns: [], unique: false }] })}><Plus size={13} />Add Index</button>
+              <button className="btn sm" onClick={() => patch({ indexes: [...design.indexes, { name: `ix_${design.name || "table"}_${design.indexes.length + 1}`, columns: [], kind: "normal", method: null, comment: null }] })}><Plus size={13} />Add Index</button>
             </div>
           </>
         )}

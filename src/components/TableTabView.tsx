@@ -79,12 +79,18 @@ function StructureView({ tab }: { tab: TableTab }) {
         <>
           <h4 className="block-title">Indexes</h4>
           <table className="list-table">
-            <thead><tr><th>Name</th><th>Columns</th><th>Unique</th></tr></thead>
+            <thead><tr><th>Name</th><th>Columns</th><th>Type</th><th>Method</th><th>Comment</th></tr></thead>
             <tbody>
               {t.indexes.map((i) => (
-                <tr key={i.name}><td>{i.name}</td><td className="mono">{i.columns.join(", ")}</td><td>{i.unique ? "YES" : "NO"}</td></tr>
+                <tr key={i.name}>
+                  <td>{i.name}</td>
+                  <td className="mono">{i.columns.join(", ")}</td>
+                  <td>{i.kind.toUpperCase()}</td>
+                  <td>{i.method?.toUpperCase() ?? ""}</td>
+                  <td>{i.comment ?? ""}</td>
+                </tr>
               ))}
-              {t.indexes.length === 0 && <tr><td colSpan={3} className="muted">No indexes</td></tr>}
+              {t.indexes.length === 0 && <tr><td colSpan={5} className="muted">No indexes</td></tr>}
             </tbody>
           </table>
           <h4 className="block-title">Foreign Keys</h4>

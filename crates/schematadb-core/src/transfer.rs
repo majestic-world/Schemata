@@ -573,7 +573,8 @@ pub struct CopyTableReport {
 }
 
 /// Structure of `design` recreated as `name` in the target database. Self-references follow the copy;
-/// foreign keys to tables missing from the target, and table options of another engine, are dropped.
+/// foreign keys to tables missing from the target, table options of another engine, and index features SQLite
+/// lacks (FULLTEXT/SPATIAL indexes, index methods and comments) are dropped.
 /// Index and foreign key names are scoped to the database (SQLite indexes, MySQL foreign keys), so a copy
 /// under a new name renames them after it (`ix_orders_total` → `ix_orders_copy_total`).
 pub(crate) fn copy_design(
@@ -601,6 +602,14 @@ pub(crate) fn copy_design(
     }
     if source_engine != target_engine {
         design.options = crate::TableOptions { comment: design.options.comment.take(), ..Default::default() };
+    }
+    if target_engine == Engine::Sqlite {
+        // SQLite has neither FULLTEXT/SPATIAL indexes nor index methods and comments.
+        design.indexes.retain(|i| matches!(i.kind, crate::IndexKind::Normal | crate::IndexKind::Unique));
+        for index in &mut design.indexes {
+            index.method = None;
+            index.comment = None;
+        }
     }
     for c in &mut design.columns {
         c.original_name = None;

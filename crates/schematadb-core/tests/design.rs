@@ -2,8 +2,13 @@ mod common;
 
 use common::TestDb;
 use schematadb_core::{
-    CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, ObjectKind, PageRequest, SortSpec, TableDesign, TableOptions,
+    CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, ObjectKind, PageRequest, SortSpec,
+    TableDesign, TableOptions,
 };
+
+fn index(name: &str, column: &str, kind: IndexKind) -> IndexDesign {
+    IndexDesign { name: name.into(), columns: vec![column.into()], kind, method: None, comment: None }
+}
 
 fn col(name: &str, data_type: &str) -> ColumnDesign {
     ColumnDesign {
@@ -51,7 +56,7 @@ async fn creates_table_from_design(t: TestDb) {
     let design = TableDesign {
         name: "product".into(),
         columns: vec![id, sku, status, col("category_id", int_type(&t))],
-        indexes: vec![IndexDesign { name: "uq_sku".into(), columns: vec!["sku".into()], unique: true }],
+        indexes: vec![index("uq_sku", "sku", IndexKind::Unique)],
         foreign_keys: vec![ForeignKeyDesign {
             name: "fk_product_category".into(),
             columns: vec!["category_id".into()],
@@ -70,7 +75,7 @@ async fn creates_table_from_design(t: TestDb) {
         vec![("id", false, true, true), ("sku", false, false, false), ("status", true, false, false), ("category_id", true, false, false),]
     );
     assert_eq!(info.columns[2].default.as_deref(), Some("'new'"));
-    assert!(info.indexes.iter().any(|i| i.unique && i.columns == vec!["sku".to_string()]));
+    assert!(info.indexes.iter().any(|i| i.kind == IndexKind::Unique && i.columns == vec!["sku".to_string()]));
     assert_eq!(info.foreign_keys[0].on_delete, "CASCADE");
     if t.engine != Engine::Sqlite {
         assert_eq!(info.comment.as_deref(), Some("Products"));
@@ -102,7 +107,7 @@ async fn alters_columns_indexes_and_name(t: TestDb) {
     let first = design.columns.remove(1);
     design.columns.push(email);
     design.columns.push(first);
-    design.indexes.push(IndexDesign { name: "ix_age".into(), columns: vec!["age".into()], unique: false });
+    design.indexes.push(index("ix_age", "age", IndexKind::Normal));
 
     apply(&t, Some(&original), &design).await;
 
@@ -119,6 +124,50 @@ async fn alters_columns_indexes_and_name(t: TestDb) {
     );
 }
 scenario!(alters_columns_indexes_and_name);
+
+async fn index_kinds_methods_and_comments(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        t.exec("CREATE TABLE doc (id INTEGER PRIMARY KEY, body TEXT)").await;
+        let mut design = t.driver.table_design(&t.db, "doc").await.unwrap();
+        design.indexes.push(index("ft_body", "body", IndexKind::Fulltext));
+        let err = t.driver.plan_table(&t.db, Some(&t.driver.table_design(&t.db, "doc").await.unwrap()), &design).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Validation);
+        return;
+    }
+    t.exec("CREATE TABLE doc (id INT PRIMARY KEY, code VARCHAR(10) NOT NULL, title VARCHAR(80), body TEXT) ENGINE=InnoDB").await;
+    let original = t.driver.table_design(&t.db, "doc").await.unwrap();
+    let mut design = original.clone();
+    design.indexes = vec![
+        IndexDesign {
+            method: Some(IndexMethod::Btree),
+            comment: Some("Lookup by code".into()),
+            ..index("uq_code", "code", IndexKind::Unique)
+        },
+        index("ix_title", "title", IndexKind::Normal),
+        index("ft_body", "body", IndexKind::Fulltext),
+    ];
+    apply(&t, Some(&original), &design).await;
+
+    let info = t.driver.table_info(&t.db, "doc").await.unwrap();
+    let read = |name: &str| info.indexes.iter().find(|i| i.name == name).unwrap_or_else(|| panic!("{name} missing")).clone();
+    let uq = read("uq_code");
+    assert_eq!((uq.kind, uq.method, uq.comment.as_deref()), (IndexKind::Unique, Some(IndexMethod::Btree), Some("Lookup by code")));
+    assert_eq!(read("ix_title").kind, IndexKind::Normal);
+    let ft = read("ft_body");
+    assert_eq!((ft.kind, ft.method), (IndexKind::Fulltext, None));
+
+    // A changed comment recreates only that index; the rest of the read-back design is unchanged.
+    let original = t.driver.table_design(&t.db, "doc").await.unwrap();
+    assert!(t.driver.plan_table(&t.db, Some(&original), &original).await.unwrap().is_empty());
+    let mut design = original.clone();
+    design.indexes.iter_mut().find(|i| i.name == "uq_code").unwrap().comment = Some("Business key".into());
+    let ddl = t.driver.plan_table(&t.db, Some(&original), &design).await.unwrap();
+    assert!(ddl[0].contains("DROP INDEX `uq_code`") && !ddl[0].contains("ft_body"), "{}", ddl[0]);
+    apply(&t, Some(&original), &design).await;
+    let info = t.driver.table_info(&t.db, "doc").await.unwrap();
+    assert_eq!(info.indexes.iter().find(|i| i.name == "uq_code").unwrap().comment.as_deref(), Some("Business key"));
+}
+scenario!(index_kinds_methods_and_comments);
 
 async fn failed_alteration_leaves_table_untouched(t: TestDb) {
     t.exec(&format!("CREATE TABLE note (id {} PRIMARY KEY, body VARCHAR(20)); INSERT INTO note VALUES (1, NULL), (2, 'x');", int_type(&t)))

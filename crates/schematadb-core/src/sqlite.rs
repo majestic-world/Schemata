@@ -3,8 +3,8 @@ use crate::model::derive_identity;
 use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use crate::{
     AppError, CellValue, ChangeError, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
-    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity, ScriptResult,
-    StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+    ForeignKeyInfo, IndexInfo, IndexKind, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity,
+    ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
@@ -279,7 +279,14 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     for (index, unique) in index_rows {
         let mut stmt = c.prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno").map_err(map_err)?;
         let cols = collect(&mut stmt, [index.as_str(), db], |r| r.get::<_, Option<String>>(0))?;
-        indexes.push(IndexInfo { name: index, columns: cols.into_iter().flatten().collect(), unique, primary: false });
+        indexes.push(IndexInfo {
+            name: index,
+            columns: cols.into_iter().flatten().collect(),
+            kind: if unique { IndexKind::Unique } else { IndexKind::Normal },
+            method: None,
+            comment: None,
+            primary: false,
+        });
     }
 
     let mut stmt = c

@@ -2,8 +2,8 @@ use crate::model::derive_identity;
 use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use crate::{
     AppError, CellValue, ChangeError, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver, Engine,
-    ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowChange, RowIdentity, ScriptResult,
-    StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+    ErrorKind, Filter, ForeignKeyInfo, IndexInfo, IndexKind, IndexMethod, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowChange,
+    RowIdentity, ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -654,7 +654,7 @@ DELIMITER ;",
         };
 
         let index_rows = sqlx::query(
-            "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS \
+            "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, INDEX_TYPE, INDEX_COMMENT FROM information_schema.STATISTICS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX",
         )
         .bind(db)
@@ -667,9 +667,24 @@ DELIMITER ;",
             let index = text(r, 0)?.unwrap_or_default();
             let column = text(r, 2)?;
             if all_indexes.last().is_none_or(|i| i.name != index) {
+                let index_type = text(r, 3)?.unwrap_or_default().to_ascii_uppercase();
+                let (kind, method) = match index_type.as_str() {
+                    "FULLTEXT" => (IndexKind::Fulltext, None),
+                    "SPATIAL" | "RTREE" => (IndexKind::Spatial, None),
+                    other => (
+                        if int(r, 1)? == Some(0) { IndexKind::Unique } else { IndexKind::Normal },
+                        match other {
+                            "BTREE" => Some(IndexMethod::Btree),
+                            "HASH" => Some(IndexMethod::Hash),
+                            _ => None,
+                        },
+                    ),
+                };
                 all_indexes.push(IndexInfo {
                     primary: index == "PRIMARY",
-                    unique: int(r, 1)? == Some(0),
+                    kind,
+                    method,
+                    comment: text(r, 4)?.filter(|c| !c.is_empty()),
                     name: index,
                     columns: Vec::new(),
                 });

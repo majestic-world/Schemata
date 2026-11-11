@@ -705,7 +705,7 @@ async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[Column
         let sql_type = SqlType::parse(&c.data_type);
         let lower = c.name.to_ascii_lowercase();
         let unique = (single_pk.len() == 1 && single_pk[0].name == c.name)
-            || info.indexes.iter().any(|i| i.unique && i.columns.len() == 1 && i.columns[0] == c.name);
+            || info.indexes.iter().any(|i| i.kind == crate::IndexKind::Unique && i.columns.len() == 1 && i.columns[0] == c.name);
         let mut next_seq = 1;
         if g.kind == GeneratorKind::Sequence || (unique && g.kind == GeneratorKind::Integer) {
             let max = scalar_values(driver, db, &format!("SELECT MAX({}) FROM {}.{}", q(&c.name), q(db), q(&info.name))).await?;

@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use schematadb_core::{CreateDatabase, Engine, ErrorKind, ObjectKind, RowIdentity};
+use schematadb_core::{CreateDatabase, Engine, ErrorKind, IndexKind, ObjectKind, RowIdentity};
 
 async fn lists_tables_then_views(t: TestDb) {
     t.exec(
@@ -67,9 +67,9 @@ async fn describes_table_structure(t: TestDb) {
     assert_eq!(info.row_identity, RowIdentity::PrimaryKey { columns: vec!["id".into()] });
 
     let unique = info.indexes.iter().find(|i| i.columns == vec!["sku".to_string()]).expect("unique index on sku");
-    assert!(unique.unique);
+    assert_eq!(unique.kind, IndexKind::Unique);
     let plain = info.indexes.iter().find(|i| i.name == "ix_name").expect("ix_name");
-    assert!(!plain.unique);
+    assert_eq!(plain.kind, IndexKind::Normal);
     assert_eq!(plain.columns, vec!["name".to_string()]);
     assert!(!info.indexes.iter().any(|i| i.primary), "the primary key is reported on columns, not as an index");
 

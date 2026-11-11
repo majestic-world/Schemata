@@ -1,6 +1,6 @@
 //! Table designs and the DDL that creates or alters a table to match one.
 
-use crate::{TableInfo, model::ObjectKind};
+use crate::{IndexKind, IndexMethod, TableInfo, model::ObjectKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -24,7 +24,11 @@ pub struct ColumnDesign {
 pub struct IndexDesign {
     pub name: String,
     pub columns: Vec<String>,
-    pub unique: bool,
+    pub kind: IndexKind,
+    /// `USING` clause on MySQL/MariaDB `Normal`/`Unique` indexes; `None` keeps the engine default.
+    pub method: Option<IndexMethod>,
+    /// MySQL/MariaDB only.
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,7 +85,13 @@ impl TableDesign {
             indexes: info
                 .indexes
                 .iter()
-                .map(|i| IndexDesign { name: i.name.clone(), columns: i.columns.clone(), unique: i.unique })
+                .map(|i| IndexDesign {
+                    name: i.name.clone(),
+                    columns: i.columns.clone(),
+                    kind: i.kind,
+                    method: i.method,
+                    comment: i.comment.clone(),
+                })
                 .collect(),
             foreign_keys: info
                 .foreign_keys
@@ -125,6 +135,12 @@ fn same_definition(a: &ColumnDesign, b: &ColumnDesign) -> bool {
         && a.auto_increment == b.auto_increment
         && a.comment == b.comment
         && a.primary_key == b.primary_key
+}
+
+/// Whether index `o` of the original table still matches `n` once columns are renamed, so it can be kept.
+fn same_index(o: &IndexDesign, n: &IndexDesign, map: &HashMap<String, String>) -> bool {
+    let comment = |i: &IndexDesign| i.comment.clone().unwrap_or_default();
+    renamed(&o.columns, map) == n.columns && o.kind == n.kind && o.method == n.method && comment(o) == comment(n)
 }
 
 fn list(cols: &[String], quote: fn(&str) -> String) -> String {
@@ -193,7 +209,25 @@ pub(crate) mod mysql {
     }
 
     fn index_clause(i: &IndexDesign) -> String {
-        format!("{}INDEX {} ({})", if i.unique { "UNIQUE " } else { "" }, q(&i.name), list(&i.columns, q))
+        let kind = match i.kind {
+            IndexKind::Normal => "",
+            IndexKind::Unique => "UNIQUE ",
+            IndexKind::Fulltext => "FULLTEXT ",
+            IndexKind::Spatial => "SPATIAL ",
+        };
+        let mut s = format!("{kind}INDEX {} ({})", q(&i.name), list(&i.columns, q));
+        // FULLTEXT and SPATIAL indexes have a fixed structure and reject USING.
+        if matches!(i.kind, IndexKind::Normal | IndexKind::Unique) {
+            match i.method {
+                Some(IndexMethod::Btree) => s += " USING BTREE",
+                Some(IndexMethod::Hash) => s += " USING HASH",
+                None => {}
+            }
+        }
+        if let Some(comment) = i.comment.as_deref().filter(|c| !c.is_empty()) {
+            s += &format!(" COMMENT {}", literal(comment));
+        }
+        s
     }
 
     fn options(o: &TableOptions, original: Option<&TableOptions>) -> Vec<String> {
@@ -260,7 +294,7 @@ pub(crate) mod mysql {
             }
         }
         let new_idx: HashMap<&str, &IndexDesign> = d.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
-        let idx_same = |o: &IndexDesign, n: &IndexDesign| renamed(&o.columns, &map) == n.columns && o.unique == n.unique;
+        let idx_same = |o: &IndexDesign, n: &IndexDesign| same_index(o, n, &map);
         for idx in &original.indexes {
             if new_idx.get(idx.name.as_str()).is_none_or(|n| !idx_same(idx, n)) {
                 clauses.push(format!("DROP INDEX {}", q(&idx.name)));
@@ -365,15 +399,15 @@ pub(crate) mod sqlite {
         if i.name.starts_with("sqlite_") { format!("uq_{table}_{}", i.columns.join("_")) } else { i.name.clone() }
     }
 
-    fn create_index(db: &str, table: &str, i: &IndexDesign) -> String {
-        format!(
-            "CREATE {}INDEX {}.{} ON {} ({})",
-            if i.unique { "UNIQUE " } else { "" },
-            q(db),
-            q(&index_name(table, i)),
-            q(table),
-            list(&i.columns, q)
-        )
+    fn create_index(db: &str, table: &str, i: &IndexDesign) -> crate::Result<String> {
+        let unique = match i.kind {
+            IndexKind::Normal => "",
+            IndexKind::Unique => "UNIQUE ",
+            IndexKind::Fulltext | IndexKind::Spatial => {
+                return Err(crate::AppError::validation(format!("SQLite has no FULLTEXT or SPATIAL indexes ({})", i.name)));
+            }
+        };
+        Ok(format!("CREATE {unique}INDEX {}.{} ON {} ({})", q(db), q(&index_name(table, i)), q(table), list(&i.columns, q)))
     }
 
     fn create_table_sql(db: &str, name: &str, d: &TableDesign) -> String {
@@ -390,7 +424,9 @@ pub(crate) mod sqlite {
     pub fn create(db: &str, d: &TableDesign) -> crate::Result<Vec<String>> {
         validate(d)?;
         let mut out = vec![create_table_sql(db, &d.name, d)];
-        out.extend(d.indexes.iter().map(|i| create_index(db, &d.name, i)));
+        for i in &d.indexes {
+            out.push(create_index(db, &d.name, i)?);
+        }
         Ok(out)
     }
 
@@ -420,7 +456,7 @@ pub(crate) mod sqlite {
                     && o.on_update == n.on_update
                     && o.on_delete == n.on_delete
             });
-        let idx_same = |o: &IndexDesign, n: &IndexDesign| renamed(&o.columns, &map) == n.columns && o.unique == n.unique;
+        let idx_same = |o: &IndexDesign, n: &IndexDesign| same_index(o, n, &map);
         let new_idx: HashMap<&str, &IndexDesign> = d.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
         let orig_idx: HashMap<&str, &IndexDesign> = original.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
         let dropped_indexes: Vec<&IndexDesign> =
@@ -451,7 +487,7 @@ pub(crate) mod sqlite {
                 out.push(format!("ALTER TABLE {schema}.{table} RENAME TO {}", q(&d.name)));
             }
             for i in &added_indexes {
-                out.push(create_index(db, &d.name, i));
+                out.push(create_index(db, &d.name, i)?);
             }
             return Ok(out);
         }
@@ -475,7 +511,9 @@ pub(crate) mod sqlite {
         }
         out.push(format!("DROP TABLE {schema}.{table}"));
         out.push(format!("ALTER TABLE {schema}.{} RENAME TO {}", q(&tmp), q(&d.name)));
-        out.extend(d.indexes.iter().map(|i| create_index(db, &d.name, i)));
+        for i in &d.indexes {
+            out.push(create_index(db, &d.name, i)?);
+        }
         out.extend(deps.triggers);
         out.extend(deps.views.into_iter().map(|(_, sql)| sql));
         out.push(format!("PRAGMA {schema}.foreign_key_check"));

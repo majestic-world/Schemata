@@ -71,7 +71,9 @@ export type ColumnInfo = {
   primaryKey: boolean;
   comment: string | null;
 };
-export type IndexInfo = { name: string; columns: string[]; unique: boolean; primary: boolean };
+export type IndexKind = "normal" | "unique" | "fulltext" | "spatial";
+export type IndexMethod = "btree" | "hash";
+export type IndexInfo = { name: string; columns: string[]; kind: IndexKind; method: IndexMethod | null; comment: string | null; primary: boolean };
 export type ForeignKeyInfo = {
   name: string;
   columns: string[];
@@ -127,7 +129,7 @@ export type ColumnDesign = {
   primaryKey: boolean;
   comment: string | null;
 };
-export type IndexDesign = { name: string; columns: string[]; unique: boolean };
+export type IndexDesign = { name: string; columns: string[]; kind: IndexKind; method: IndexMethod | null; comment: string | null };
 export type ForeignKeyDesign = {
   name: string;
   columns: string[];

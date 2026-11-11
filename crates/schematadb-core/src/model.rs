@@ -83,12 +83,34 @@ pub struct ColumnInfo {
     pub comment: Option<String>,
 }
 
+/// What an index enforces or serves. SQLite only has `Normal` and `Unique`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexKind {
+    Normal,
+    Unique,
+    Fulltext,
+    Spatial,
+}
+
+/// Storage structure of a MySQL/MariaDB `Normal` or `Unique` index (`USING ...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexMethod {
+    Btree,
+    Hash,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexInfo {
     pub name: String,
     pub columns: Vec<String>,
-    pub unique: bool,
+    pub kind: IndexKind,
+    /// Reported by MySQL/MariaDB for `Normal` and `Unique` indexes; `None` on SQLite.
+    pub method: Option<IndexMethod>,
+    /// MySQL/MariaDB index comment.
+    pub comment: Option<String>,
     /// True for the primary key index (never returned by `table_info`, which reports it on columns).
     #[serde(default)]
     pub primary: bool,
@@ -177,7 +199,7 @@ pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has
         return RowIdentity::PrimaryKey { columns: pk };
     }
     let not_null = |name: &String| columns.iter().any(|c| &c.name == name && !c.nullable);
-    if let Some(idx) = indexes.iter().find(|i| i.unique && !i.columns.is_empty() && i.columns.iter().all(not_null)) {
+    if let Some(idx) = indexes.iter().find(|i| i.kind == IndexKind::Unique && !i.columns.is_empty() && i.columns.iter().all(not_null)) {
         return RowIdentity::UniqueKey { columns: idx.columns.clone() };
     }
     if has_rowid { RowIdentity::RowId } else { RowIdentity::None }
