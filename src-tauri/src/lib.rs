@@ -99,5 +99,5 @@ pub fn run() {
             commands::generate_data,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SchemataDb");
+        .expect("error while running Schemata");
 }

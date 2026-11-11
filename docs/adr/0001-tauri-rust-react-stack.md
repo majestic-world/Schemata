@@ -4,7 +4,7 @@ Status: accepted
 
 ## Context
 
-SchemataDb is a desktop database client for Windows, Linux and macOS supporting MySQL, MariaDB and SQLite. The UI follows a custom visual design (data grid, SQL editor, tree, inspector) that native widget toolkits would make costly to reproduce. The development machine has Rust, Go and a C++ toolchain available.
+Schemata is a desktop database client for Windows, Linux and macOS supporting MySQL, MariaDB and SQLite. The UI follows a custom visual design (data grid, SQL editor, tree, inspector) that native widget toolkits would make costly to reproduce. The development machine has Rust, Go and a C++ toolchain available.
 
 ## Decision
 

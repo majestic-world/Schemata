@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SchemataDb",
+  "productName": "Schemata",
   "identifier": "dev.schematadb.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "SchemataDb",
+        "title": "Schemata",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

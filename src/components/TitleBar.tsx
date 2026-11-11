@@ -32,7 +32,7 @@ export function TitleBar() {
   return (
     <div className={`titlebar${focused ? "" : " inactive"}`} data-tauri-drag-region>
       <img className="titlebar-icon" src={appIcon} alt="" draggable={false} />
-      <span className="titlebar-title">SchemataDb</span>
+      <span className="titlebar-title">Schemata</span>
       <div className="titlebar-controls">
         <button className="caption-btn" tabIndex={-1} aria-label="Minimize" onClick={() => void win.minimize()}>
           {GLYPH.minimize}

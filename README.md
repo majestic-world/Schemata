@@ -1,4 +1,4 @@
-# SchemataDb
+# Schemata
 
 Desktop database client for MySQL, MariaDB and SQLite, inspired by Navicat. Runs on Windows, Linux and macOS.
 

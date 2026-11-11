@@ -1,4 +1,4 @@
-//! SchemataDb core: database drivers and services, independent of the UI shell.
+//! Schemata core: database drivers and services, independent of the UI shell.
 
 mod design;
 mod driver;

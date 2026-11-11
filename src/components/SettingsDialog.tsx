@@ -28,7 +28,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       <section className="settings-about" aria-labelledby="settings-about-title">
         <img src={appIcon} width={32} height={32} alt="" />
         <div>
-          <h2 id="settings-about-title">About SchemataDb</h2>
+          <h2 id="settings-about-title">About Schemata</h2>
           <p className={version.isError ? "error-text" : "muted"} aria-live="polite">
             {version.isError ? "Could not load app version." : version.data ? `Version ${version.data}` : "Loading version…"}
           </p>
