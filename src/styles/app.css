@@ -161,12 +161,27 @@ button:focus-visible { outline: none; }
 .view-toggle button.on { background: var(--accent); color: #fff; }
 .row-count { min-width: 64px; justify-content: flex-end; }
 
-/* Segmented controls (dialogs, designer) */
+/* Segmented controls (dialogs) */
 .segmented { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--border); }
 .segmented button { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px; border: 0; border-radius: 4px; background: transparent; font-size: var(--fs-sm); white-space: nowrap; color: var(--text-muted); }
 .segmented button.on { background: var(--surface); color: var(--text); font-weight: 600; }
 .segmented button:disabled { opacity: 0.45; }
-.seg-count { margin-left: 4px; font-size: 10.5px; color: var(--text-faint); }
+
+/* Sheet tabs joined to the pane below (designer sections), like a classic property sheet. */
+.sheet-tabs { display: flex; align-items: flex-end; gap: 2px; flex: none; padding: 6px 10px 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.sheet-tabs button {
+  position: relative; display: inline-flex; align-items: center; height: 26px; padding: 0 12px; margin-bottom: -1px;
+  border: 1px solid var(--border); border-bottom-color: transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--surface); color: var(--text-muted); font-size: var(--fs-sm); white-space: nowrap;
+}
+.sheet-tabs button:hover:not(.on) { background: var(--surface-hover); color: var(--text); }
+.sheet-tabs button.on { height: 28px; color: var(--text); border-bottom-color: var(--surface); }
+/* Accent line on the active tab, as on the workspace tabs. */
+.sheet-tabs button.on::before {
+  content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: var(--accent);
+}
+.sheet-tab-count { margin-left: 6px; font-size: 10.5px; color: var(--text-faint); }
 
 /* ---------- Tree ---------- */
 .tree { flex: 1; overflow: auto; padding: 4px 4px 10px; }

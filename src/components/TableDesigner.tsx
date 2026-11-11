@@ -163,16 +163,16 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
           <span>Table name</span>
           <input className="input" value={design.name} onChange={(e) => patch({ name: e.target.value })} placeholder="new_table" autoFocus={!table} aria-label="Table name" />
         </label>
-        <div className="segmented">
-          {sections.map((s) => (
-            <button key={s.id} className={section === s.id ? "on" : ""} onClick={() => setSection(s.id)}>
-              {s.label}{s.count !== undefined && <span className="seg-count">{s.count}</span>}
-            </button>
-          ))}
-        </div>
         <div className="grow" />
         {table && <button className="btn" disabled={!dirty || busy} onClick={() => original.data && setDesign(structuredClone(original.data))}><Undo2 size={15} />Revert</button>}
         <button className="btn primary" disabled={busy || !dirty || !design.name.trim()} onClick={review}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
+      </div>
+      <div className="sheet-tabs" role="tablist">
+        {sections.map((s) => (
+          <button key={s.id} role="tab" aria-selected={section === s.id} className={section === s.id ? "on" : ""} onClick={() => setSection(s.id)}>
+            {s.label}{s.count !== undefined && <span className="sheet-tab-count">{s.count}</span>}
+          </button>
+        ))}
       </div>
 
       <div className="table-scroll designer-body">
