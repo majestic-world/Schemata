@@ -117,23 +117,21 @@ function Tray({ arrow, color }: { arrow: "in" | "out"; color: string }) {
 export const ImportIcon = () => <Tray arrow="in" color="#22a35a" />;
 export const ExportIcon = () => <Tray arrow="out" color="#e9822b" />;
 
+/** Open-end wrench: the "tools" glyph for the settings entry. */
 export function SettingsIcon({ size = 32 }: P) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
-      <defs>
-        <Grad id="ic-settings-metal" from="#e4ebf2" to="#8796a7" />
-        <Grad id="ic-settings-center" from="#59b9f4" to="#237cc4" />
-      </defs>
-      <path
-        d="M12.58 6.07 13.57 2.21h4.86l.99 3.86 1.18.49 3.43-2.03 3.44 3.44-2.03 3.43.49 1.18 3.86.99v4.86l-3.86.99-.49 1.18 2.03 3.43-3.44 3.44-3.43-2.03-1.18.49-.99 3.86h-4.86l-.99-3.86-1.18-.49-3.43 2.03-3.44-3.44 2.03-3.43-.49-1.18-3.86-.99v-4.86l3.86-.99.49-1.18-2.03-3.43 3.44-3.44 3.43 2.03z"
-        fill="url(#ic-settings-metal)"
-        stroke="#738497"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-      <circle cx="16" cy="16" r="7" fill="#eef5fb" stroke="#7b8fa3" strokeWidth="1.1" />
-      <circle cx="16" cy="16" r="5" fill="url(#ic-settings-center)" stroke="#216ba6" strokeWidth="1" />
-      <path d="M12.8 14.5a3.6 3.6 0 0 1 5-1.7" stroke="#fff" strokeOpacity=".7" strokeWidth="1.2" fill="none" strokeLinecap="round" />
+      <defs><Grad id="ic-settings-metal" from="#f2f6fa" to="#8f9fb1" vertical={false} /></defs>
+      <g transform="translate(16 16) rotate(45) scale(1.1) translate(-16 -15.5)">
+        <path
+          d="M10.5 9.5A6 6 0 0 1 14 3.6V8h4V3.6A6 6 0 0 1 21.5 9.5A6 6 0 0 1 18 13.8V26a2 2 0 0 1-4 0V13.8A6 6 0 0 1 10.5 9.5Z"
+          fill="url(#ic-settings-metal)"
+          stroke="#5f7186"
+          strokeWidth="1.1"
+          strokeLinejoin="round"
+        />
+        <circle cx="16" cy="24" r="1.1" fill="#5f7186" />
+      </g>
     </svg>
   );
 }

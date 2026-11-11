@@ -571,6 +571,8 @@ select.cell-input { padding: 0 4px; }
 .settings-about { display: flex; align-items: center; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
 .settings-about img { flex: none; }
 .settings-about h2 { margin: 0; font-size: var(--fs); font-weight: 600; }
+.settings-about-title { display: flex; align-items: baseline; gap: 8px; }
+.settings-about-title > span { user-select: text; }
 .settings-about p { margin: 4px 0 0; user-select: text; }
 .settings-about .grow { flex: 1; min-width: 0; }
 .settings-about .btn { align-self: flex-start; }

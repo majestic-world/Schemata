@@ -31,10 +31,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       <section className="settings-about" aria-labelledby="settings-about-title">
         <img src={appIcon} width={32} height={32} alt="" />
         <div className="grow">
-          <h2 id="settings-about-title">About Schemata</h2>
-          <p className={version.isError ? "error-text" : "muted"} aria-live="polite">
-            {version.isError ? "Could not load app version." : version.data ? `Version ${version.data}` : "Loading version…"}
-          </p>
+          <div className="settings-about-title">
+            <h2 id="settings-about-title">About Schemata</h2>
+            <span className={version.isError ? "error-text" : "muted"} aria-live="polite">
+              {version.isError ? "Version unavailable" : version.data ? `v${version.data}` : "…"}
+            </span>
+          </div>
           <p className="muted">© 2026 Majestic World · MIT License</p>
         </div>
         <button className="btn sm" onClick={() => setLicensesOpen(true)}>Licenses…</button>
