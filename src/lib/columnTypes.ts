@@ -39,3 +39,22 @@ export function composeType(base: string, length: string, unsigned: boolean): st
 }
 
 export const isNumericType = (base: string) => /int|decimal|numeric|float|double|real|bit/i.test(base);
+
+/** Length Navicat fills in when a column switches to a type; types absent here take none. */
+const MYSQL_LENGTHS: Record<string, string> = {
+  TINYINT: "4", SMALLINT: "6", MEDIUMINT: "9", INT: "11", INTEGER: "11", BIGINT: "20",
+  DECIMAL: "10,2", NUMERIC: "10,2", BIT: "1",
+  CHAR: "255", VARCHAR: "255", BINARY: "255", VARBINARY: "255",
+};
+/** SQLite only enforces names, and `INTEGER` must stay bare to remain the rowid alias. */
+const SQLITE_LENGTHS: Record<string, string> = { VARCHAR: "255", CHAR: "255", DECIMAL: "10,2", NUMERIC: "10,2" };
+
+/**
+ * Length for a column whose type was changed to `base`: the type's default for a type this engine
+ * knows, otherwise `current` (the user typed something custom).
+ */
+export function lengthForType(engine: Engine, base: string, current: string): string {
+  const upper = base.trim().toUpperCase();
+  if (!typeSuggestions(engine).includes(upper) && !(upper in MYSQL_LENGTHS && engine !== "sqlite")) return current;
+  return (engine === "sqlite" ? SQLITE_LENGTHS : MYSQL_LENGTHS)[upper] ?? "";
+}

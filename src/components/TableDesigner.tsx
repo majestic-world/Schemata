@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
 import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, TableDesign } from "../api/types";
-import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, parseType, typeSuggestions } from "../lib/columnTypes";
+import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
 import { Dialog } from "./Dialog";
 
@@ -179,7 +179,11 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                     <tr key={i}>
                       <td className="center">{c.primaryKey && <KeyRound size={14} className="pk-icon" />}</td>
                       <td><CommitInput value={c.name} label="Column name" onCommit={(name) => setColumn(i, { name })} /></td>
-                      <td><input className="cell-input" list="type-suggestions" value={t.base} aria-label="Column type" onChange={(e) => setType({ base: e.target.value })} /></td>
+                      <td><input className="cell-input" list="type-suggestions" value={t.base} aria-label="Column type" onChange={(e) => {
+                            const base = e.target.value;
+                            // Like Navicat, a new type brings its usual length (INT → 11, DECIMAL → 10,2).
+                            setType({ base, length: lengthForType(engine, base, t.length), unsigned: t.unsigned && isNumericType(base) });
+                          }} /></td>
                       <td><input className="cell-input narrow" value={t.length} aria-label="Length" onChange={(e) => setType({ length: e.target.value })} /></td>
                       {!sqlite && <td className="center"><input type="checkbox" disabled={!isNumericType(t.base)} checked={t.unsigned} aria-label="Unsigned" onChange={(e) => setType({ unsigned: e.target.checked })} /></td>}
                       <td className="center"><input type="checkbox" checked={!c.nullable} aria-label="Not null" onChange={(e) => setColumn(i, { nullable: !e.target.checked })} /></td>
