@@ -7,6 +7,7 @@ import type { ObjectInfo } from "../api/types";
 import { useWorkspace } from "../store/workspace";
 import { formatCount, orDash } from "../lib/format";
 import { useRefreshShortcut } from "../lib/refreshShortcut";
+import { ObjectContextMenu } from "./ObjectContextMenu";
 
 type SortKey = "name" | "rows" | "modified" | "comment";
 
@@ -94,7 +95,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
         </button>
       </div>
       <div className="table-scroll object-list" tabIndex={-1} onClick={(e) => {
-        if (selection?.object && e.target instanceof Element && !e.target.closest("tbody tr")) {
+        if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
           select({ connectionId, database });
         }
       }}>
@@ -112,18 +113,19 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
               const selected = selection?.object?.name === o.name;
               const Icon = o.kind === "table" ? TableIcon : ViewIcon;
               return (
-                <tr
-                  key={o.name}
-                  className={selected ? "selected" : undefined}
-                  onClick={() => select({ connectionId, database, object: { name: o.name, kind: o.kind } })}
-                  onDoubleClick={() => onOpen(o)}
-                  data-object={o.name}
-                >
-                  <td><span className="cell-name"><Icon size={16} />{o.name}</span></td>
-                  <td className="num">{formatCount(o.rows)}</td>
-                  <td>{orDash(o.modified)}</td>
-                  <td className="muted">{orDash(o.comment)}</td>
-                </tr>
+                <ObjectContextMenu key={o.name} object={{ connectionId, database, name: o.name, kind: o.kind }}>
+                  <tr
+                    className={selected ? "selected" : undefined}
+                    onClick={() => select({ connectionId, database, object: { name: o.name, kind: o.kind } })}
+                    onDoubleClick={() => onOpen(o)}
+                    data-object={o.name}
+                  >
+                    <td><span className="cell-name"><Icon size={16} />{o.name}</span></td>
+                    <td className="num">{formatCount(o.rows)}</td>
+                    <td>{orDash(o.modified)}</td>
+                    <td className="muted">{orDash(o.comment)}</td>
+                  </tr>
+                </ObjectContextMenu>
               );
             })}
           </tbody>

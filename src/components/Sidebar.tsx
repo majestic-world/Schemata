@@ -1,5 +1,4 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ContextMenu } from "radix-ui";
 import { ChevronRight, Plus, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
@@ -11,11 +10,12 @@ import { closeConnection, openConnection } from "../lib/connect";
 import { confirmAction } from "../store/confirm";
 import { notify, notifyError } from "../store/toasts";
 import { useDialogs } from "../store/dialogs";
-import { copyCreateStatement, dropObject, renameTable, truncateTable } from "../lib/objectActions";
-import { OBJECTS_TAB, useTabs, type TableView } from "../store/tabs";
+import { OBJECTS_TAB, useTabs } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
-import { copyTable, pasteTable, useTableClipboard } from "../store/tableClipboard";
+import { pasteTable, useTableClipboard } from "../store/tableClipboard";
 import { MOD } from "../lib/platform";
+import { Menu, type MenuItem } from "./Menu";
+import { ObjectContextMenu } from "./ObjectContextMenu";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -37,29 +37,6 @@ export function Sidebar() {
         )}
       </div>
     </>
-  );
-}
-
-type Item = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean } | "separator";
-
-export function Menu({ items, children }: { items: Item[]; children: ReactNode }) {
-  return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
-      <ContextMenu.Portal>
-        <ContextMenu.Content className="menu">
-          {items.map((it, i) =>
-            it === "separator" ? (
-              <ContextMenu.Separator key={i} className="menu-sep" />
-            ) : (
-              <ContextMenu.Item key={it.label} className={`menu-item${it.danger ? " danger" : ""}`} disabled={it.disabled} onSelect={it.onSelect}>
-                {it.label}
-              </ContextMenu.Item>
-            ),
-          )}
-        </ContextMenu.Content>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
   );
 }
 
@@ -140,7 +117,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
     }
   };
 
-  const items: Item[] = [
+  const items: MenuItem[] = [
     isOpen
       ? { label: "Close Connection", onSelect: () => void closeConnection(config.id, qc).then(() => setExpanded(key, false)) }
       : { label: "Open Connection", onSelect: () => void toggle() },
@@ -234,7 +211,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
       notifyError(`Could not drop ${database}`, e);
     }
   };
-  const items: Item[] = [
+  const items: MenuItem[] = [
     { label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) },
     { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
     { label: "Run SQL File…", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
@@ -287,7 +264,7 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
   const expanded = expandedFlag || (search !== "" && shown.length > 0);
   if (search && shown.length === 0) return null;
   const Icon = kind === "table" ? TableIcon : ViewIcon;
-  const groupItems: Item[] =
+  const groupItems: MenuItem[] =
     kind === "table"
       ? [
           { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
@@ -328,34 +305,9 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
       s.selection.object?.name === object.name,
   );
   const Icon = object.kind === "table" ? TableIcon : ViewIcon;
-  const open = (view: TableView) => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, view);
-  const qc = useQueryClient();
-  const ref = { connectionId, database, name: object.name, kind: object.kind };
-  const isTable = object.kind === "table";
-  const items: Item[] = [
-    { label: isTable ? "Open Table" : "Open View", onSelect: () => open("data") },
-    { label: isTable ? "Design Table" : "Definition", onSelect: () => open(isTable ? "structure" : "info") },
-    "separator",
-    ...(isTable
-      ? [
-          { label: `Copy (${MOD}+C)`, onSelect: () => copyTable({ connectionId, database, name: object.name }) },
-          { label: "Rename…", onSelect: () => void renameTable(ref, qc) },
-        ]
-      : []),
-    { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(ref) },
-    { label: "Export…", onSelect: () => openTransfer({ kind: "export", connectionId, database, source: { kind: "table", table: object.name }, label: object.name }) },
-    ...(isTable
-      ? [
-          { label: "Import CSV…", onSelect: () => openTransfer({ kind: "import", connectionId, database, table: object.name }) },
-          { label: "Generate Data…", onSelect: () => openTransfer({ kind: "generate", connectionId, database, table: object.name }) },
-        ]
-      : []),
-    "separator",
-    ...(isTable ? [{ label: "Empty Table…", danger: true, onSelect: () => void truncateTable(ref, qc) }] : []),
-    { label: isTable ? "Delete Table…" : "Delete View…", danger: true, onSelect: () => void dropObject(ref, qc) },
-  ];
+  const open = () => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, "data");
   return (
-    <Menu items={items}>
+    <ObjectContextMenu object={{ connectionId, database, name: object.name, kind: object.kind }}>
       <div>
         <Row
           depth={3}
@@ -364,9 +316,9 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
           icon={<Icon size={16} />}
           label={object.name}
           onClick={() => { select({ connectionId, database, object: { name: object.name, kind: object.kind } }); showObjects(); }}
-          onDoubleClick={() => open("data")}
+          onDoubleClick={open}
         />
       </div>
-    </Menu>
+    </ObjectContextMenu>
   );
 }
