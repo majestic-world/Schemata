@@ -126,8 +126,27 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   const saveShortcutRef = useRef<() => void>(() => {});
   /** Latest `startReview`, run after a blurred field's pending edit lands. */
   const startReviewRef = useRef<() => Promise<void>>(async () => {});
+  const designerRef = useRef<HTMLDivElement>(null);
+  /** Adds a row to the visible design table; used when ArrowDown/ArrowUp finds it empty. */
+  const addRowRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKey = (e: WindowEventMap["keydown"]) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        // Navicat: with no field selected, an arrow key selects the last row; the next ArrowDown appends a row.
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+        if (e.target instanceof Element && e.target.closest('input, select, textarea, [contenteditable="true"], tbody')) return;
+        if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
+        const body = designerRef.current?.querySelector<HTMLTableSectionElement>(".designer-body tbody");
+        if (!body) return;
+        e.preventDefault();
+        const focusLast = () => body.rows[body.rows.length - 1]?.querySelector<HTMLElement>("input, select")?.focus();
+        if (body.rows.length > 0) focusLast();
+        else {
+          addRowRef.current();
+          requestAnimationFrame(focusLast);
+        }
+        return;
+      }
       if (!isMod(e) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "s") return;
       e.preventDefault();
       if (!e.repeat) saveShortcutRef.current();
@@ -169,6 +188,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     setDesign((d) =>
       d ? { ...d, foreignKeys: [...d.foreignKeys, { name: `fk_${d.name || "table"}_${d.foreignKeys.length + 1}`, columns: [], refTable: "", refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] } : d,
     );
+  addRowRef.current = section === "indexes" ? addIndex : section === "foreignKeys" ? addFk : addColumn;
 
   const startReview = async () => {
     setBusy(true);
@@ -236,7 +256,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   ];
 
   return (
-    <div className="designer">
+    <div className="designer" ref={designerRef}>
       <div className="action-bar">
         {table && (
           <label className="inline-field">
