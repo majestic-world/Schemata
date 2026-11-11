@@ -34,6 +34,9 @@ pub fn run() {
             app.manage(commands::Operations::default());
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::match_theme(&window);
+                // Window-state restores the last size first; always start maximized on top of it so un-maximizing
+                // still returns to the remembered size.
+                window.maximize()?;
             }
             app.manage(QueryHistory::open(&history)?);
             Ok(())
