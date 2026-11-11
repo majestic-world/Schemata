@@ -137,10 +137,16 @@ fn same_definition(a: &ColumnDesign, b: &ColumnDesign) -> bool {
         && a.primary_key == b.primary_key
 }
 
+/// Method an index gets: `Normal`/`Unique` default to BTREE (stated explicitly in MySQL DDL); FULLTEXT and
+/// SPATIAL indexes have none.
+fn index_method(i: &IndexDesign) -> Option<IndexMethod> {
+    matches!(i.kind, IndexKind::Normal | IndexKind::Unique).then(|| i.method.unwrap_or(IndexMethod::Btree))
+}
+
 /// Whether index `o` of the original table still matches `n` once columns are renamed, so it can be kept.
 fn same_index(o: &IndexDesign, n: &IndexDesign, map: &HashMap<String, String>) -> bool {
     let comment = |i: &IndexDesign| i.comment.clone().unwrap_or_default();
-    renamed(&o.columns, map) == n.columns && o.kind == n.kind && o.method == n.method && comment(o) == comment(n)
+    renamed(&o.columns, map) == n.columns && o.kind == n.kind && index_method(o) == index_method(n) && comment(o) == comment(n)
 }
 
 fn list(cols: &[String], quote: fn(&str) -> String) -> String {
@@ -164,7 +170,9 @@ fn fk_clause(fk: &ForeignKeyDesign, quote: fn(&str) -> String) -> String {
     s
 }
 
-fn validate(design: &TableDesign) -> crate::Result<()> {
+/// Validates `design` and returns it with every unnamed index named `idx_<columns>` (`idx_name`,
+/// `idx_first_last`), suffixed `_2`, `_3`… when that name is already taken in the table.
+fn prepare(design: &TableDesign) -> crate::Result<TableDesign> {
     if design.name.trim().is_empty() {
         return Err(crate::AppError::validation("The table needs a name"));
     }
@@ -180,7 +188,25 @@ fn validate(design: &TableDesign) -> crate::Result<()> {
             return Err(crate::AppError::validation(format!("Duplicate column {}", c.name)));
         }
     }
-    Ok(())
+    let mut d = design.clone();
+    let mut taken: std::collections::HashSet<String> =
+        d.indexes.iter().map(|i| i.name.trim().to_lowercase()).filter(|n| !n.is_empty()).collect();
+    for index in &mut d.indexes {
+        if index.columns.is_empty() {
+            let label = if index.name.trim().is_empty() { "Every index" } else { index.name.as_str() };
+            return Err(crate::AppError::validation(format!("{label} needs at least one column")));
+        }
+        if index.name.trim().is_empty() {
+            let base = format!("idx_{}", index.columns.join("_"));
+            let name = (1..)
+                .map(|n| if n == 1 { base.clone() } else { format!("{base}_{n}") })
+                .find(|n| !taken.contains(&n.to_lowercase()))
+                .unwrap();
+            taken.insert(name.to_lowercase());
+            index.name = name;
+        }
+    }
+    Ok(d)
 }
 
 // ---------------------------------------------------------------- MySQL / MariaDB
@@ -217,12 +243,10 @@ pub(crate) mod mysql {
         };
         let mut s = format!("{kind}INDEX {} ({})", q(&i.name), list(&i.columns, q));
         // FULLTEXT and SPATIAL indexes have a fixed structure and reject USING.
-        if matches!(i.kind, IndexKind::Normal | IndexKind::Unique) {
-            match i.method {
-                Some(IndexMethod::Btree) => s += " USING BTREE",
-                Some(IndexMethod::Hash) => s += " USING HASH",
-                None => {}
-            }
+        match index_method(i) {
+            Some(IndexMethod::Btree) => s += " USING BTREE",
+            Some(IndexMethod::Hash) => s += " USING HASH",
+            None => {}
         }
         if let Some(comment) = i.comment.as_deref().filter(|c| !c.is_empty()) {
             s += &format!(" COMMENT {}", literal(comment));
@@ -257,7 +281,7 @@ pub(crate) mod mysql {
     }
 
     pub fn create(db: &str, d: &TableDesign) -> crate::Result<Vec<String>> {
-        validate(d)?;
+        let d = &prepare(d)?;
         let mut parts: Vec<String> = d.columns.iter().map(column_def).collect();
         let pk = d.primary_key();
         if !pk.is_empty() {
@@ -275,7 +299,7 @@ pub(crate) mod mysql {
 
     /// One `ALTER TABLE` statement, which MySQL applies atomically.
     pub fn alter(db: &str, original: &TableDesign, d: &TableDesign) -> crate::Result<Vec<String>> {
-        validate(d)?;
+        let d = &prepare(d)?;
         let map = rename_map(d);
         let orig_cols: HashMap<&str, &ColumnDesign> = original.columns.iter().map(|c| (c.name.as_str(), c)).collect();
         let mut clauses = Vec::new();
@@ -422,7 +446,7 @@ pub(crate) mod sqlite {
     }
 
     pub fn create(db: &str, d: &TableDesign) -> crate::Result<Vec<String>> {
-        validate(d)?;
+        let d = &prepare(d)?;
         let mut out = vec![create_table_sql(db, &d.name, d)];
         for i in &d.indexes {
             out.push(create_index(db, &d.name, i)?);
@@ -431,7 +455,7 @@ pub(crate) mod sqlite {
     }
 
     pub fn alter(db: &str, original: &TableDesign, d: &TableDesign, deps: Dependents) -> crate::Result<Vec<String>> {
-        validate(d)?;
+        let d = &prepare(d)?;
         let map = rename_map(d);
         let orig_cols: HashMap<&str, &ColumnDesign> = original.columns.iter().map(|c| (c.name.as_str(), c)).collect();
         let kept: Vec<&ColumnDesign> = d.columns.iter().filter(|c| c.original_name.is_some()).collect();

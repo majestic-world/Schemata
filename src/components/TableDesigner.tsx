@@ -241,7 +241,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
               <tbody>
                 {design.indexes.map((x, i) => (
                   <tr key={i}>
-                    <td><input className="cell-input" value={x.name} aria-label="Index name" onChange={(e) => setIndex(i, { name: e.target.value })} /></td>
+                    <td><input className="cell-input" value={x.name} placeholder={x.columns.length ? `idx_${x.columns.join("_")}` : "idx_<columns>"} aria-label="Index name" onChange={(e) => setIndex(i, { name: e.target.value })} /></td>
                     <td><ColumnList value={x.columns} options={columnNames} onChange={(columns) => setIndex(i, { columns })} /></td>
                     <td>
                       <select
@@ -278,7 +278,8 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
               </tbody>
             </table>
             <div className="designer-add">
-              <button className="btn sm" onClick={() => patch({ indexes: [...design.indexes, { name: `ix_${design.name || "table"}_${design.indexes.length + 1}`, columns: [], kind: "normal", method: null, comment: null }] })}><Plus size={13} />Add Index</button>
+              {/* An empty name becomes idx_<columns> and an empty method BTREE when the design is applied. */}
+              <button className="btn sm" onClick={() => patch({ indexes: [...design.indexes, { name: "", columns: [], kind: "normal", method: null, comment: null }] })}><Plus size={13} />Add Index</button>
             </div>
           </>
         )}

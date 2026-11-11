@@ -128,9 +128,17 @@ scenario!(alters_columns_indexes_and_name);
 async fn index_kinds_methods_and_comments(t: TestDb) {
     if t.engine == Engine::Sqlite {
         t.exec("CREATE TABLE doc (id INTEGER PRIMARY KEY, body TEXT)").await;
-        let mut design = t.driver.table_design(&t.db, "doc").await.unwrap();
+        let original = t.driver.table_design(&t.db, "doc").await.unwrap();
+        let mut design = original.clone();
+        design.indexes.push(index("", "body", IndexKind::Normal));
+        apply(&t, Some(&original), &design).await;
+        let info = t.driver.table_info(&t.db, "doc").await.unwrap();
+        assert_eq!(info.indexes.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), vec!["idx_body"], "unnamed index gets idx_<column>");
+
+        let original = t.driver.table_design(&t.db, "doc").await.unwrap();
+        let mut design = original.clone();
         design.indexes.push(index("ft_body", "body", IndexKind::Fulltext));
-        let err = t.driver.plan_table(&t.db, Some(&t.driver.table_design(&t.db, "doc").await.unwrap()), &design).await.unwrap_err();
+        let err = t.driver.plan_table(&t.db, Some(&original), &design).await.unwrap_err();
         assert_eq!(err.kind, ErrorKind::Validation);
         return;
     }
@@ -143,7 +151,9 @@ async fn index_kinds_methods_and_comments(t: TestDb) {
             comment: Some("Lookup by code".into()),
             ..index("uq_code", "code", IndexKind::Unique)
         },
-        index("ix_title", "title", IndexKind::Normal),
+        // Unnamed, no method: becomes `idx_title` using BTREE. A second unnamed index on it gets `idx_title_2`.
+        index("", "title", IndexKind::Normal),
+        index("", "title", IndexKind::Unique),
         index("ft_body", "body", IndexKind::Fulltext),
     ];
     apply(&t, Some(&original), &design).await;
@@ -152,7 +162,9 @@ async fn index_kinds_methods_and_comments(t: TestDb) {
     let read = |name: &str| info.indexes.iter().find(|i| i.name == name).unwrap_or_else(|| panic!("{name} missing")).clone();
     let uq = read("uq_code");
     assert_eq!((uq.kind, uq.method, uq.comment.as_deref()), (IndexKind::Unique, Some(IndexMethod::Btree), Some("Lookup by code")));
-    assert_eq!(read("ix_title").kind, IndexKind::Normal);
+    let title = read("idx_title");
+    assert_eq!((title.kind, title.method), (IndexKind::Normal, Some(IndexMethod::Btree)));
+    assert_eq!(read("idx_title_2").kind, IndexKind::Unique);
     let ft = read("ft_body");
     assert_eq!((ft.kind, ft.method), (IndexKind::Fulltext, None));
 
