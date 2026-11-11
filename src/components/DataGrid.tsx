@@ -29,7 +29,14 @@ import {
   type RowRef,
 } from "../lib/pendingChanges";
 
-const PAGE_SIZES = [100, 500, 1000];
+/** Page size meaning "every row": a LIMIT both MySQL and SQLite accept, and that keeps the pager on one page. */
+const ALL_ROWS = Number.MAX_SAFE_INTEGER;
+const PAGE_SIZES = [
+  { value: 100, label: "100 / page" },
+  { value: 500, label: "500 / page" },
+  { value: 1000, label: "1000 / page" },
+  { value: ALL_ROWS, label: "All rows" },
+];
 
 const OPS: { op: FilterOp; label: string; needsValue: boolean }[] = [
   { op: "eq", label: "=", needsValue: true },
@@ -302,7 +309,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           <button className="icon-btn" title="Next page" aria-label="Next page" disabled={total === undefined || offset + pageSize >= total} onClick={() => go(offset + pageSize)}><ChevronRight size={16} /></button>
           <button className="icon-btn" title="Last page" aria-label="Last page" disabled={total === undefined || offset >= lastOffset} onClick={() => go(lastOffset)}><ChevronsRight size={16} /></button>
           <select className="input sm" value={pageSize} aria-label="Rows per page" onChange={async (e) => { const n = Number(e.target.value); if (!(await guard())) return; reset(); setPageSize(n); setOffset(0); }}>
-            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
+            {PAGE_SIZES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
         <button className="icon-btn" title="Refresh" aria-label="Refresh" onClick={refresh}><RefreshCw size={15} className={page.isFetching ? "spin" : undefined} /></button>
