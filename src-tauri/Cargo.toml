@@ -19,3 +19,6 @@ tokio.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Foundation"] }

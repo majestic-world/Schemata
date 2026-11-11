@@ -1,4 +1,5 @@
 mod commands;
+mod window_chrome;
 
 use projectcat_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
 use tauri::Manager;
@@ -12,6 +13,9 @@ pub fn run() {
             let store = ConnectionStore::open(&dir.join("connections.json"), Box::new(KeyringSecrets))?;
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
+            if let Some(window) = app.get_webview_window("main") {
+                window_chrome::match_theme(&window);
+            }
             app.manage(QueryHistory::open(&app.path().app_data_dir()?.join("history.json"))?);
             Ok(())
         })
