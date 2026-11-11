@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{CreateDatabase, Engine, ErrorKind, ObjectKind, RowIdentity};
+use schematadb_core::{CreateDatabase, Engine, ErrorKind, ObjectKind, RowIdentity};
 
 async fn lists_tables_then_views(t: TestDb) {
     t.exec(
@@ -143,8 +143,8 @@ async fn creates_and_drops_databases(t: TestDb) {
         )
         .await
         .unwrap();
-    let projectcat_core::StatementOutcome::Rows { rows, .. } = &r.outcomes[0] else { panic!() };
-    assert_eq!(rows[0][0], projectcat_core::CellValue::Text("latin1_swedish_ci".into()));
+    let schematadb_core::StatementOutcome::Rows { rows, .. } = &r.outcomes[0] else { panic!() };
+    assert_eq!(rows[0][0], schematadb_core::CellValue::Text("latin1_swedish_ci".into()));
     t.driver.drop_database(&name).await.unwrap();
     assert!(!t.driver.list_databases().await.unwrap().iter().any(|d| d.name == name));
 }

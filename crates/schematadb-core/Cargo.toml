@@ -1,5 +1,5 @@
 [package]
-name = "projectcat-core"
+name = "schematadb-core"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

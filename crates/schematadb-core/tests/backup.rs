@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
+use schematadb_core::{
     CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, connect, dump_database,
     run_sql_file,
 };
@@ -74,7 +74,7 @@ async fn dump_restores_schema_and_data(t: TestDb) {
     let run = run_sql_file(target.as_ref(), &db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
     assert!(run.failed.is_empty(), "{:?}", run.failed);
 
-    let names = |o: Vec<projectcat_core::ObjectInfo>| o.into_iter().map(|o| (o.name, o.kind)).collect::<Vec<_>>();
+    let names = |o: Vec<schematadb_core::ObjectInfo>| o.into_iter().map(|o| (o.name, o.kind)).collect::<Vec<_>>();
     assert_eq!(names(target.list_objects(&db).await.unwrap()), names(t.driver.list_objects(&t.db).await.unwrap()));
     for table in ["customer", "orders"] {
         let (a, b) = (t.driver.table_info(&t.db, table).await.unwrap(), target.table_info(&db, table).await.unwrap());

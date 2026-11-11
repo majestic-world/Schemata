@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{CellValue, ColumnValue, Engine, ErrorKind, PageRequest, RowChange, SortSpec};
+use schematadb_core::{CellValue, ColumnValue, Engine, ErrorKind, PageRequest, RowChange, SortSpec};
 
 fn text(s: &str) -> CellValue {
     CellValue::Text(s.into())

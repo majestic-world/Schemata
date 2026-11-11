@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{CancellationToken, CellValue, Engine, ErrorKind, QueryHistory, Splitter, StatementOutcome, split_statements};
+use schematadb_core::{CancellationToken, CellValue, Engine, ErrorKind, QueryHistory, Splitter, StatementOutcome, split_statements};
 use std::time::{Duration, Instant};
 
 #[test]

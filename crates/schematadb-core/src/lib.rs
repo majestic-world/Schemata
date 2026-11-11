@@ -1,4 +1,4 @@
-//! ProjectCat core: database drivers and services, independent of the UI shell.
+//! SchemataDb core: database drivers and services, independent of the UI shell.
 
 mod design;
 mod driver;

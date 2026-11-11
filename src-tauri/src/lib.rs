@@ -1,22 +1,41 @@
 mod commands;
 mod window_chrome;
 
-use projectcat_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
+use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
+use std::path::Path;
 use tauri::Manager;
+
+/// App identifier used while the app was called ProjectCat.
+const LEGACY_IDENTIFIER: &str = "dev.projectcat.app";
+
+/// Copies `path` from the ProjectCat-era app directory (a sibling named after the old identifier) when it does
+/// not exist yet, so saved connections and history survive the rename.
+fn adopt_legacy_file(path: &Path) -> std::io::Result<()> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Ok(()) };
+    let Some(legacy) = dir.parent().map(|root| root.join(LEGACY_IDENTIFIER).join(name)) else { return Ok(()) };
+    if path.exists() || !legacy.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    std::fs::copy(legacy, path).map(|_| ())
+}
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
-            let dir = app.path().app_config_dir()?;
-            let store = ConnectionStore::open(&dir.join("connections.json"), Box::new(KeyringSecrets))?;
+            let connections = app.path().app_config_dir()?.join("connections.json");
+            let history = app.path().app_data_dir()?.join("history.json");
+            adopt_legacy_file(&connections)?;
+            adopt_legacy_file(&history)?;
+            let store = ConnectionStore::open(&connections, Box::new(KeyringSecrets))?;
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::match_theme(&window);
             }
-            app.manage(QueryHistory::open(&app.path().app_data_dir()?.join("history.json"))?);
+            app.manage(QueryHistory::open(&history)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -63,5 +82,5 @@ pub fn run() {
             commands::generate_data,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running ProjectCat");
+        .expect("error while running SchemataDb");
 }

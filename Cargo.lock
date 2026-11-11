@@ -3495,46 +3495,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "projectcat"
-version = "0.1.0"
-dependencies = [
- "projectcat-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-window-state",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "projectcat-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "csv",
- "encoding_rs",
- "encoding_rs_io",
- "fastrand",
- "futures",
- "keyring",
- "rusqlite",
- "serde",
- "serde_json",
- "sqlx",
- "sqlx-mysql",
- "tempfile",
- "testcontainers",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
 name = "prost"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3938,6 +3898,46 @@ dependencies = [
  "quote",
  "serde_derive_internals",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "schematadb"
+version = "0.1.0"
+dependencies = [
+ "schematadb-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-window-state",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "schematadb-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "csv",
+ "encoding_rs",
+ "encoding_rs_io",
+ "fastrand",
+ "futures",
+ "keyring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "sqlx-mysql",
+ "tempfile",
+ "testcontainers",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

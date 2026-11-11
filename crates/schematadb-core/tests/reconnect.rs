@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{ConnectionConfig, ConnectionStore, Engine, MemorySecrets, Sessions, connect};
+use schematadb_core::{ConnectionConfig, ConnectionStore, Engine, MemorySecrets, Sessions, connect};
 
 /// A session whose server connections are all killed keeps working on the next action.
 async fn reconnects_after_connection_loss(t: TestDb) {
@@ -23,10 +23,10 @@ async fn reconnects_after_connection_loss(t: TestDb) {
         .execute_script(None, &format!("SELECT ID FROM information_schema.PROCESSLIST WHERE DB = '{}'", t.db), 100, None)
         .await
         .unwrap();
-    let projectcat_core::StatementOutcome::Rows { rows, .. } = &ids.outcomes[0] else { panic!("expected rows") };
+    let schematadb_core::StatementOutcome::Rows { rows, .. } = &ids.outcomes[0] else { panic!("expected rows") };
     assert!(!rows.is_empty());
     for row in rows {
-        let projectcat_core::CellValue::Int(id) = row[0] else { panic!("id") };
+        let schematadb_core::CellValue::Int(id) = row[0] else { panic!("id") };
         let _ = admin.execute_script(None, &format!("KILL {id}"), 1, None).await;
     }
 

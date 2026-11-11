@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, connect};
+use schematadb_core::{ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, connect};
 
 #[tokio::test]
 async fn store_persists_connections_without_secrets() {

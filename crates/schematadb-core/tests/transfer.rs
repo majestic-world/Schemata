@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
+use schematadb_core::{
     CancellationToken, CellValue, ColumnMapping, CsvImport, CsvOptions, CsvReadOptions, Engine, ErrorKind, ExportFormat, ExportSource,
     PageRequest, ProgressFn, SortSpec, SqlExportOptions, TextEncoding, export, import_csv, preview_csv, run_sql_file,
 };

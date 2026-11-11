@@ -1,12 +1,12 @@
 #![allow(dead_code)]
-use projectcat_core::{ConnectParams, Driver, Engine, connect};
+use schematadb_core::{ConnectParams, Driver, Engine, connect};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{GenericImage, ImageExt, ReuseDirective};
 
-pub const ROOT_PASSWORD: &str = "projectcat";
+pub const ROOT_PASSWORD: &str = "schematadb";
 
 /// A fresh, isolated database on one engine, plus the driver connected to it.
 pub struct TestDb {
@@ -48,8 +48,8 @@ fn server(engine: Engine) -> Server {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
                 let (image, tag, name, pw_var) = match engine {
-                    Engine::MySql => ("mysql", "8.4", "projectcat-test-mysql", "MYSQL_ROOT_PASSWORD"),
-                    _ => ("mariadb", "11.4", "projectcat-test-mariadb", "MARIADB_ROOT_PASSWORD"),
+                    Engine::MySql => ("mysql", "8.4", "schematadb-test-mysql", "MYSQL_ROOT_PASSWORD"),
+                    _ => ("mariadb", "11.4", "schematadb-test-mariadb", "MARIADB_ROOT_PASSWORD"),
                 };
                 let container = GenericImage::new(image, tag)
                     .with_exposed_port(ContainerPort::Tcp(3306))

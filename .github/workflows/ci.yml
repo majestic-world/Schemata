@@ -19,7 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # testcontainers starts the MySQL and MariaDB containers through the runner's Docker daemon.
-      - run: cargo test -p projectcat-core
+      - run: cargo test -p schematadb-core
 
   frontend:
     name: Frontend typecheck and tests
@@ -64,11 +64,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ProjectCat ${{ github.ref_name }}
+          releaseName: SchemataDb ${{ github.ref_name }}
           releaseDraft: true
       - uses: actions/upload-artifact@v4
         with:
-          name: projectcat-${{ matrix.platform }}
+          name: schematadb-${{ matrix.platform }}
           path: |
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe

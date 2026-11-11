@@ -1,10 +1,10 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
-use projectcat_core::{
+use schematadb_core::{
     AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry, ObjectInfo,
     ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, TableDesign, TableInfo, connect,
 };
-use projectcat_core::{
+use schematadb_core::{
     CancellationToken, ColumnGenerator, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport,
     ExportFormat, ExportReport, ExportSource, GenerateReport, GenerateSpec, ImportReport, Progress, ProgressFn, ScriptRunReport,
 };
@@ -289,14 +289,14 @@ pub async fn export_data(
 ) -> CmdResult<ExportReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::export(driver.as_ref(), &db, &source, &format, &path, progress, cancel).await;
+    let result = schematadb_core::export(driver.as_ref(), &db, &source, &format, &path, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }
 
 #[tauri::command]
 pub async fn preview_csv(path: PathBuf, options: CsvReadOptions) -> CmdResult<CsvPreview> {
-    tokio::task::spawn_blocking(move || projectcat_core::preview_csv(&path, &options, 20)).await.map_err(|e| AppError::io(e.to_string()))?
+    tokio::task::spawn_blocking(move || schematadb_core::preview_csv(&path, &options, 20)).await.map_err(|e| AppError::io(e.to_string()))?
 }
 
 #[tauri::command]
@@ -314,7 +314,7 @@ pub async fn import_csv(
 ) -> CmdResult<ImportReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::import_csv(driver.as_ref(), &db, &table, &path, &spec, progress, cancel).await;
+    let result = schematadb_core::import_csv(driver.as_ref(), &db, &table, &path, &spec, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }
@@ -333,7 +333,7 @@ pub async fn run_sql_file(
 ) -> CmdResult<ScriptRunReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::run_sql_file(driver.as_ref(), &db, &path, stop_on_error, progress, cancel).await;
+    let result = schematadb_core::run_sql_file(driver.as_ref(), &db, &path, stop_on_error, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }
@@ -352,7 +352,7 @@ pub async fn backup_database(
 ) -> CmdResult<DumpReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
+    let result = schematadb_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }
@@ -373,7 +373,7 @@ pub async fn copy_table(
     let source = sessions.driver(&source_id).await?;
     let target_driver = sessions.driver(&target_id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::copy_table(source.as_ref(), &source_db, &table, target_driver.as_ref(), &target, progress, cancel).await;
+    let result = schematadb_core::copy_table(source.as_ref(), &source_db, &table, target_driver.as_ref(), &target, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }
@@ -381,7 +381,7 @@ pub async fn copy_table(
 #[tauri::command]
 pub async fn suggest_generators(sessions: State<'_, Sessions>, id: String, db: String, table: String) -> CmdResult<Vec<ColumnGenerator>> {
     let info = sessions.driver(&id).await?.table_info(&db, &table).await?;
-    Ok(projectcat_core::suggest_generators(&info))
+    Ok(schematadb_core::suggest_generators(&info))
 }
 
 #[tauri::command]
@@ -393,7 +393,7 @@ pub async fn preview_generated(
     columns: Vec<ColumnGenerator>,
 ) -> CmdResult<Page> {
     let driver = sessions.driver(&id).await?;
-    projectcat_core::preview_generated(driver.as_ref(), &db, &table, &columns, 5).await
+    schematadb_core::preview_generated(driver.as_ref(), &db, &table, &columns, 5).await
 }
 
 #[tauri::command]
@@ -410,7 +410,7 @@ pub async fn generate_data(
 ) -> CmdResult<GenerateReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = projectcat_core::generate_data(driver.as_ref(), &db, &table, &spec, progress, cancel).await;
+    let result = schematadb_core::generate_data(driver.as_ref(), &db, &table, &spec, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }

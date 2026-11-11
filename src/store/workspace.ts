@@ -33,6 +33,6 @@ export const useWorkspace = create<WorkspaceState>()(
       setSearch: (search) => set({ search }),
       setExpanded: (key, open) => set((s) => ({ expanded: { ...s.expanded, [key]: open } })),
     }),
-    { name: "projectcat.workspace", partialize: (s) => ({ expanded: s.expanded, openAtExit: s.openAtExit }) },
+    { name: "schematadb.workspace", partialize: (s) => ({ expanded: s.expanded, openAtExit: s.openAtExit }) },
   ),
 );

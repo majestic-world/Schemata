@@ -143,5 +143,5 @@ pub(crate) fn vanished(index: usize) -> ChangeError {
 /// Wraps a SELECT so a window of its rows can be fetched again.
 pub(crate) fn more_rows(statement: &str) -> String {
     let inner = statement.trim().trim_end_matches(';');
-    format!("SELECT * FROM ({inner}) AS projectcat_more LIMIT ? OFFSET ?")
+    format!("SELECT * FROM ({inner}) AS schematadb_more LIMIT ? OFFSET ?")
 }

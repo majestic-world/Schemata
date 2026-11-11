@@ -20,6 +20,6 @@ export const useLayout = create<LayoutState>()(
       setInspectorWidth: (inspectorWidth) => set({ inspectorWidth }),
       toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
     }),
-    { name: "projectcat.layout" },
+    { name: "schematadb.layout" },
   ),
 );

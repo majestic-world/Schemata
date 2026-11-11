@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
+use schematadb_core::{
     CancellationToken, CellValue, ConnectParams, CopyTableTarget, Driver, Engine, ErrorKind, PageRequest, ProgressFn, SortSpec, connect,
     copy_table,
 };

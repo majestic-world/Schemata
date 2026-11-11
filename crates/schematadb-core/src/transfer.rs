@@ -263,7 +263,7 @@ pub async fn export(
         ExportFormat::Sql(o) => {
             let mut f = file;
             let name = o.table_name.clone().filter(|n| !n.is_empty()).unwrap_or(default_name);
-            writeln!(f, "-- Exported by ProjectCat")?;
+            writeln!(f, "-- Exported by SchemataDb")?;
             if o.include_create
                 && let ExportSource::Table { table } = source
             {
@@ -753,7 +753,7 @@ pub async fn dump_database(
         }
     }
     let (pending, mut out) = PendingFile::create(path)?;
-    writeln!(out, "-- ProjectCat dump of {db} ({})\n", driver.server_version())?;
+    writeln!(out, "-- SchemataDb dump of {db} ({})\n", driver.server_version())?;
     for s in &script.prologue {
         writeln!(out, "{s}")?;
     }

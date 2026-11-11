@@ -1,4 +1,4 @@
-# ProjectCat
+# SchemataDb
 
 Desktop database client for MySQL, MariaDB and SQLite, inspired by Navicat. Runs on Windows, Linux and macOS.
 
@@ -10,7 +10,7 @@ Tauri 2 shell, Rust backend, React + TypeScript frontend (see [ADR 0001](docs/ad
 
 | Path | Contents |
 |---|---|
-| `crates/projectcat-core` | Drivers, value model, DDL planning, import/export, dumps, connection store. No Tauri dependency. |
+| `crates/schematadb-core` | Drivers, value model, DDL planning, import/export, dumps, connection store. No Tauri dependency. |
 | `src-tauri` | Thin Tauri command layer. |
 | `src` | React UI. |
 
@@ -26,10 +26,10 @@ Tauri 2 shell, Rust backend, React + TypeScript frontend (see [ADR 0001](docs/ad
 pnpm install
 pnpm tauri dev                  # run the app
 pnpm typecheck && pnpm test     # frontend checks (Vitest)
-cargo test -p projectcat-core   # core tests on SQLite, MySQL 8.4 and MariaDB 11.4
+cargo test -p schematadb-core   # core tests on SQLite, MySQL 8.4 and MariaDB 11.4
 pnpm tauri build                # installers in target/release/bundle
 ```
 
-The core tests start reusable containers named `projectcat-test-mysql` and `projectcat-test-mariadb`; remove them with `docker rm -f` when no longer needed.
+The core tests start reusable containers named `schematadb-test-mysql` and `schematadb-test-mariadb`; remove them with `docker rm -f` when no longer needed.
 
 CI (`.github/workflows/ci.yml`) runs the core and frontend tests on Linux and builds installers on Windows, Ubuntu and macOS. Version tags (`v*`) also create a draft release.

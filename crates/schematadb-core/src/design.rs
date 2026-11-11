@@ -457,7 +457,7 @@ pub(crate) mod sqlite {
         }
 
         // Rebuild, following https://www.sqlite.org/lang_altertable.html#otheralter
-        let tmp = format!("_projectcat_new_{}", d.name);
+        let tmp = format!("_schematadb_new_{}", d.name);
         out.push(FK_OFF.to_owned());
         for (name, _) in &deps.views {
             out.push(format!("DROP VIEW {schema}.{}", q(name)));

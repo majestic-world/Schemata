@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
+use schematadb_core::{
     CancellationToken, CellValue, ColumnGenerator, Engine, ErrorKind, GenerateSpec, GeneratorKind, ProgressFn, generate_data,
     preview_generated, suggest_generators,
 };
@@ -27,7 +27,7 @@ async fn seed(t: &TestDb) {
 async fn scalar(t: &TestDb, sql: &str) -> i64 {
     let r = t.driver.execute_script(Some(&t.db), sql, 10, None).await.unwrap();
     match &r.outcomes[0] {
-        projectcat_core::StatementOutcome::Rows { rows, .. } => match &rows[0][0] {
+        schematadb_core::StatementOutcome::Rows { rows, .. } => match &rows[0][0] {
             CellValue::Int(i) => *i,
             CellValue::BigInt(s) | CellValue::Decimal(s) | CellValue::Text(s) => s.parse().unwrap(),
             other => panic!("{other:?}"),

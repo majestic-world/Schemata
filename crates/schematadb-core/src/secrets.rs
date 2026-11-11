@@ -9,7 +9,9 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, id: &str) -> Result<()>;
 }
 
-const SERVICE: &str = "dev.projectcat.app";
+const SERVICE: &str = "dev.schematadb.app";
+/// Service used while the app was called ProjectCat; passwords found there move to [`SERVICE`] on first read.
+const LEGACY_SERVICE: &str = "dev.projectcat.app";
 
 /// OS credential store: Windows Credential Manager, macOS Keychain or Linux Secret Service.
 #[derive(Default)]
@@ -23,7 +25,18 @@ impl SecretStore for KeyringSecrets {
     fn get(&self, id: &str) -> Result<Option<String>> {
         match keyring::Entry::new(SERVICE, id).map_err(keyring_err)?.get_password() {
             Ok(p) => Ok(Some(p)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring::Error::NoEntry) => {
+                let legacy = keyring::Entry::new(LEGACY_SERVICE, id).map_err(keyring_err)?;
+                match legacy.get_password() {
+                    Ok(p) => {
+                        self.set(id, &p)?;
+                        let _ = legacy.delete_credential();
+                        Ok(Some(p))
+                    }
+                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(e) => Err(keyring_err(e)),
+                }
+            }
             Err(e) => Err(keyring_err(e)),
         }
     }
@@ -31,10 +44,13 @@ impl SecretStore for KeyringSecrets {
         keyring::Entry::new(SERVICE, id).map_err(keyring_err)?.set_password(secret).map_err(keyring_err)
     }
     fn delete(&self, id: &str) -> Result<()> {
-        match keyring::Entry::new(SERVICE, id).map_err(keyring_err)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(keyring_err(e)),
+        for service in [SERVICE, LEGACY_SERVICE] {
+            match keyring::Entry::new(service, id).map_err(keyring_err)?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(keyring_err(e)),
+            }
         }
+        Ok(())
     }
 }
 

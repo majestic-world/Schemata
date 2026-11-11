@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
+use schematadb_core::{
     CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, ObjectKind, PageRequest, SortSpec, TableDesign, TableOptions,
 };
 

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    projectcat_lib::run()
+    schematadb_lib::run()
 }
