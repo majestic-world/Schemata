@@ -130,7 +130,7 @@ button:focus-visible { outline: none; }
 /* ---------- Status bar ---------- */
 .statusbar {
   display: flex; align-items: center; gap: 14px; height: 26px; padding: 0 10px;
-  background: linear-gradient(#f6f8fa, #eaeef2); border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-muted);
+  background: linear-gradient(#f6f8fa, #eaeef2); border-top: 1px solid var(--border); font-size: calc(var(--fs-sm) + 1px); color: var(--text-muted);
 }
 .status-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); display: inline-block; }
