@@ -462,9 +462,10 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
           anchor={pickerAt}
           onBlur={onBlur}
           onPick={(value) => {
-            // The editor goes away with the pick; keep the keyboard in the grid.
-            wrap.current?.closest<HTMLElement>(".grid")?.focus({ preventScroll: true });
+            const grid = wrap.current?.closest<HTMLElement>(".grid");
             commit(value);
+            // Accept the picked value before focus triggers blur with the previous input text.
+            grid?.focus({ preventScroll: true });
           }}
           onCancel={() => {
             setPickerAt(null);

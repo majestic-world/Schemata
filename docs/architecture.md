@@ -21,6 +21,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Row identity: primary key, else a complete nonpartial unique key over non-null named columns, else an unshadowed SQLite rowid alias, else (MySQL/MariaDB tables without a key, like Navicat) every column whose value matches exactly. By-value changes compare with `<=>` so NULL matches NULL and add `LIMIT 1`, so of several identical rows only one changes. FLOAT, binary, BIT, JSON and spatial columns are left out of the match (previews or approximate storage); with nothing left, and for views, the grid is read-only.
 - The UI accumulates a change set (updates keyed by row identity, inserts, deletes); the core applies it in one transaction and reports the first failing change. On failure the UI keeps the pending changes.
 - Pending edits address rows by position, so while any exist the grid keeps showing (and commits against) the page snapshot they were made on instead of refetched data. They live in a per-tab store, so switching tabs or views does not lose them. Grid mutations are blocked while committing; saving finalizes the active cell before collecting the change set.
+- Date-picker confirmation accepts the selected value before restoring grid focus. Otherwise blur can finalize the previous input text and suppress the pick; Cancel returns to the editor without applying the calendar selection.
 
 ## Table design
 
