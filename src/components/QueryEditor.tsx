@@ -7,6 +7,7 @@ import { keymap } from "@codemirror/view";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, Upload, X } from "lucide-react";
 import { openTransfer } from "../store/transfer";
+import { MOD } from "../lib/platform";
 import { api, toAppError } from "../api/client";
 import type { Engine, StatementOutcome } from "../api/types";
 import { useTabs, type QueryTab } from "../store/tabs";
@@ -107,8 +108,8 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
   return (
     <div className="query-editor">
       <div className="action-bar">
-        <button className="btn primary" disabled={run?.running} onClick={() => void execute(false)} title="Run (Ctrl+Enter)"><Play size={15} />Run</button>
-        <button className="btn" disabled={run?.running} onClick={() => void execute(true)} title="Run selection (Ctrl+Shift+Enter)"><TextSelect size={15} />Run Selection</button>
+        <button className="btn primary" disabled={run?.running} onClick={() => void execute(false)} title={`Run (${MOD}+Enter)`}><Play size={15} />Run</button>
+        <button className="btn" disabled={run?.running} onClick={() => void execute(true)} title={`Run selection (${MOD}+Shift+Enter)`}><TextSelect size={15} />Run Selection</button>
         <button className="btn danger" disabled={!run?.running} onClick={stop}><Square size={14} />Stop</button>
         <div className="toolbar-sep" />
         <label className="inline-field">
@@ -120,7 +121,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
         </label>
         <div className="grow" />
         <button className="btn" onClick={openFile}><FolderOpen size={15} />Open</button>
-        <button className="btn" onClick={saveFile} title="Save (Ctrl+S)"><Save size={15} />Save</button>
+        <button className="btn" onClick={saveFile} title={`Save (${MOD}+S)`}><Save size={15} />Save</button>
         <button className={`btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><History size={15} />History</button>
       </div>
       <div className="query-main">
@@ -180,7 +181,7 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
     if (next !== selected) setSelected(next);
   }
 
-  if (!run) return <div className="empty"><p>Run a query to see results here. Ctrl+Enter runs the script; Ctrl+Shift+Enter runs the selection.</p></div>;
+  if (!run) return <div className="empty"><p>Run a query to see results here. {MOD}+Enter runs the script; {MOD}+Shift+Enter runs the selection.</p></div>;
   if (run.running) return <div className="empty"><p>Running… <span className="muted">({((Date.now() - run.startedAt) / 1000).toFixed(0)}s)</span></p></div>;
 
   const loadMore = async (index: number) => {

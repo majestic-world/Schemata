@@ -8,6 +8,7 @@ import { formatCount } from "../lib/format";
 import { notify, notifyError } from "../store/toasts";
 import { confirmAction } from "../store/confirm";
 import { openTransfer } from "../store/transfer";
+import { MOD, isMod } from "../lib/platform";
 import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import {
@@ -170,7 +171,15 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const sameRef = (a: RowRef | null, b: RowRef) => !!a && a.kind === b.kind && a.index === b.index;
 
   return (
-    <div className="grid-wrap">
+    <div
+      className="grid-wrap"
+      onKeyDown={(e) => {
+        if (isMod(e) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          if (dirty && !committing) void commit();
+        }
+      }}
+    >
       <div className="action-bar grid-toolbar">
         {readOnly ? (
           info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no primary or unique key"}</span>
@@ -186,7 +195,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
               <Ban size={15} />Set NULL
             </button>
             <div className="toolbar-sep" />
-            <button className="btn primary" disabled={!dirty || committing} onClick={commit}>
+            <button className="btn primary" disabled={!dirty || committing} onClick={commit} title={`Commit (${MOD}+S)`}>
               <Check size={15} />Commit{dirty ? ` (${changeCount(pending)})` : ""}
             </button>
             <button className="btn" disabled={!dirty || committing} onClick={reset}><Undo2 size={15} />Discard</button>

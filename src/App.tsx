@@ -1,4 +1,10 @@
 import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useTabs } from "./store/tabs";
+import { useWorkspace } from "./store/workspace";
+import { isMod } from "./lib/platform";
+import { notifyError } from "./store/toasts";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
@@ -18,10 +24,47 @@ import { api } from "./api/client";
 export function App() {
   const layout = useLayout();
 
-  // Sessions outlive a webview reload; resync which connections are open.
+  const qc = useQueryClient();
+  const activeTab = useTabs((s) => s.active);
+
+  // Sessions outlive a webview reload; resync which connections are open. On a fresh start, reopen the
+  // connections that were open at exit (silently: one that needs a password simply stays closed).
   useEffect(() => {
-    void api.openConnectionIds().then((ids) => ids.forEach((id) => useConnections.getState().markOpen(id, "")));
+    void (async () => {
+      const ids = await api.openConnectionIds();
+      ids.forEach((id) => useConnections.getState().markOpen(id, ""));
+      if (ids.length > 0) return;
+      for (const id of useWorkspace.getState().openAtExit) {
+        await api.openConnection(id, null).then((v) => useConnections.getState().markOpen(id, v)).catch(() => undefined);
+      }
+    })();
+    return useConnections.subscribe((s) => useWorkspace.getState().setOpenAtExit(Object.keys(s.open)));
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isMod(e)) return;
+      const key = e.key.toLowerCase();
+      if (key === "k") {
+        e.preventDefault();
+        document.getElementById("global-search")?.focus();
+      } else if (key === "t") {
+        e.preventDefault();
+        const sel = useWorkspace.getState().selection;
+        const open = Object.keys(useConnections.getState().open);
+        const connectionId = sel && sel.connectionId in useConnections.getState().open ? sel.connectionId : open[0];
+        if (connectionId) useTabs.getState().newQuery({ connectionId, database: sel?.connectionId === connectionId ? (sel.database ?? null) : null });
+        else notifyError("No open connection", { message: "Open a connection to start a query." });
+      }
+    };
+    const onRejection = (e: PromiseRejectionEvent) => notifyError("Unexpected error", e.reason);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, [qc]);
 
   return (
     <div className="app">
@@ -32,7 +75,9 @@ export function App() {
         </aside>
         <Splitter side="left" value={layout.sidebarWidth} onChange={layout.setSidebarWidth} min={200} max={520} />
         <main className="panel workspace">
-          <Workspace />
+          <ErrorBoundary resetKey={activeTab}>
+            <Workspace />
+          </ErrorBoundary>
         </main>
         {layout.inspectorOpen && (
           <>
