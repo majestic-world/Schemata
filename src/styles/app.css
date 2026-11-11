@@ -95,7 +95,7 @@ button:focus-visible { outline: none; }
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--surface); white-space: nowrap;
 }
-.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--button-hover-border); }
+.btn:hover:not(:disabled) { background: var(--surface-2); }
 .btn:active:not(:disabled) { background: var(--surface-3); }
 .btn:disabled { opacity: 0.5; }
 .btn.primary { background: var(--accent); border-color: var(--accent-hover); color: #fff; }
@@ -213,7 +213,7 @@ button:focus-visible { outline: none; }
 
 /* ---------- Dialogs & forms ---------- */
 .dialog-overlay { position: fixed; inset: 0; background: var(--overlay); z-index: 40; }
-.dialog { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); z-index: 41; overflow: hidden; }
+.dialog { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--dialog-border); border-radius: var(--radius-lg); z-index: 41; overflow: hidden; }
 .dialog-header { display: flex; align-items: center; height: 40px; padding: 0 10px 0 16px; background: var(--surface-2); border-bottom: 1px solid var(--border-soft); }
 .dialog-title { flex: 1; margin: 0; font-size: 13.5px; font-weight: 600; }
 .dialog-body { padding: 16px; overflow: auto; }

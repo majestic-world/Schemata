@@ -11,6 +11,7 @@
   --border: #d3d9e0;
   --border-soft: #e7ebef;
   --border-strong: #bcc5cf;
+  --dialog-border: var(--border-strong);
   --text: #1c232c;
   --text-muted: #5f6b78;
   --text-faint: #97a1ac;
@@ -33,7 +34,6 @@
   --caption-hover: rgba(0, 0, 0, 0.06);
   --caption-active: rgba(0, 0, 0, 0.1);
   --tool-hover: rgba(255, 255, 255, 0.75);
-  --button-hover-border: #aeb8c3;
   --danger-border: #b3333a;
   --icon-blue: #1f74d0;
   --icon-orange: #d97a16;
@@ -81,6 +81,7 @@
   --border: #454545;
   --border-soft: #353535;
   --border-strong: #595959;
+  --dialog-border: #414141;
   --text: #e3e3e3;
   --text-muted: #b5b5b5;
   --text-faint: #929292;
@@ -104,7 +105,6 @@
   --caption-hover: #505050;
   --caption-active: #5b5b5b;
   --tool-hover: #4b4b4b;
-  --button-hover-border: #767676;
   --icon-blue: #78b8ef;
   --icon-orange: #eeb15d;
   --icon-green: #79cb94;

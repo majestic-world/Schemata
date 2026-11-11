@@ -49,6 +49,11 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Toolbar actions use filled, shaded 32 px SVG glyphs from `src/components/icons.tsx`, sharing the `Grad` helper. Settings follows the same style with a metallic gear and blue center; outline-only icons are reserved for compact controls.
 
+## Control styling
+
+- Shared `.btn` hover changes the background without replacing the variant's border color. Primary buttons keep their accent border, ghost buttons stay borderless, and neutral buttons retain their normal frame in both themes.
+- Modals use `--dialog-border` instead of the strong input border: the light theme keeps its existing frame, while dark dialogs use a subdued charcoal outline without changing field borders.
+
 ## Workspace interactions
 
 - On Windows, startup disables WebView2's default context menus with `SetAreDefaultContextMenusEnabled(false)` for the entire webview, independently of DOM event propagation. The frontend context-menu listener remains a fallback for other platforms. Browser-owned menus are disabled; app-owned Radix menus still receive DOM events.
