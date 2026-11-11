@@ -1,0 +1,59 @@
+use crate::{AppError, DatabaseInfo, Engine, ObjectInfo, Result, ScriptResult};
+use async_trait::async_trait;
+use std::sync::Arc;
+
+/// Everything needed to open a session. Built from a saved connection plus its password.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectParams {
+    pub engine: Engine,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub database: Option<String>,
+    pub file_path: Option<String>,
+    /// SQLite only: create the database file when it does not exist.
+    #[serde(default)]
+    pub create_file: bool,
+}
+
+impl ConnectParams {
+    pub fn sqlite(path: impl Into<String>, create_file: bool) -> Self {
+        Self {
+            engine: Engine::Sqlite,
+            host: None,
+            port: None,
+            user: None,
+            password: None,
+            database: None,
+            file_path: Some(path.into()),
+            create_file,
+        }
+    }
+}
+
+/// A live session to one server or SQLite file. Implementations hide dialect differences.
+#[async_trait]
+pub trait Driver: Send + Sync {
+    fn engine(&self) -> Engine;
+    fn server_version(&self) -> String;
+    async fn ping(&self) -> Result<()>;
+    async fn list_databases(&self) -> Result<Vec<DatabaseInfo>>;
+    /// Tables first, then views, each sorted by name.
+    async fn list_objects(&self, db: &str) -> Result<Vec<ObjectInfo>>;
+    /// Runs a script statement by statement, stopping at the first error. `execution_id` makes it cancelable.
+    async fn execute_script(&self, db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult>;
+    /// Cancels the statement currently running under `execution_id`, if any.
+    async fn cancel(&self, execution_id: &str) -> Result<()>;
+}
+
+pub async fn connect(params: &ConnectParams) -> Result<Arc<dyn Driver>> {
+    match params.engine {
+        Engine::Sqlite => {
+            let path = params.file_path.as_deref().ok_or_else(|| AppError::validation("A database file is required"))?;
+            Ok(Arc::new(crate::sqlite::SqliteDriver::open(path, params.create_file).await?))
+        }
+        Engine::MySql | Engine::MariaDb => Err(AppError::validation("MySQL/MariaDB support is not available yet")),
+    }
+}

@@ -1,13 +1,26 @@
+import { useEffect } from "react";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 import { Inspector } from "./components/Inspector";
 import { StatusBar } from "./components/StatusBar";
 import { Splitter } from "./components/Splitter";
+import { ConnectionDialog } from "./components/ConnectionDialog";
+import { PasswordPrompt } from "./components/PasswordPrompt";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { Toaster } from "./components/Toaster";
 import { useLayout } from "./store/layout";
+import { useConnections } from "./store/connections";
+import { api } from "./api/client";
 
 export function App() {
   const layout = useLayout();
+
+  // Sessions outlive a webview reload; resync which connections are open.
+  useEffect(() => {
+    void api.openConnectionIds().then((ids) => ids.forEach((id) => useConnections.getState().markOpen(id, "")));
+  }, []);
+
   return (
     <div className="app">
       <Toolbar />
@@ -29,6 +42,10 @@ export function App() {
         )}
       </div>
       <StatusBar />
+      <ConnectionDialog />
+      <PasswordPrompt />
+      <ConfirmDialog />
+      <Toaster />
     </div>
   );
 }
