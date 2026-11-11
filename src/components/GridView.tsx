@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp } from "lucide-react";
@@ -107,16 +107,61 @@ export function GridView(props: Props) {
   const headers = table.getHeaderGroups()[0]?.headers ?? [];
   const totalWidth = 50 + headers.reduce((s, h) => s + h.getSize(), 0);
 
+  /** Cell a navigation key moves the focus to; null when the key does not navigate. */
+  const moveTarget = (e: KeyboardEvent): Pos | null => {
+    if (rows.length === 0 || visible.length === 0) return null;
+    const lastRow = rows.length - 1;
+    const lastCol = visible.length - 1;
+    const page = Math.max(1, Math.floor(((scrollRef.current?.clientHeight ?? 0) - HEADER_HEIGHT) / ROW_HEIGHT) - 1);
+    const mod = e.ctrlKey || e.metaKey;
+    const at = (r: number, c: number): Pos => ({ r: Math.min(lastRow, Math.max(0, r)), c: Math.min(lastCol, Math.max(0, c)) });
+    if (!focus) return ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key) ? at(0, 0) : null;
+    switch (e.key) {
+      case "ArrowUp": return at(mod ? 0 : focus.r - 1, focus.c);
+      case "ArrowDown": return at(mod ? lastRow : focus.r + 1, focus.c);
+      case "ArrowLeft": return at(focus.r, mod ? 0 : focus.c - 1);
+      case "ArrowRight": return at(focus.r, mod ? lastCol : focus.c + 1);
+      case "Home": return at(mod ? 0 : focus.r, 0);
+      case "End": return at(mod ? lastRow : focus.r, lastCol);
+      case "PageUp": return at(focus.r - page, focus.c);
+      case "PageDown": return at(focus.r + page, focus.c);
+      default: return null;
+    }
+  };
+  /** Scrolls just enough to show a cell below the sticky header and right of the row numbers. */
+  const scrollIntoView = ({ r, c }: Pos) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const top = HEADER_HEIGHT + r * ROW_HEIGHT;
+    if (top - HEADER_HEIGHT < el.scrollTop) el.scrollTop = top - HEADER_HEIGHT;
+    else if (top + ROW_HEIGHT > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_HEIGHT - el.clientHeight;
+    const left = 50 + headers.slice(0, c).reduce((s, h) => s + h.getSize(), 0);
+    const right = left + headers[c].getSize();
+    if (left - 50 < el.scrollLeft) el.scrollLeft = left - 50;
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth;
+  };
+
   return (
     <div
       className="grid"
       ref={scrollRef}
       tabIndex={0}
       onKeyDown={(e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !(e.target instanceof HTMLInputElement)) {
+        if (e.target instanceof HTMLInputElement) return;
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
           e.preventDefault();
           void copy();
+          return;
         }
+        const next = moveTarget(e);
+        if (!next) return;
+        e.preventDefault();
+        if (e.shiftKey && anchor) setFocus(next);
+        else {
+          setAnchor(next);
+          setFocus(next);
+        }
+        scrollIntoView(next);
       }}
     >
       <div className="grid-header" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
