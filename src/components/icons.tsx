@@ -1,6 +1,7 @@
 /** Full-color icon set in the spirit of classic desktop database tools: toolbar glyphs at 32 px, object
  * glyphs at 16 px. Gradients use per-icon ids so several instances can share a page. */
 import type { Engine } from "../api/types";
+import { MARIADB_LOGO, MYSQL_LOGO, SQLITE_LOGO, type Logo } from "./engineLogos";
 
 type P = { size?: number };
 
@@ -116,13 +117,13 @@ function Tray({ arrow, color }: { arrow: "in" | "out"; color: string }) {
 export const ImportIcon = () => <Tray arrow="in" color="#22a35a" />;
 export const ExportIcon = () => <Tray arrow="out" color="#e9822b" />;
 
-const ENGINE: Record<Engine, { from: string; to: string; mark: string }> = {
-  mySql: { from: "#1a8fb4", to: "#00618a", mark: "#f29111" },
-  mariaDb: { from: "#c0875a", to: "#7a4a2a", mark: "#f3d7b8" },
-  sqlite: { from: "#5ab0ec", to: "#1667b7", mark: "#d6efff" },
+const ENGINE: Record<Engine, { from: string; to: string; logo: Logo }> = {
+  mySql: { from: "#1a8fb4", to: "#00618a", logo: MYSQL_LOGO },
+  mariaDb: { from: "#d0a57c", to: "#a9784f", logo: MARIADB_LOGO },
+  sqlite: { from: "#4ea8ea", to: "#0f6bb8", logo: SQLITE_LOGO },
 };
 
-/** Connection glyph: a rounded tile in the engine's colors with a white database mark. */
+/** Connection glyph: a rounded tile in the engine's colors carrying the engine's official logo. */
 export function EngineIcon({ engine, size = 18 }: { engine: Engine; size?: number }) {
   const e = ENGINE[engine];
   const id = `ic-eng-${engine}-${size}`;
@@ -131,9 +132,15 @@ export function EngineIcon({ engine, size = 18 }: { engine: Engine; size?: numbe
       <defs><Grad id={id} from={e.from} to={e.to} /></defs>
       <rect x="1" y="1" width="30" height="30" rx="7" fill={`url(#${id})`} />
       <rect x="1.5" y="1.5" width="29" height="29" rx="6.5" fill="none" stroke="#fff" strokeOpacity=".25" />
-      <ellipse cx="16" cy="10" rx="8" ry="3.2" fill="#fff" />
-      <path d="M8 10v11c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2V10" fill="none" stroke="#fff" strokeWidth="2.4" />
-      <path d="M8 15.5c0 1.8 3.6 3.2 8 3.2s8-1.4 8-3.2" fill="none" stroke={e.mark} strokeWidth="2.4" />
+      {/* The mark fills a 22-unit box centered in the tile. */}
+      <path
+        d={e.logo.path}
+        fill="#fff"
+        stroke={e.logo.stroke ? "#fff" : undefined}
+        strokeWidth={e.logo.stroke}
+        strokeLinejoin="round"
+        transform={`translate(5 5) scale(${22 / e.logo.grid})`}
+      />
     </svg>
   );
 }
