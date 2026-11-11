@@ -120,7 +120,8 @@ export function ConnectionDialog() {
       open
       onClose={() => showDialog(null)}
       title={editing ? "Edit Connection" : "New Connection"}
-      width={520}
+      width={540}
+      className="conn-dialog"
       footer={
         <>
           <button className="btn" disabled={busy || (sqlite ? !config.filePath : !config.host)} onClick={runTest}>Test Connection</button>
@@ -130,44 +131,46 @@ export function ConnectionDialog() {
         </>
       }
     >
-      <div className="form">
+      <div className="conn-form">
         {!editing && (
-          <div className="segmented engine-picker">
+          <div className="segmented engine-picker span-all" role="radiogroup" aria-label="Database engine">
             {(Object.keys(ENGINE_LABEL) as Engine[]).map((e) => (
-              <button key={e} type="button" className={config.engine === e ? "on" : ""} onClick={() => patch({ engine: e, port: DEFAULT_PORT[e] })}>
+              <button key={e} type="button" role="radio" aria-checked={config.engine === e} className={config.engine === e ? "on" : ""} onClick={() => patch({ engine: e, port: DEFAULT_PORT[e] })}>
                 <EngineIcon engine={e} size={16} />{ENGINE_LABEL[e]}
               </button>
             ))}
           </div>
         )}
-        <div className="row">
-          <label className="field grow">
-            <span>Connection name</span>
-            <input autoFocus value={config.name} onChange={(e) => patch({ name: e.target.value })} placeholder={sqlite ? "Local database" : "Production"} />
-          </label>
-          <div className="field">
-            <span>Color</span>
-            <div className="swatches">
-              {COLORS.map((c) => (
-                <button
-                  key={c ?? "none"}
-                  type="button"
-                  aria-label={c ?? "No color"}
-                  className={`swatch${config.color === c ? " on" : ""}${c ? "" : " none"}`}
-                  style={c ? { background: c } : undefined}
-                  onClick={() => patch({ color: c })}
-                />
-              ))}
-            </div>
+        <label className="field span-all">
+          <span>Connection name</span>
+          <input autoFocus value={config.name} onChange={(e) => patch({ name: e.target.value })} placeholder={sqlite ? "Local database" : "Production"} />
+        </label>
+        <div className="field span-all">
+          <span>Color</span>
+          <div className="swatches" role="radiogroup" aria-label="Color">
+            {COLORS.map((c) => (
+              <button
+                key={c ?? "none"}
+                type="button"
+                role="radio"
+                aria-checked={config.color === c}
+                aria-label={c ?? "No color"}
+                title={c ?? "No color"}
+                className={`swatch${config.color === c ? " on" : ""}${c ? "" : " none"}`}
+                style={c ? { background: c } : undefined}
+                onClick={() => patch({ color: c })}
+              />
+            ))}
           </div>
         </div>
         {sqlite ? (
           <>
-            <label className="field">
+            <div className="conn-section">File</div>
+            <label className="field span-all">
               <span>Database file</span>
               <input value={config.filePath ?? ""} onChange={(e) => { patch({ filePath: e.target.value || null }); setCreateFile(false); }} placeholder="C:\data\app.db" />
             </label>
-            <div className="row">
+            <div className="conn-actions span-all">
               <button type="button" className="btn" onClick={() => pickFile(false)}><FolderOpen size={15} />Open existing…</button>
               <button type="button" className="btn" onClick={() => pickFile(true)}><FilePlus2 size={15} />Create new…</button>
               {createFile && <span className="hint">A new file will be created.</span>}
@@ -175,43 +178,41 @@ export function ConnectionDialog() {
           </>
         ) : (
           <>
-            <div className="row">
-              <label className="field grow">
-                <span>Host</span>
-                <input value={config.host ?? ""} onChange={(e) => patch({ host: e.target.value })} />
-              </label>
-              <label className="field" style={{ width: 100 }}>
-                <span>Port</span>
-                <input type="number" value={config.port ?? ""} onChange={(e) => patch({ port: e.target.value ? Number(e.target.value) : null })} />
-              </label>
-            </div>
-            <div className="row">
-              <label className="field grow">
-                <span>User</span>
-                <input value={config.user ?? ""} onChange={(e) => patch({ user: e.target.value })} />
-              </label>
-              <label className="field grow">
-                <span>Password</span>
-                <input
-                  type="password"
-                  value={password}
-                  placeholder={editing && config.savePassword && !passwordTouched ? "Saved — leave blank to keep" : ""}
-                  onChange={(e) => { setPassword(e.target.value); setPasswordTouched(true); setTest(null); }}
-                />
-              </label>
-            </div>
-            <label className="check">
+            <div className="conn-section">Server</div>
+            <label className="field span-2">
+              <span>Host</span>
+              <input value={config.host ?? ""} onChange={(e) => patch({ host: e.target.value })} placeholder="localhost" />
+            </label>
+            <label className="field">
+              <span>Port</span>
+              <input type="number" value={config.port ?? ""} onChange={(e) => patch({ port: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+            <div className="conn-section">Authentication</div>
+            <label className="field">
+              <span>User</span>
+              <input value={config.user ?? ""} onChange={(e) => patch({ user: e.target.value })} />
+            </label>
+            <label className="field span-2">
+              <span>Password</span>
+              <input
+                type="password"
+                value={password}
+                placeholder={editing && config.savePassword && !passwordTouched ? "Saved — leave blank to keep" : ""}
+                onChange={(e) => { setPassword(e.target.value); setPasswordTouched(true); setTest(null); }}
+              />
+            </label>
+            <label className="check span-all">
               <input type="checkbox" checked={config.savePassword} onChange={(e) => patch({ savePassword: e.target.checked })} />
               Save password in the system credential store
             </label>
-            <label className="field">
-              <span>Default database (optional)</span>
+            <label className="field span-all">
+              <span>Default database <em className="optional">optional</em></span>
               <input value={config.database ?? ""} onChange={(e) => patch({ database: e.target.value || null })} />
             </label>
           </>
         )}
         {test && (
-          <div className={`test-result ${test.ok ? "ok" : "fail"}`}>
+          <div className={`test-result span-all ${test.ok ? "ok" : "fail"}`}>
             {test.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
             <span>{test.ok ? `Connected — ${test.version}` : test.error.message}</span>
           </div>

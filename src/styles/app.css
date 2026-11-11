@@ -250,12 +250,24 @@ button:focus-visible { outline: none; }
 .check { display: flex; align-items: center; gap: 8px; }
 .check input { accent-color: var(--accent); width: 14px; height: 14px; }
 .hint { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
-.engine-picker { align-self: flex-start; }
-.engine-picker button { height: 26px; padding: 0 18px; }
-.swatches { display: flex; gap: 6px; height: 28px; align-items: center; }
-.swatch { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border-strong); padding: 0; }
+/* Connection dialog: one 3-column grid so every field edge lines up; sections separated by labelled rules. */
+.conn-dialog .dialog-body { padding: 16px 18px 18px; }
+.conn-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 96px; gap: 12px; align-items: end; }
+.conn-form .span-all { grid-column: 1 / -1; }
+.conn-form .span-2 { grid-column: span 2; }
+.conn-form .field input { height: 30px; }
+.conn-section { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 6px; color: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.conn-section::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+.conn-actions { display: flex; align-items: center; gap: 8px; }
+.optional { margin-left: 4px; color: var(--text-faint); font-style: normal; }
+.engine-picker { display: flex; margin-bottom: 4px; }
+.engine-picker button { flex: 1; justify-content: center; height: 30px; padding: 0 18px; font-size: var(--fs); }
+.swatches { display: flex; gap: 8px; height: 30px; align-items: center; }
+.swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border-strong); padding: 0; cursor: pointer; transition: transform 0.1s; }
+.swatch:hover { transform: scale(1.1); }
 .swatch.none { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 3px, var(--border) 3px, var(--border) 5px); }
-.swatch.on { box-shadow: 0 0 0 2px var(--text); }
+.swatch.on { box-shadow: 0 0 0 2px var(--accent); }
+.swatch:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 .test-result { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border-radius: var(--radius); line-height: 1.45; user-select: text; border: 1px solid transparent; }
 .test-result.ok { background: var(--success-soft); border-color: var(--success-border); color: var(--success); }
 .test-result.fail { background: var(--danger-soft); border-color: var(--error-border); color: var(--danger); }
