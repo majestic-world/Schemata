@@ -105,7 +105,7 @@ button:focus-visible { outline: none; }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.sm { height: 24px; padding: 0 8px; font-size: var(--fs-sm); }
 .btn.active-filter { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
-.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); }
 .icon-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .icon-btn:disabled { opacity: 0.4; }
 .icon-btn.danger:hover { color: var(--danger); background: var(--danger-soft); }
@@ -133,8 +133,8 @@ button:focus-visible { outline: none; }
 .tab.active::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
 .tab .title { overflow: hidden; text-overflow: ellipsis; }
 .tab .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
-.tab-close { width: 18px; height: 18px; visibility: hidden; }
-.tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
+.tab-close { flex: none; width: 20px; height: 20px; visibility: hidden; }
+.tab:hover .tab-close { visibility: visible; }
 .tab-glyph { flex: none; }
 .tab-glyph.design { color: #d97a16; }
 .tab-glyph.query { color: #1f74d0; }

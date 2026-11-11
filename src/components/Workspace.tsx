@@ -68,7 +68,7 @@ export function Workspace() {
               <span className="title">{tabLabel(t)}</span>
               {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
               <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestClose(t.id); }}>
-                <X size={13} />
+                <X size={16} />
               </button>
             </div>
           );
