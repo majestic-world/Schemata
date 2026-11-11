@@ -6,11 +6,15 @@
 
 **Bloqueado por:** 05
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] Criar e alterar tabelas nos 3 engines usando o DDL exibido
-- [ ] Falha não deixa alteração parcial
-- [ ] Rebuild SQLite preserva dados, índices, triggers e FKs
+- [x] Criar e alterar tabelas nos 3 engines usando o DDL exibido
+- [x] Falha não deixa alteração parcial
+- [x] Rebuild SQLite preserva dados, índices, triggers e FKs
 
 ## Evidências de implementação
+
+- Commit `d7c9872`
+- `cargo test --test design`: 15 passed (criar com PK/auto-inc/default/índice único/FK/comentário, design relido não gera DDL, alterar renomeando/reordenando/mudando tipo/adicionando e removendo colunas e renomeando tabela com dados preservados, falha atômica nos 3 engines, rebuild SQLite preservando índice/trigger/FK/view, drop/truncate/rename) — corrigiu o divisor de scripts para `END;` de triggers
+- UI via CDP: criar tabela MySQL com coluna NOT NULL, DEFAULT CURRENT_TIMESTAMP e índice único com prévia; alterar renomeando coluna (índice acompanha), adicionando e reordenando em um único ALTER; renomear e excluir tabela; alterar tipo no SQLite gera e aplica o rebuild recriando a view dependente

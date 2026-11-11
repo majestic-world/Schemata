@@ -139,3 +139,9 @@ pub(crate) fn change_statements(
 pub(crate) fn vanished(index: usize) -> ChangeError {
     ChangeError { index: Some(index), error: AppError::sql("The row no longer exists; refresh the data and try again") }
 }
+
+/// Wraps a SELECT so a window of its rows can be fetched again.
+pub(crate) fn more_rows(statement: &str) -> String {
+    let inner = statement.trim().trim_end_matches(';');
+    format!("SELECT * FROM ({inner}) AS projectcat_more LIMIT ? OFFSET ?")
+}

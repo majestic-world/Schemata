@@ -16,7 +16,7 @@
 | 04 | Lista de objetos, inspector e bancos | 03 | implemented | `ed5a517` |
 | 05 | Grid de dados: leitura paginada | 04 | implemented | `6e2c070` |
 | 06 | Grid de dados: edição com change set | 05 | implemented | `79dce02` |
-| 07 | Designer de tabela e operações de tabela | 05 | ready-for-agent | |
+| 07 | Designer de tabela e operações de tabela | 05 | implemented | `d7c9872` |
 | 08 | Editor SQL | 05 | ready-for-agent | |
 | 09 | Exportar e importar | 06, 08 | ready-for-agent | |
 | 10 | Backup e restore | 09 | ready-for-agent | |

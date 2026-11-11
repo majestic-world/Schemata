@@ -1,6 +1,6 @@
 mod commands;
 
-use projectcat_core::{ConnectionStore, KeyringSecrets, Sessions};
+use projectcat_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
 use tauri::Manager;
 
 pub fn run() {
@@ -11,6 +11,7 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let store = ConnectionStore::open(&dir.join("connections.json"), Box::new(KeyringSecrets))?;
             app.manage(Sessions::new(store));
+            app.manage(QueryHistory::open(&app.path().app_data_dir()?.join("history.json"))?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -40,6 +41,11 @@ pub fn run() {
             commands::drop_object,
             commands::truncate_table,
             commands::rename_table,
+            commands::fetch_more,
+            commands::list_columns,
+            commands::list_history,
+            commands::read_text_file,
+            commands::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");

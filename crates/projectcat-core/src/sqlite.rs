@@ -397,6 +397,43 @@ impl Driver for SqliteDriver {
         .await
     }
 
+    async fn fetch_more(&self, _db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        let sql = crate::sql::more_rows(statement);
+        self.with_conn(move |c| {
+            let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            let columns: Vec<ColumnMeta> = stmt
+                .columns()
+                .map(|col| ColumnMeta { name: col.name().to_owned(), type_name: col.decl_type().unwrap_or("").to_owned(), hidden: false })
+                .collect();
+            let n = columns.len();
+            let rows = collect(&mut stmt, [limit as i64, offset as i64], |r| Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect()))?;
+            Ok(Page { columns, rows })
+        })
+        .await
+    }
+
+    async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
+        let db = db.to_owned();
+        self.with_conn(move |c| {
+            let sql = format!(
+                "SELECT m.name, p.name FROM {}.sqlite_schema m JOIN pragma_table_info(m.name, ?1) p \
+                 WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' ORDER BY m.name, p.cid",
+                quote_ident(&db)
+            );
+            let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            let pairs = collect(&mut stmt, [db.as_str()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut out: Vec<(String, Vec<String>)> = Vec::new();
+            for (table, column) in pairs {
+                match out.last_mut() {
+                    Some((t, cols)) if *t == table => cols.push(column),
+                    _ => out.push((table, vec![column])),
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     async fn cancel(&self, _execution_id: &str) -> Result<()> {
         self.interrupt.interrupt();
         Ok(())

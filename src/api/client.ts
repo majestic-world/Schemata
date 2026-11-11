@@ -17,6 +17,7 @@ import type {
   ChangeError,
   ObjectKind,
   TableDesign,
+  HistoryEntry,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -65,6 +66,12 @@ export const api = {
   dropObject: (id: string, db: string, name: string, kind: ObjectKind) => call<void>("drop_object", { id, db, name, kind }),
   truncateTable: (id: string, db: string, name: string) => call<void>("truncate_table", { id, db, name }),
   renameTable: (id: string, db: string, from: string, to: string) => call<void>("rename_table", { id, db, from, to }),
+  fetchMore: (id: string, db: string | null, statement: string, offset: number, limit: number) =>
+    call<Page>("fetch_more", { id, db, statement, offset, limit }),
+  listColumns: (id: string, db: string) => call<[string, string[]][]>("list_columns", { id, db }),
+  listHistory: (id: string) => call<HistoryEntry[]>("list_history", { id }),
+  readTextFile: (path: string) => call<string>("read_text_file", { path }),
+  writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {
     try {

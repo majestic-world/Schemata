@@ -47,6 +47,10 @@ pub trait Driver: Send + Sync {
     async fn list_objects(&self, db: &str) -> Result<Vec<ObjectInfo>>;
     /// Runs a script statement by statement, stopping at the first error. `execution_id` makes it cancelable.
     async fn execute_script(&self, db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult>;
+    /// Rows `offset..offset+limit` of a row-returning statement (for "load more").
+    async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page>;
+    /// Every table and view with its column names, for autocompletion.
+    async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>>;
     /// Cancels the statement currently running under `execution_id`, if any.
     async fn cancel(&self, execution_id: &str) -> Result<()>;
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo>;

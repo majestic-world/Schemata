@@ -234,7 +234,21 @@ impl MySqlDriver {
                 }
             }
         }
+        drop(stream);
         let duration_ms = started.elapsed().as_millis() as u64;
+        if columns.is_none() && returns_rows(sql) {
+            // Empty result sets carry no rows to read column names from; prepare the statement instead.
+            columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql)))
+                .await
+                .ok()
+                .map(|st| {
+                    use sqlx::Statement;
+                    st.columns()
+                        .iter()
+                        .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
+                        .collect()
+                });
+        }
         if columns.is_some() || returns_rows(sql) {
             Ok(StatementOutcome::Rows { statement: sql.to_owned(), columns: columns.unwrap_or_default(), rows, has_more, duration_ms })
         } else {
@@ -320,6 +334,42 @@ impl Driver for MySqlDriver {
             self.running.lock().unwrap().remove(id);
         }
         Ok(ScriptResult { outcomes, error })
+    }
+
+    async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        if let Some(db) = db {
+            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        let rows = sqlx::query(AssertSqlSafe(crate::sql::more_rows(statement)))
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_err)?;
+        let columns = rows.first().map(column_meta).unwrap_or_default();
+        let rows = rows
+            .iter()
+            .map(|r| (0..columns.len()).map(|i| read_value(r, i).map(|v| v.to_cell())).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Page { columns, rows })
+    }
+
+    async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
+        let rows = sqlx::query("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION")
+            .bind(db)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_err)?;
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        for r in &rows {
+            let (table, column) = (text(r, 0)?.unwrap_or_default(), text(r, 1)?.unwrap_or_default());
+            match out.last_mut() {
+                Some((t, cols)) if *t == table => cols.push(column),
+                _ => out.push((table, vec![column])),
+            }
+        }
+        Ok(out)
     }
 
     async fn cancel(&self, execution_id: &str) -> Result<()> {

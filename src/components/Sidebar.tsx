@@ -142,6 +142,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
       ? { label: "Close Connection", onSelect: () => void closeConnection(config.id, qc).then(() => setExpanded(key, false)) }
       : { label: "Open Connection", onSelect: () => void toggle() },
     { label: "Refresh", disabled: !isOpen, onSelect: () => void qc.invalidateQueries({ queryKey: ["databases", config.id] }) },
+    { label: "New Query", disabled: !isOpen, onSelect: () => useTabs.getState().newQuery({ connectionId: config.id, database: config.engine === "sqlite" ? "main" : config.database }) },
     config.engine === "sqlite"
       ? { label: "Attach Database…", disabled: !isOpen, onSelect: () => useDialogs.getState().set({ attachDatabaseFor: config.id }) }
       : { label: "New Database…", disabled: !isOpen, onSelect: () => useDialogs.getState().set({ createDatabaseFor: config.id }) },
@@ -228,6 +229,8 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
     }
   };
   const items: Item[] = [
+    { label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) },
+    { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
     "separator",
     engine === "sqlite"

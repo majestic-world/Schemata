@@ -16,7 +16,19 @@ export type TableTab = {
 /** Designer for a table that does not exist yet. */
 export type NewTableTab = { kind: "newTable"; id: string; connectionId: string; database: string };
 
-export type Tab = TableTab | NewTableTab;
+export type QueryTab = {
+  kind: "query";
+  id: string;
+  connectionId: string;
+  database: string | null;
+  title: string;
+  filePath: string | null;
+  sql: string;
+  /** Text as last saved/opened; differs from `sql` when the tab has unsaved changes. */
+  savedSql: string;
+};
+
+export type Tab = TableTab | NewTableTab | QueryTab;
 
 export const OBJECTS_TAB = "objects";
 
@@ -27,6 +39,8 @@ type TabsState = {
   rowCounts: Record<string, number | undefined>;
   openTable: (t: Omit<TableTab, "kind" | "id" | "view">, view?: TableView) => void;
   newTable: (connectionId: string, database: string) => void;
+  newQuery: (q: { connectionId: string; database: string | null; sql?: string; title?: string; filePath?: string | null }) => void;
+  updateQuery: (id: string, p: Partial<Omit<QueryTab, "kind" | "id">>) => void;
   /** Replaces a tab in place (e.g. a new-table designer by the created table). */
   replace: (id: string, t: Omit<TableTab, "kind" | "id" | "view">, view: TableView) => void;
   close: (id: string) => void;
@@ -55,6 +69,23 @@ export const useTabs = create<TabsState>((set) => ({
       const id = `new:${crypto.randomUUID()}`;
       return { tabs: [...s.tabs, { kind: "newTable", id, connectionId, database }], active: id };
     }),
+  newQuery: (q) =>
+    set((s) => {
+      const id = `query:${crypto.randomUUID()}`;
+      const n = s.tabs.filter((t) => t.kind === "query").length + 1;
+      const tab: QueryTab = {
+        kind: "query",
+        id,
+        connectionId: q.connectionId,
+        database: q.database,
+        title: q.title ?? `Untitled Query ${n}`,
+        filePath: q.filePath ?? null,
+        sql: q.sql ?? "",
+        savedSql: q.filePath ? (q.sql ?? "") : "",
+      };
+      return { tabs: [...s.tabs, tab], active: id };
+    }),
+  updateQuery: (id, p) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id && t.kind === "query" ? { ...t, ...p } : t)) })),
   replace: (id, t, view) =>
     set((s) => {
       const nid = tableTabId(t.connectionId, t.database, t.name);

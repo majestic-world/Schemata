@@ -144,3 +144,5 @@ export type TableDesign = {
   foreignKeys: ForeignKeyDesign[];
   options: TableOptions;
 };
+
+export type HistoryEntry = { connectionId: string; sql: string; ok: boolean; durationMs: number; at: number };

@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { DropdownMenu } from "radix-ui";
-import { X, Table2, Eye, LayoutGrid, PencilRuler, Plus, Trash2, MoreHorizontal } from "lucide-react";
+import { X, Table2, Eye, LayoutGrid, PencilRuler, Plus, Trash2, MoreHorizontal, FileCode2 } from "lucide-react";
+import { QueryEditor } from "./QueryEditor";
 import { ObjectList } from "./ObjectList";
 import { TableTabView } from "./TableTabView";
 import { TableDesigner } from "./TableDesigner";
@@ -10,7 +11,18 @@ import { useConnection } from "../lib/useConnection";
 import { copyCreateStatement, designTable, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 
 function tabLabel(t: Tab) {
-  return t.kind === "table" ? `${t.name}@${t.database}` : `New table@${t.database}`;
+  switch (t.kind) {
+    case "table":
+      return `${t.name}@${t.database}`;
+    case "newTable":
+      return `New table@${t.database}`;
+    case "query":
+      return t.title;
+    default: {
+      const never: never = t;
+      return never;
+    }
+  }
 }
 
 export function Workspace() {
@@ -24,7 +36,7 @@ export function Workspace() {
           <span className="title">Objects</span>
         </div>
         {tabs.map((t) => {
-          const Icon = t.kind === "newTable" ? PencilRuler : t.objectKind === "table" ? Table2 : Eye;
+          const Icon = t.kind === "newTable" ? PencilRuler : t.kind === "query" ? FileCode2 : t.objectKind === "table" ? Table2 : Eye;
           return (
             <div
               key={t.id}
@@ -39,6 +51,7 @@ export function Workspace() {
             >
               <Icon size={14} className="tree-icon obj" />
               <span className="title">{tabLabel(t)}</span>
+              {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
               <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); close(t.id); }}>
                 <X size={13} />
               </button>
@@ -51,6 +64,8 @@ export function Workspace() {
           <ObjectsView />
         ) : activeTab.kind === "table" ? (
           <TableTabView key={activeTab.id} tab={activeTab} />
+        ) : activeTab.kind === "query" ? (
+          <QueryEditor key={activeTab.id} tab={activeTab} />
         ) : (
           <NewTableView key={activeTab.id} tab={activeTab} />
         )}

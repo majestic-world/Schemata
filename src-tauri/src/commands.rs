@@ -1,7 +1,7 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use projectcat_core::{
-    AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
+    AppError, ChangeError, HistoryEntry, QueryHistory, StatementOutcome, ObjectKind, RowChange, TableDesign, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
     PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
 };
 use tauri::State;
@@ -65,9 +65,11 @@ pub async fn list_objects(sessions: State<'_, Sessions>, id: String, db: String)
     sessions.with_driver(&id, |d| { let db = db.clone(); async move { d.list_objects(&db).await } }).await
 }
 
+/// Runs a script and records it in the query history.
 #[tauri::command]
 pub async fn execute_script(
     sessions: State<'_, Sessions>,
+    history: State<'_, QueryHistory>,
     id: String,
     db: Option<String>,
     sql: String,
@@ -75,7 +77,16 @@ pub async fn execute_script(
     execution_id: Option<String>,
 ) -> CmdResult<ScriptResult> {
     let driver = sessions.driver(&id).await?;
-    driver.execute_script(db.as_deref(), &sql, row_limit, execution_id.as_deref()).await
+    let result = driver.execute_script(db.as_deref(), &sql, row_limit, execution_id.as_deref()).await?;
+    let duration = result
+        .outcomes
+        .iter()
+        .map(|o| match o {
+            StatementOutcome::Rows { duration_ms, .. } | StatementOutcome::Affected { duration_ms, .. } => *duration_ms,
+        })
+        .sum();
+    history.record(&id, sql.trim(), result.error.is_none(), duration)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -156,4 +167,29 @@ pub async fn truncate_table(sessions: State<'_, Sessions>, id: String, db: Strin
 #[tauri::command]
 pub async fn rename_table(sessions: State<'_, Sessions>, id: String, db: String, from: String, to: String) -> CmdResult<()> {
     sessions.driver(&id).await?.rename_table(&db, &from, &to).await
+}
+
+#[tauri::command]
+pub async fn fetch_more(sessions: State<'_, Sessions>, id: String, db: Option<String>, statement: String, offset: u64, limit: u64) -> CmdResult<Page> {
+    sessions.driver(&id).await?.fetch_more(db.as_deref(), &statement, offset, limit).await
+}
+
+#[tauri::command]
+pub async fn list_columns(sessions: State<'_, Sessions>, id: String, db: String) -> CmdResult<Vec<(String, Vec<String>)>> {
+    sessions.with_driver(&id, |d| { let db = db.clone(); async move { d.list_columns(&db).await } }).await
+}
+
+#[tauri::command]
+pub fn list_history(history: State<'_, QueryHistory>, id: String) -> Vec<HistoryEntry> {
+    history.list(&id)
+}
+
+#[tauri::command]
+pub async fn read_text_file(path: String) -> CmdResult<String> {
+    Ok(tokio::fs::read_to_string(&path).await?)
+}
+
+#[tauri::command]
+pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
+    Ok(tokio::fs::write(&path, contents).await?)
 }

@@ -3,6 +3,7 @@
 mod design;
 mod driver;
 mod error;
+mod history;
 mod model;
 mod mysql;
 mod secrets;
@@ -16,6 +17,7 @@ mod value;
 pub use design::{ColumnDesign, ForeignKeyDesign, IndexDesign, TableDesign, TableOptions};
 pub use driver::{ConnectParams, Driver, connect};
 pub use error::{AppError, ErrorKind, Result};
+pub use history::{HistoryEntry, QueryHistory};
 pub use model::*;
 pub use secrets::{KeyringSecrets, MemorySecrets, SecretStore};
 pub use sessions::{Sessions, params_for};
