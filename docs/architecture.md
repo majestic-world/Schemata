@@ -44,6 +44,10 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - The window-state plugin does not restore visibility; otherwise a previously visible window would bypass frontend readiness. Size and position are still restored, and startup remains maximized.
 - Connection restoration runs in the background and does not block showing the shell.
 
+## Toolbar icons
+
+- Toolbar actions use filled, shaded 32 px SVG glyphs from `src/components/icons.tsx`, sharing the `Grad` helper. Settings follows the same style with a metallic gear and blue center; outline-only icons are reserved for compact controls.
+
 ## Persistence
 
 - Connection definitions: JSON in the app-config directory, never containing passwords.

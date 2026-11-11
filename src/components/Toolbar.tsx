@@ -1,4 +1,4 @@
-import { Search, PanelRight, Settings } from "lucide-react";
+import { Search, PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { useLayout } from "../store/layout";
@@ -7,7 +7,7 @@ import { useWorkspace } from "../store/workspace";
 import { useTabs } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
 import { MOD } from "../lib/platform";
-import { BackupIcon, ConnectionIcon, ExportIcon, ImportIcon, NewQueryIcon, TableIcon, ViewIcon } from "./icons";
+import { BackupIcon, ConnectionIcon, ExportIcon, ImportIcon, NewQueryIcon, SettingsIcon, TableIcon, ViewIcon } from "./icons";
 import { SettingsDialog } from "./SettingsDialog";
 
 function ToolButton(props: { icon: ReactNode; label: string; title?: string; disabled?: boolean; onClick: () => void }) {
@@ -79,7 +79,7 @@ export function Toolbar() {
         disabled={!db || !object}
         onClick={() => selection && db && object && openTransfer({ kind: "export", connectionId: selection.connectionId, database: db, source: { kind: "table", table: object.name }, label: object.name })}
       />
-      <ToolButton icon={<Settings size={32} strokeWidth={1.6} />} label="Settings" title="Settings" onClick={() => setSettingsOpen(true)} />
+      <ToolButton icon={<SettingsIcon />} label="Settings" title="Settings" onClick={() => setSettingsOpen(true)} />
       <div className="toolbar-spacer" />
       <label className="search">
         <Search size={14} />
