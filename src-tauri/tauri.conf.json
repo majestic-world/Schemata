@@ -18,6 +18,7 @@
         "minWidth": 960,
         "minHeight": 600,
         "maximized": true,
+        "visible": false,
         "theme": "Light",
         "backgroundColor": "#f9fafb"
       }

@@ -38,6 +38,12 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Backups are plain `.sql` files compatible with the engine's own CLI tools. MySQL/MariaDB: foreign-key checks off during load, batched multi-row INSERTs, views after tables, triggers last. SQLite: schema SQL from `sqlite_schema` plus INSERTs in one transaction.
 
+## Startup visibility
+
+- The main window starts hidden. React reveals it after mounting the shell, loading fonts and allowing a render frame, without a fixed startup delay.
+- The window-state plugin does not restore visibility; otherwise a previously visible window would bypass frontend readiness. Size and position are still restored, and startup remains maximized.
+- Connection restoration runs in the background and does not block showing the shell.
+
 ## Persistence
 
 - Connection definitions: JSON in the app-config directory, never containing passwords.

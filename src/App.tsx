@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useTabs } from "./store/tabs";
 import { useWorkspace } from "./store/workspace";
@@ -30,6 +31,22 @@ export function App() {
 
   const qc = useQueryClient();
   const activeTab = useTabs((s) => s.active);
+
+  useEffect(() => {
+    let disposed = false;
+    let frame: number | undefined;
+    // Wait for the committed shell, fonts and a rendered frame, not remote connections.
+    void document.fonts.ready.then(() => {
+      if (disposed) return;
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => void getCurrentWindow().show());
+      });
+    });
+    return () => {
+      disposed = true;
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   // Sessions outlive a webview reload; resync which connections are open. On a fresh start, reopen the
   // connections that were open at exit (silently: one that needs a password simply stays closed).

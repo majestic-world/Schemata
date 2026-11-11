@@ -4,6 +4,7 @@ mod window_chrome;
 use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
 use std::path::Path;
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 
 /// App identifier used while the app was called ProjectCat.
 const LEGACY_IDENTIFIER: &str = "dev.projectcat.app";
@@ -23,7 +24,8 @@ fn adopt_legacy_file(path: &Path) -> std::io::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // The frontend owns initial visibility; restoring it would reveal an unfinished webview.
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::all() & !StateFlags::VISIBLE).build())
         .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
             let connections = app.path().app_config_dir()?.join("connections.json");
