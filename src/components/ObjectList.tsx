@@ -8,6 +8,8 @@ import { useWorkspace } from "../store/workspace";
 import { formatCount, orDash } from "../lib/format";
 import { useRefreshShortcut } from "../lib/refreshShortcut";
 import { ObjectContextMenu } from "./ObjectContextMenu";
+import { isMod } from "../lib/platform";
+import { dropObjects } from "../lib/objectActions";
 
 type SortKey = "name" | "rows" | "modified" | "comment";
 
@@ -38,6 +40,9 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   const qc = useQueryClient();
   const selection = useWorkspace((s) => s.selection);
   const select = useWorkspace((s) => s.select);
+  const selectedObjects = useWorkspace((s) => s.selectedObjects);
+  const selectObjects = useWorkspace((s) => s.selectObjects);
+  const selectedNames = useMemo(() => new Set(selectedObjects.map((object) => object.name)), [selectedObjects]);
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
   const tableRef = useRef<HTMLTableElement>(null);
@@ -79,6 +84,12 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
     const list = (objects.data ?? []).filter((o) => !search || o.name.toLowerCase().includes(search));
     return [...list].sort((a, b) => compare(a, b, sort.key, sort.desc));
   }, [objects.data, sort, search]);
+  useEffect(() => {
+    if (!connectionId || !database || !objects.isSuccess || selectedObjects.length === 0) return;
+    const visibleNames = new Set(rows.map((object) => object.name));
+    const kept = selectedObjects.filter((object) => visibleNames.has(object.name));
+    if (kept.length !== selectedObjects.length) selectObjects({ connectionId, database, objects: kept });
+  }, [connectionId, database, objects.isSuccess, rows, selectedObjects, selectObjects]);
 
   if (!connectionId || !database) {
     return (
@@ -112,7 +123,16 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
         </button>
       </div>
-      <div className="table-scroll object-list" tabIndex={-1} aria-busy={objects.isFetching} onClick={(e) => {
+      <div className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
+        if (e.defaultPrevented || !e.currentTarget.contains(e.target as Node) || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"]'))) return;
+        if (isMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+          e.preventDefault();
+          selectObjects({ connectionId, database, objects: rows.map(({ name, kind }) => ({ name, kind })) });
+        } else if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length > 0) {
+          e.preventDefault();
+          if (!e.repeat) void dropObjects({ connectionId, database }, selectedObjects, qc);
+        }
+      }} onClick={(e) => {
         if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
           select({ connectionId, database });
         }
@@ -128,13 +148,21 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           </thead>
           <tbody>
             {rows.map((o) => {
-              const selected = selection?.object?.name === o.name;
+              const selected = selectedNames.has(o.name);
               const Icon = o.kind === "table" ? TableIcon : ViewIcon;
               return (
                 <ObjectContextMenu key={o.name} object={{ connectionId, database, name: o.name, kind: o.kind }}>
                   <tr
                     className={selected ? "selected" : undefined}
-                    onClick={() => select({ connectionId, database, object: { name: o.name, kind: o.kind } })}
+                    aria-selected={selected}
+                    onClick={(e) => {
+                      if (isMod(e)) {
+                        const next = selected
+                          ? selectedObjects.filter((object) => object.name !== o.name)
+                          : [...selectedObjects, { name: o.name, kind: o.kind }];
+                        selectObjects({ connectionId, database, objects: next });
+                      } else select({ connectionId, database, object: { name: o.name, kind: o.kind } });
+                    }}
                     onDoubleClick={() => onOpen(o)}
                     data-object={o.name}
                   >

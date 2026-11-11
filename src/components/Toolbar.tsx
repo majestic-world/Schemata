@@ -23,7 +23,7 @@ export function Toolbar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { inspectorOpen, toggleInspector } = useLayout();
   const showDialog = useConnections((s) => s.showDialog);
-  const { search, setSearch, selection } = useWorkspace();
+  const { search, setSearch, selection, selectedObjects } = useWorkspace();
   const db = selection?.database;
   const object = selection?.object;
   return (
@@ -65,7 +65,7 @@ export function Toolbar() {
         icon={<ImportIcon />}
         label="Import"
         title={object?.kind === "table" ? "Import a CSV file into the selected table" : "Run a SQL file on the selected database"}
-        disabled={!db}
+        disabled={!db || selectedObjects.length > 1}
         onClick={() =>
           selection && db && (object?.kind === "table"
             ? openTransfer({ kind: "import", connectionId: selection.connectionId, database: db, table: object.name })
@@ -76,7 +76,7 @@ export function Toolbar() {
         icon={<ExportIcon />}
         label="Export"
         title="Export the selected table or view"
-        disabled={!db || !object}
+        disabled={!db || !object || selectedObjects.length > 1}
         onClick={() => selection && db && object && openTransfer({ kind: "export", connectionId: selection.connectionId, database: db, source: { kind: "table", table: object.name }, label: object.name })}
       />
       <ToolButton icon={<SettingsIcon />} label="Settings" title="Settings" onClick={() => setSettingsOpen(true)} />

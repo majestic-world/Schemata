@@ -10,7 +10,7 @@ import { TableDesigner } from "./TableDesigner";
 import { OBJECTS_TAB, useTabs, type NewTableTab, type Tab } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
 import { useConnection } from "../lib/useConnection";
-import { copyCreateStatement, designTable, dropObject, renameTable, truncateTable } from "../lib/objectActions";
+import { copyCreateStatement, designTable, dropObjects, renameTable, truncateTable } from "../lib/objectActions";
 import { openTransfer } from "../store/transfer";
 import { requestCloseTabs } from "../lib/tabActions";
 
@@ -118,6 +118,8 @@ function NewTableView({ tab }: { tab: NewTableTab }) {
 function ObjectsView() {
   const qc = useQueryClient();
   const selection = useWorkspace((s) => s.selection);
+  const selectedObjects = useWorkspace((s) => s.selectedObjects);
+  const multiple = selectedObjects.length > 1;
   const { openTable, newTable } = useTabs();
   const obj = selection?.object;
   const ref = selection?.database && obj ? { connectionId: selection.connectionId, database: selection.database, name: obj.name, kind: obj.kind } : null;
@@ -127,15 +129,15 @@ function ObjectsView() {
       onOpen={(o) => selection?.database && openTable({ connectionId: selection.connectionId, database: selection.database, name: o.name, objectKind: o.kind })}
       actions={
         <>
-          <button className="obj-btn" disabled={!ref} onClick={() => ref && openTable({ connectionId: ref.connectionId, database: ref.database, name: ref.name, objectKind: ref.kind })}>
+          <button className="obj-btn" disabled={!ref || multiple} onClick={() => ref && openTable({ connectionId: ref.connectionId, database: ref.database, name: ref.name, objectKind: ref.kind })}>
             <ExternalLink size={15} className="ob-open" />Open {obj?.kind === "view" ? "View" : "Table"}
           </button>
-          <button className="obj-btn" disabled={!ref || !isTable} onClick={() => ref && designTable(ref)}><PencilRuler size={15} className="ob-design" />Design Table</button>
+          <button className="obj-btn" disabled={!ref || !isTable || multiple} onClick={() => ref && designTable(ref)}><PencilRuler size={15} className="ob-design" />Design Table</button>
           <button className="obj-btn" disabled={!selection?.database} onClick={() => selection?.database && newTable(selection.connectionId, selection.database)}><Plus size={15} className="ob-new" />New Table</button>
-          <button className="obj-btn" disabled={!ref} onClick={() => ref && void dropObject(ref, qc)}><Trash2 size={15} className="ob-delete" />Delete {obj?.kind === "view" ? "View" : "Table"}</button>
+          <button className="obj-btn" disabled={!selection?.database || selectedObjects.length === 0} onClick={() => selection?.database && void dropObjects({ connectionId: selection.connectionId, database: selection.database }, selectedObjects, qc)}><Trash2 size={15} className="ob-delete" />{multiple ? `Delete ${selectedObjects.length} Objects` : `Delete ${obj?.kind === "view" ? "View" : "Table"}`}</button>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <button className="obj-btn" aria-label="More actions" disabled={!ref}><MoreHorizontal size={16} /></button>
+              <button className="obj-btn" aria-label="More actions" disabled={!ref || multiple}><MoreHorizontal size={16} /></button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="menu" align="start">

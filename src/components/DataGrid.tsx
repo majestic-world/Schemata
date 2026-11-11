@@ -195,6 +195,12 @@ export function DataGrid({ tab }: { tab: TableTab }) {
       setCommitting(false);
     }
   };
+  const removeRows = (selected: readonly number[]) => {
+    if (readOnly || committing || page.isPlaceholderData || selected.length === 0) return;
+    const refs = selected.filter((row) => row >= 0 && row < rows.length).map(refOf);
+    setPending((current) => deleteRows(current, refs));
+    setEditing(null);
+  };
 
   const sameRef = (a: RowRef | null, b: RowRef) => !!a && a.kind === b.kind && a.index === b.index;
 
@@ -216,7 +222,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
             <button className="obj-btn" onClick={() => appendRow(columns.find((c) => !c.hidden)?.name ?? "")}>
               <Plus size={15} className="ob-new" />Add Row
             </button>
-            <button className="obj-btn" disabled={selection.rows.length === 0} onClick={() => { setPending((p) => deleteRows(p, selection.rows.map(refOf))); setEditing(null); }}>
+            <button className="obj-btn" disabled={selection.rows.length === 0 || committing || page.isPlaceholderData} onClick={() => removeRows(selection.rows)}>
               <Trash2 size={15} className="ob-delete" />Delete
             </button>
             <button className="obj-btn" disabled={selection.rows.length === 0} title="Set selected cells to NULL" onClick={() => selection.rows.forEach((r) => selection.columns.forEach((c) => write(r, c, { type: "null" })))}>
@@ -286,6 +292,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           onSort={toggleSort}
           resetKey={data}
           onSelectionChange={setSelection}
+          onDeleteRows={readOnly || committing || page.isPlaceholderData ? undefined : removeRows}
           emptyText={page.isSuccess ? `No rows${filters.length ? " match the filter" : ""}.` : undefined}
           cellValue={(r, column, orig) => cellValue(pending, refOf(r), column, r < saved ? orig : undefined)}
           rowClass={(r) => {

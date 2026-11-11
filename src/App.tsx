@@ -80,7 +80,7 @@ export function App() {
       if (e.key === "F6" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         if (
           e.defaultPrevented || e.repeat ||
-          useTabs.getState().active !== OBJECTS_TAB ||
+          useTabs.getState().active !== OBJECTS_TAB || useWorkspace.getState().selectedObjects.length !== 1 ||
           document.querySelector('[role="dialog"], [role="menu"]') ||
           (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable="true"]'))
         ) return;
@@ -111,7 +111,7 @@ export function App() {
         if (tab?.kind === "table") {
           e.preventDefault();
           tabs.setView(tab.id, "structure");
-        } else if (!tab && sel?.database && sel.object?.kind === "table") {
+        } else if (!tab && sel?.database && sel.object?.kind === "table" && useWorkspace.getState().selectedObjects.length === 1) {
           e.preventDefault();
           designTable({ connectionId: sel.connectionId, database: sel.database, name: sel.object.name, kind: "table" });
         }
@@ -124,7 +124,7 @@ export function App() {
       ) {
         // Navicat-style: copy a table in the tree or object list, paste it into another database.
         const sel = useWorkspace.getState().selection;
-        if (key === "c" && sel?.database && sel.object?.kind === "table") {
+        if (key === "c" && sel?.database && sel.object?.kind === "table" && useWorkspace.getState().selectedObjects.length === 1) {
           e.preventDefault();
           copyTable({ connectionId: sel.connectionId, database: sel.database, name: sel.object.name });
         } else if (key === "v" && sel?.database) {

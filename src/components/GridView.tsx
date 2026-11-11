@@ -35,6 +35,8 @@ type Props = {
    */
   onAppendRow?: (column?: string) => void;
   onSelectionChange?: (s: GridSelection) => void;
+  /** Stages deletion of the selected loaded rows; omitted for read-only grids. */
+  onDeleteRows?: (rows: number[]) => void;
   /** Changes when the underlying data is replaced, clearing the selection and scroll. */
   resetKey?: unknown;
   emptyText?: string;
@@ -106,7 +108,7 @@ export function GridView(props: Props) {
   const copy = async () => {
     if (!rect) return;
     const out: CellValue[][] = [];
-    for (let r = rect.r0; r <= rect.r1; r++) {
+    for (let r = rect.r0; r <= Math.min(rect.r1, rows.length - 1); r++) {
       const line: CellValue[] = [];
       for (let c = rect.c0; c <= rect.c1; c++) line.push(valueAt(r, c));
       out.push(line);
@@ -173,9 +175,27 @@ export function GridView(props: Props) {
           requestAnimationFrame(() => !scrollRef.current?.contains(document.activeElement) && scrollRef.current?.focus({ preventScroll: true }));
           return;
         }
-        if (e.target instanceof HTMLInputElement) {
+        if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) {
           // Closing the cell editor removes the focused input; give focus back so navigation continues.
           if (e.key === "Enter" || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+          e.preventDefault();
+          if (rows.length > 0 && visible.length > 0) {
+            setAnchor({ r: 0, c: 0 });
+            setFocus({ r: rows.length - 1, c: visible.length - 1 });
+          }
+          return;
+        }
+        if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && props.onDeleteRows && rect) {
+          e.preventDefault();
+          if (e.repeat) return;
+          const selected: number[] = [];
+          for (let r = rect.r0; r <= Math.min(rect.r1, rows.length - 1); r++) selected.push(r);
+          props.onDeleteRows(selected);
+          setAnchor(null);
+          setFocus(null);
           return;
         }
         if (e.key === "Enter" && focus && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {

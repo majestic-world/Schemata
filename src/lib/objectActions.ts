@@ -5,6 +5,7 @@ import { confirmAction, promptAction } from "../store/confirm";
 import { closeTabsFor, useTabs } from "../store/tabs";
 import { notify, notifyError } from "../store/toasts";
 import { useWorkspace } from "../store/workspace";
+import { plural } from "./format";
 
 export type ObjectRef = { connectionId: string; database: string; name: string; kind: ObjectKind };
 
@@ -15,23 +16,37 @@ function refreshObjects(qc: QueryClient, o: { connectionId: string; database: st
   void qc.invalidateQueries({ queryKey: ["count", o.connectionId, o.database] });
 }
 
-export async function dropObject(o: ObjectRef, qc: QueryClient) {
-  const what = o.kind === "view" ? "view" : "table";
+export async function dropObjects(scope: Pick<ObjectRef, "connectionId" | "database">, objects: readonly Pick<ObjectRef, "name" | "kind">[], qc: QueryClient) {
+  if (objects.length === 0) return;
+  const noun = objects.every((o) => o.kind === "table") ? "table" : objects.every((o) => o.kind === "view") ? "view" : "object";
+  const what = objects.length === 1 ? noun : plural(objects.length, noun);
   const ok = await confirmAction({
     title: `Delete ${what}`,
-    message: `Delete the ${what} "${o.name}"${o.kind === "table" ? " and all of its data" : ""}? This cannot be undone.`,
+    message: `Delete ${objects.length === 1 ? `the ${noun}` : what} ${objects.map((o) => `"${o.name}"`).join(", ")}${objects.some((o) => o.kind === "table") ? " and all contained data" : ""}? This cannot be undone.`,
     confirmLabel: `Delete ${what}`,
     danger: true,
   });
   if (!ok) return;
+
+  let deleted = 0;
   try {
-    await api.dropObject(o.connectionId, o.database, o.name, o.kind);
-    closeTabsFor(o.connectionId, o.database, o.name);
-    useWorkspace.getState().select({ connectionId: o.connectionId, database: o.database });
-    refreshObjects(qc, o);
-    notify(`Deleted ${what}`, o.name);
-  } catch (e) {
-    notifyError(`Could not delete ${o.name}`, e);
+    for (const object of objects) {
+      await api.dropObject(scope.connectionId, scope.database, object.name, object.kind);
+      closeTabsFor(scope.connectionId, scope.database, object.name);
+      deleted++;
+    }
+    notify(`Deleted ${what}`, objects.map((o) => o.name).join(", "));
+  } catch (error) {
+    notifyError(`Could not delete ${objects[deleted].name}`, error);
+    if (deleted > 0) notify(`Deleted ${deleted} of ${plural(objects.length, noun)}`);
+  } finally {
+    if (deleted > 0) {
+      const workspace = useWorkspace.getState();
+      if (workspace.selection?.connectionId === scope.connectionId && workspace.selection.database === scope.database) {
+        workspace.selectObjects({ ...scope, objects: objects.slice(deleted) });
+      }
+      refreshObjects(qc, scope);
+    }
   }
 }
 
