@@ -51,7 +51,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 ## Workspace interactions
 
-- The webview's default context menu is suppressed without stopping event propagation; app-owned Radix context menus remain available.
+- On Windows, startup disables WebView2's default context menus with `SetAreDefaultContextMenusEnabled(false)` for the entire webview, independently of DOM event propagation. The frontend context-menu listener remains a fallback for other platforms. Browser-owned menus are disabled; app-owned Radix menus still receive DOM events.
 - Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
 - Single and grouped tab closures share `requestCloseTabs`. Unsaved SQL or pending grid edits require one confirmation before any targeted tab closes; cancelling leaves the entire group open.
 - Clicking empty space or a header in the object list clears the selected object while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selected object.

@@ -36,6 +36,17 @@ pub fn run() {
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                window.with_webview(|webview| {
+                    // SAFETY: Tauri runs this callback on the UI thread with a live WebView2 controller.
+                    // This disables only browser-owned menus; DOM contextmenu events still reach Radix.
+                    unsafe {
+                        webview.controller().CoreWebView2()
+                            .and_then(|core| core.Settings())
+                            .and_then(|settings| settings.SetAreDefaultContextMenusEnabled(false))
+                    }
+                    .expect("Failed to disable the WebView2 default context menu");
+                })?;
                 window_chrome::apply(&window)?;
                 // Window-state restores the last size first; always start maximized on top of it so un-maximizing
                 // still returns to the remembered size.
