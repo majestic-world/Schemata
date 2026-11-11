@@ -79,6 +79,7 @@ function Row(props: {
       role="treeitem"
       data-node={props.nodeKey}
       aria-expanded={props.expandable ? !!props.expanded : undefined}
+      aria-selected={!!props.selected}
       style={{ paddingLeft: 6 + props.depth * 16 }}
       onClick={() => (props.onClick ? props.onClick() : props.onToggle?.())}
       onDoubleClick={props.onDoubleClick}

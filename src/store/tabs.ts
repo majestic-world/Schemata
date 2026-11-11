@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ObjectKind } from "../api/types";
 import { useGridStates } from "./gridState";
 import { useDesignerDrafts } from "./designerDrafts";
+import { useWorkspace } from "./workspace";
 
 export type TableView = "data" | "structure" | "info";
 
@@ -53,6 +54,16 @@ type TabsState = {
 
 export const tableTabId = (connectionId: string, database: string, name: string) => `table:${connectionId}/${database}/${name}`;
 
+/** Table-tab activation updates the tree, inspector and object actions to the same object. */
+function selectTable(tab: Tab | undefined) {
+  if (tab?.kind !== "table") return;
+  useWorkspace.getState().select({
+    connectionId: tab.connectionId,
+    database: tab.database,
+    object: { name: tab.name, kind: tab.objectKind },
+  });
+}
+
 export const useTabs = create<TabsState>((set) => ({
   tabs: [],
   active: OBJECTS_TAB,
@@ -64,6 +75,7 @@ export const useTabs = create<TabsState>((set) => ({
       const tabs = existing
         ? s.tabs.map((x) => (x.id === id ? { ...x, view } : x))
         : [...s.tabs, { ...t, kind: "table" as const, id, view }];
+      selectTable(tabs.find((tab) => tab.id === id));
       return { tabs, active: id };
     }),
   newTable: (connectionId, database) =>
@@ -94,6 +106,7 @@ export const useTabs = create<TabsState>((set) => ({
       useGridStates.getState().forget(id);
       const nid = tableTabId(t.connectionId, t.database, t.name);
       const tab: TableTab = { ...t, kind: "table", id: nid, view };
+      selectTable(tab);
       return { tabs: s.tabs.filter((x) => x.id !== nid).map((x) => (x.id === id ? tab : x)), active: nid };
     }),
   close: (id) =>
@@ -103,11 +116,15 @@ export const useTabs = create<TabsState>((set) => ({
       const idx = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
       const active = s.active !== id ? s.active : (tabs[idx] ?? tabs[idx - 1])?.id ?? OBJECTS_TAB;
+      if (s.active === id) selectTable(tabs.find((tab) => tab.id === active));
       const rowCounts = { ...s.rowCounts };
       delete rowCounts[id];
       return { tabs, active, rowCounts };
     }),
-  activate: (active) => set({ active }),
+  activate: (active) => set((s) => {
+    selectTable(s.tabs.find((tab) => tab.id === active));
+    return { active };
+  }),
   setView: (id, view) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id && t.kind === "table" ? { ...t, view } : t)) })),
   setRowCount: (id, n) => set((s) => ({ rowCounts: { ...s.rowCounts, [id]: n } })),
 }));

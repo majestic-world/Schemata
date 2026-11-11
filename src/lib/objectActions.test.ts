@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { useConfirm } from "../store/confirm";
-import { useTabs } from "../store/tabs";
+import { OBJECTS_TAB, useTabs } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
 import { dropObjects, renameTable } from "./objectActions";
 import { useDesignerDrafts } from "../store/designerDrafts";
@@ -52,6 +52,8 @@ describe("deleting selected database objects", () => {
   it("cancelling preserves all tabs and the entire selection without deleting anything", async () => {
     const remove = vi.spyOn(api, "dropObject").mockResolvedValue(undefined);
     const tabs = objects.map((object) => open(object.name));
+    useTabs.getState().activate(OBJECTS_TAB);
+    useWorkspace.getState().selectObjects({ ...scope, objects });
     const operation = dropObjects(scope, objects, client);
     useConfirm.getState().settle(null);
     await operation;

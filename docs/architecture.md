@@ -72,6 +72,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
 - Single and grouped tab closures share `requestCloseTabs`. Unsaved SQL or pending grid edits require one confirmation before any targeted tab closes; cancelling leaves the entire group open.
 - Table-designer drafts survive tab and view switches and participate in the same discard confirmation. Native window closure (including Alt+F4) also checks unsaved work and active operations.
+- Opening or activating a table/view tab selects that exact connection, database and object in the schema tree and inspector. Closing the active tab selects its surviving table tab; closing a background tab or returning to Objects does not overwrite a separate browsing selection. Tree rows expose the same state through `aria-selected`.
 - Query results retain the connection/database context of execution for continuation and export; changing the editor's database does not change existing results.
 - Changing a saved connection's target requires disconnecting first, including while its initial connection is being established.
 - Clicking empty space or a header in the object list clears all selected objects while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selection.
