@@ -7,7 +7,9 @@ use crate::{
 use sqlx::MySql;
 use sqlx::mysql::MySqlArguments;
 use sqlx::query::Query;
+use crate::transfer::{ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use futures::TryStreamExt;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::{AssertSqlSafe, Column, Either, Row, TypeInfo, ValueRef};
@@ -334,6 +336,145 @@ impl Driver for MySqlDriver {
             self.running.lock().unwrap().remove(id);
         }
         Ok(ScriptResult { outcomes, error })
+    }
+
+    async fn stream_query(&self, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        if let Some(db) = db {
+            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        let sql = sql.to_owned();
+        tokio::spawn(async move {
+            let result: Result<()> = async {
+                let mut stream = sqlx::raw_sql(AssertSqlSafe(sql.clone())).fetch(&mut *conn);
+                let Some(first) = stream.try_next().await.map_err(map_err)? else {
+                    drop(stream);
+                    let columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql.as_str())))
+                        .await
+                        .map(|st| {
+                            use sqlx::Statement;
+                            st.columns().iter().map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false }).collect()
+                        })
+                        .unwrap_or_default();
+                    let _ = tx.send(Ok(StreamItem::Columns(columns))).await;
+                    return Ok(());
+                };
+                let columns = column_meta(&first);
+                let n = columns.len();
+                if tx.send(Ok(StreamItem::Columns(columns))).await.is_err() {
+                    return Ok(());
+                }
+                let read = |r: &MySqlRow| (0..n).map(|i| read_value(r, i)).collect::<Result<Vec<_>>>();
+                let mut buf = vec![read(&first)?];
+                while let Some(row) = stream.try_next().await.map_err(map_err)? {
+                    buf.push(read(&row)?);
+                    if buf.len() == batch && tx.send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                if !buf.is_empty() {
+                    let _ = tx.send(Ok(StreamItem::Rows(buf))).await;
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                let _ = tx.send(Err(e)).await;
+            }
+        });
+        Ok(rx)
+    }
+
+    async fn import_rows(
+        &self,
+        db: &str,
+        table: &str,
+        columns: &[String],
+        mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
+        skip_errors: bool,
+    ) -> Result<ImportReport> {
+        let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        let one = format!("({})", vec!["?"; columns.len()].join(", "));
+        let prefix = format!("INSERT INTO {}.{} ({cols}) VALUES ", quote_ident(db), quote_ident(table));
+        // MySQL allows at most 65,535 placeholders per statement.
+        let per_statement = (60_000 / columns.len().max(1)).max(1);
+        let mut tx = self.pool.begin().await.map_err(map_err)?;
+        let mut report = ImportReport::default();
+        while let Some(batch) = rows.recv().await {
+            let batch = batch?;
+            for chunk in batch.chunks(per_statement) {
+                let sql = format!("{prefix}{}", vec![one.as_str(); chunk.len()].join(", "));
+                let mut q = sqlx::query(AssertSqlSafe(sql));
+                for (_, values) in chunk {
+                    for v in values.iter().cloned() {
+                        q = bind(q, v);
+                    }
+                }
+                if q.execute(&mut *tx).await.is_ok() {
+                    report.inserted += chunk.len() as u64;
+                    continue;
+                }
+                // Find the failing rows one by one (a failed statement leaves the transaction usable).
+                for (line, values) in chunk {
+                    let mut q = sqlx::query(AssertSqlSafe(format!("{prefix}{one}")));
+                    for v in values.iter().cloned() {
+                        q = bind(q, v);
+                    }
+                    match q.execute(&mut *tx).await {
+                        Ok(_) => report.inserted += 1,
+                        Err(e) => {
+                            report.failed_count += 1;
+                            if report.failed.len() < MAX_REPORTED_FAILURES {
+                                report.failed.push(RowFailure { line: *line, message: map_err(e).message });
+                            }
+                            if !skip_errors {
+                                tx.rollback().await.map_err(map_err)?;
+                                report.inserted = 0;
+                                return Ok(report);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tx.commit().await.map_err(map_err)?;
+        Ok(report)
+    }
+
+    async fn execute_statements(
+        &self,
+        db: Option<&str>,
+        statements: Vec<String>,
+        stop_on_error: bool,
+        progress: ProgressFn,
+        cancel: CancellationToken,
+    ) -> Result<ScriptRunReport> {
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        if let Some(db) = db {
+            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        let total = Some(statements.len() as u64);
+        let mut report = ScriptRunReport::default();
+        for (index, st) in statements.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(AppError::cancelled());
+            }
+            match sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn).await {
+                Ok(_) => report.executed += 1,
+                Err(e) => {
+                    report.failed.push(crate::transfer::failure(index, st, map_err(e).message));
+                    if stop_on_error {
+                        break;
+                    }
+                }
+            }
+            if index % 25 == 0 {
+                progress(Progress { done: index as u64 + 1, total });
+            }
+        }
+        progress(Progress { done: statements.len() as u64, total });
+        Ok(report)
     }
 
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {

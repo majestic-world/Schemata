@@ -146,3 +146,16 @@ export type TableDesign = {
 };
 
 export type HistoryEntry = { connectionId: string; sql: string; ok: boolean; durationMs: number; at: number };
+
+export type TextEncoding = "utf8" | "utf8Bom" | "windows1252";
+export type CsvOptions = { delimiter: string; quote: string; header: boolean; encoding: TextEncoding; nullText: string };
+export type SqlExportOptions = { includeCreate: boolean; tableName: string | null };
+export type ExportFormat = { format: "csv"; options: CsvOptions } | { format: "json" } | { format: "sql"; options: SqlExportOptions };
+export type ExportSource = { kind: "table"; table: string } | { kind: "query"; sql: string };
+export type CsvReadOptions = { delimiter: string; quote: string; hasHeader: boolean; encoding: TextEncoding };
+export type CsvPreview = { headers: string[]; rows: string[][] };
+export type ColumnMapping = { source: number; target: string };
+export type CsvImport = { options: CsvReadOptions; mapping: ColumnMapping[]; emptyAsNull: boolean; skipErrors: boolean };
+export type ImportReport = { inserted: number; failed: { line: number; message: string }[]; failedCount: number };
+export type ScriptRunReport = { executed: number; failed: { index: number; statement: string; message: string }[] };
+export type OperationProgress = { operationId: string; done: number; total: number | null };

@@ -6,11 +6,16 @@
 
 **Bloqueado por:** 05
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] Script com várias instruções gera um resultado por instrução
-- [ ] Cancelamento interrompe consulta longa nos 3 engines
-- [ ] Histórico e arquivos .sql funcionam
+- [x] Script com várias instruções gera um resultado por instrução
+- [x] Cancelamento interrompe consulta longa nos 3 engines
+- [x] Histórico e arquivos .sql funcionam
 
 ## Evidências de implementação
+
+- Commit `365d171`
+- `cargo test --test scripts`: 17 passed (divisão com aspas/comentários/escapes/DELIMITER/triggers, resultado por instrução com linhas afetadas e colunas de resultado vazio, parada no primeiro erro, load more, cancelamento nos 3 engines, colunas para autocomplete, histórico persistido)
+- UI via CDP: script com 5 instruções → Summary com linhas retornadas/afetadas e erro do servidor na 4ª, abas Result 1/2; 1.000 linhas + 'Load 1000 more' → 2.000; Stop interrompe SLEEP(20) em 0,1 s; autocomplete sugere tabela; painel de histórico; marcador de alterações não salvas
+- Não exercitado via CDP: diálogos nativos de abrir/salvar .sql (comandos de leitura/escrita são wrappers diretos de `tokio::fs`)

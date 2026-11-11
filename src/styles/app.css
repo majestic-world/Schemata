@@ -301,3 +301,16 @@ select.cell-input { padding: 0 4px; }
 .history-item code { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; max-height: 64px; overflow: hidden; }
 .history-meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
 .pad { padding: 8px; }
+
+.progress-view { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; color: var(--text-muted); }
+.progress-bar { height: 8px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+.progress-bar > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+.progress-bar > div.indeterminate { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.outcome-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.outcome-text span, .outcome-text code { color: var(--text); font-weight: 400; overflow-wrap: anywhere; }
+.mapping { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.mapping th { height: auto; padding: 6px 8px; cursor: default; vertical-align: top; }
+.map-head { display: flex; flex-direction: column; gap: 4px; }
+.map-head .input { margin-left: 0; }
+.mapping td { height: 28px; font-size: var(--fs-sm); max-width: 200px; }

@@ -18,6 +18,13 @@ import type {
   ObjectKind,
   TableDesign,
   HistoryEntry,
+  ExportSource,
+  ExportFormat,
+  CsvReadOptions,
+  CsvPreview,
+  CsvImport,
+  ImportReport,
+  ScriptRunReport,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -72,6 +79,14 @@ export const api = {
   listHistory: (id: string) => call<HistoryEntry[]>("list_history", { id }),
   readTextFile: (path: string) => call<string>("read_text_file", { path }),
   writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),
+  exportData: (id: string, db: string, source: ExportSource, format: ExportFormat, path: string, operationId: string) =>
+    call<{ rows: number }>("export_data", { id, db, source, format, path, operationId }),
+  previewCsv: (path: string, options: CsvReadOptions) => call<CsvPreview>("preview_csv", { path, options }),
+  importCsv: (id: string, db: string, table: string, path: string, spec: CsvImport, operationId: string) =>
+    call<ImportReport>("import_csv", { id, db, table, path, spec, operationId }),
+  runSqlFile: (id: string, db: string, path: string, stopOnError: boolean, operationId: string) =>
+    call<ScriptRunReport>("run_sql_file", { id, db, path, stopOnError, operationId }),
+  cancelOperation: (operationId: string) => call<void>("cancel_operation", { operationId }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {
     try {

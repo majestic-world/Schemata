@@ -1,3 +1,5 @@
+use crate::transfer::{ImportBatch, ImportReport, ProgressFn, RowStream, ScriptRunReport};
+use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
     TableInfo,
@@ -51,6 +53,27 @@ pub trait Driver: Send + Sync {
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page>;
     /// Every table and view with its column names, for autocompletion.
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>>;
+    /// Streams the rows of a statement in batches; the first item is the column list.
+    async fn stream_query(&self, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream>;
+    /// Inserts rows from `rows` in one transaction. Without `skip_errors`, the first failing row rolls back
+    /// everything and is reported; an `Err` item on the channel (e.g. cancellation) rolls back and is returned.
+    async fn import_rows(
+        &self,
+        db: &str,
+        table: &str,
+        columns: &[String],
+        rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
+        skip_errors: bool,
+    ) -> Result<ImportReport>;
+    /// Runs statements one by one on a single session.
+    async fn execute_statements(
+        &self,
+        db: Option<&str>,
+        statements: Vec<String>,
+        stop_on_error: bool,
+        progress: ProgressFn,
+        cancel: CancellationToken,
+    ) -> Result<ScriptRunReport>;
     /// Cancels the statement currently running under `execution_id`, if any.
     async fn cancel(&self, execution_id: &str) -> Result<()>;
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo>;

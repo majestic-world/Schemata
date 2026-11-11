@@ -11,6 +11,7 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let store = ConnectionStore::open(&dir.join("connections.json"), Box::new(KeyringSecrets))?;
             app.manage(Sessions::new(store));
+            app.manage(commands::Operations::default());
             app.manage(QueryHistory::open(&app.path().app_data_dir()?.join("history.json"))?);
             Ok(())
         })
@@ -46,6 +47,11 @@ pub fn run() {
             commands::list_history,
             commands::read_text_file,
             commands::write_text_file,
+            commands::cancel_operation,
+            commands::export_data,
+            commands::preview_csv,
+            commands::import_csv,
+            commands::run_sql_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");

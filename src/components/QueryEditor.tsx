@@ -5,7 +5,8 @@ import { MariaSQL, MySQL, SQLite, sql as sqlLang } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, Upload, X } from "lucide-react";
+import { openTransfer } from "../store/transfer";
 import { api, toAppError } from "../api/client";
 import type { Engine, StatementOutcome } from "../api/types";
 import { useTabs, type QueryTab } from "../store/tabs";
@@ -214,6 +215,15 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
           <div className="result-footer">
             <span>{formatCount(current.rows.length)} row{current.rows.length === 1 ? "" : "s"}{current.hasMore ? " (more available)" : ""} · {current.durationMs} ms</span>
             {current.hasMore && <button className="btn sm" disabled={loading} onClick={() => void loadMore(selected as number)}>Load {ROW_LIMIT} more</button>}
+            <div className="grow" />
+            <button
+              className="btn sm"
+              disabled={!database}
+              title={database ? "Export every row of this result" : "Choose a database to export"}
+              onClick={() => database && openTransfer({ kind: "export", connectionId, database, source: { kind: "query", sql: current.statement }, label: "query_result" })}
+            >
+              <Upload size={13} />Export
+            </button>
           </div>
         </div>
       ) : (

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
+import { Download, Upload, Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../api/client";
 import type { CellValue, ChangeError, Filter, FilterOp, SortSpec } from "../api/types";
 import { useTabs, type TableTab } from "../store/tabs";
 import { formatCount } from "../lib/format";
 import { notify, notifyError } from "../store/toasts";
 import { confirmAction } from "../store/confirm";
+import { openTransfer } from "../store/transfer";
 import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import {
@@ -190,6 +191,14 @@ export function DataGrid({ tab }: { tab: TableTab }) {
             </button>
             <button className="btn" disabled={!dirty || committing} onClick={reset}><Undo2 size={15} />Discard</button>
           </>
+        )}
+        <button className="btn" title="Export this table" onClick={() => openTransfer({ kind: "export", connectionId: tab.connectionId, database: tab.database, source: { kind: "table", table: tab.name }, label: tab.name })}>
+          <Upload size={15} />Export
+        </button>
+        {!readOnly && (
+          <button className="btn" title="Import a CSV file" onClick={() => openTransfer({ kind: "import", connectionId: tab.connectionId, database: tab.database, table: tab.name })}>
+            <Download size={15} />Import
+          </button>
         )}
         <button className={`btn${showFilters || filters.length ? " active-filter" : ""}`} onClick={() => setShowFilters((v) => !v)}>
           <FilterIcon size={15} />Filter{filters.length ? ` (${filters.length})` : ""}

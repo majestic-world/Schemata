@@ -9,6 +9,7 @@ import { ConnectionDialog } from "./components/ConnectionDialog";
 import { PasswordPrompt } from "./components/PasswordPrompt";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Toaster } from "./components/Toaster";
+import { TransferDialogs } from "./components/TransferDialogs";
 import { AttachDatabaseDialog, CreateDatabaseDialog } from "./components/DatabaseDialogs";
 import { useLayout } from "./store/layout";
 import { useConnections } from "./store/connections";
@@ -48,6 +49,7 @@ export function App() {
       <ConfirmDialog />
       <CreateDatabaseDialog />
       <AttachDatabaseDialog />
+      <TransferDialogs />
       <Toaster />
     </div>
   );

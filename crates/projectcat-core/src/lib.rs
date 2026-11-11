@@ -12,6 +12,7 @@ mod splitter;
 mod sql;
 mod sqlite;
 mod store;
+mod transfer;
 mod value;
 
 pub use design::{ColumnDesign, ForeignKeyDesign, IndexDesign, TableDesign, TableOptions};
@@ -23,4 +24,9 @@ pub use secrets::{KeyringSecrets, MemorySecrets, SecretStore};
 pub use sessions::{Sessions, params_for};
 pub use splitter::split_statements;
 pub use store::{ConnectionConfig, ConnectionStore, SaveOutcome};
+pub use transfer::{
+    BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, ExportFormat, ExportReport,
+    ExportSource, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport,
+    SqlExportOptions, StatementFailure, StreamItem, TextEncoding, export, import_csv, preview_csv, run_sql_file,
+};
 pub use value::{CellValue, Value};

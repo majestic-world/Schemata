@@ -13,6 +13,7 @@ import { notify, notifyError } from "../store/toasts";
 import { useDialogs } from "../store/dialogs";
 import { copyCreateStatement, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 import { OBJECTS_TAB, useTabs, type TableView } from "../store/tabs";
+import { openTransfer } from "../store/transfer";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -231,6 +232,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
   const items: Item[] = [
     { label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) },
     { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
+    { label: "Run SQL File…", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
     "separator",
     engine === "sqlite"
@@ -323,6 +325,8 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
     "separator",
     ...(isTable ? [{ label: "Rename…", onSelect: () => void renameTable(ref, qc) }] : []),
     { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(ref) },
+    { label: "Export…", onSelect: () => openTransfer({ kind: "export", connectionId, database, source: { kind: "table", table: object.name }, label: object.name }) },
+    ...(isTable ? [{ label: "Import CSV…", onSelect: () => openTransfer({ kind: "import", connectionId, database, table: object.name }) }] : []),
     "separator",
     ...(isTable ? [{ label: "Empty Table…", danger: true, onSelect: () => void truncateTable(ref, qc) }] : []),
     { label: isTable ? "Delete Table…" : "Delete View…", danger: true, onSelect: () => void dropObject(ref, qc) },

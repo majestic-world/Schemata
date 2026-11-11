@@ -4,7 +4,9 @@ use crate::{
     ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
+use crate::transfer::{ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -393,6 +395,130 @@ impl Driver for SqliteDriver {
                 }
             }
             Ok(ScriptResult { outcomes, error: None })
+        })
+        .await
+    }
+
+    async fn stream_query(&self, _db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (conn, sql) = (self.conn.clone(), sql.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let run = || -> Result<()> {
+                let mut stmt = guard.prepare(&sql).map_err(map_err)?;
+                let columns: Vec<ColumnMeta> = stmt
+                    .columns()
+                    .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.decl_type().unwrap_or("").to_owned(), hidden: false })
+                    .collect();
+                let n = columns.len();
+                if tx.blocking_send(Ok(StreamItem::Columns(columns))).is_err() {
+                    return Ok(());
+                }
+                let mut rows = stmt.query([]).map_err(map_err)?;
+                let mut buf = Vec::with_capacity(batch);
+                while let Some(r) = rows.next().map_err(map_err)? {
+                    buf.push((0..n).map(|i| read_value(r.get_ref_unwrap(i))).collect());
+                    if buf.len() == batch && tx.blocking_send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).is_err() {
+                        return Ok(());
+                    }
+                }
+                if !buf.is_empty() {
+                    let _ = tx.blocking_send(Ok(StreamItem::Rows(buf)));
+                }
+                Ok(())
+            };
+            if let Err(e) = run() {
+                let _ = tx.blocking_send(Err(e));
+            }
+        });
+        Ok(rx)
+    }
+
+    async fn import_rows(
+        &self,
+        db: &str,
+        table: &str,
+        columns: &[String],
+        mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
+        skip_errors: bool,
+    ) -> Result<ImportReport> {
+        let marks = vec!["?"; columns.len()].join(", ");
+        let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        let sql = format!("INSERT INTO {}.{} ({cols}) VALUES ({marks})", quote_ident(db), quote_ident(table));
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let tx = guard.transaction().map_err(map_err)?;
+            let mut report = ImportReport::default();
+            {
+                let mut stmt = tx.prepare(&sql).map_err(map_err)?;
+                while let Some(batch) = rows.blocking_recv() {
+                    for (line, values) in batch? {
+                        let params: Vec<rusqlite::types::Value> = values.iter().map(to_sql).collect();
+                        match stmt.execute(rusqlite::params_from_iter(params)) {
+                            Ok(_) => report.inserted += 1,
+                            Err(e) => {
+                                report.failed_count += 1;
+                                if report.failed.len() < MAX_REPORTED_FAILURES {
+                                    report.failed.push(RowFailure { line, message: map_err(e).message });
+                                }
+                                if !skip_errors {
+                                    // Dropping the transaction rolls everything back.
+                                    report.inserted = 0;
+                                    return Ok(report);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            tx.commit().map_err(map_err)?;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| AppError::io(e.to_string()))?
+    }
+
+    async fn execute_statements(
+        &self,
+        _db: Option<&str>,
+        statements: Vec<String>,
+        stop_on_error: bool,
+        progress: ProgressFn,
+        cancel: CancellationToken,
+    ) -> Result<ScriptRunReport> {
+        let total = Some(statements.len() as u64);
+        self.with_conn(move |c| {
+            let mut report = ScriptRunReport::default();
+            for (index, st) in statements.iter().enumerate() {
+                if cancel.is_cancelled() {
+                    return Err(AppError::cancelled());
+                }
+                let result = (|| -> Result<()> {
+                    let mut stmt = c.prepare(st).map_err(map_err)?;
+                    if stmt.column_count() > 0 {
+                        let mut rows = stmt.query([]).map_err(map_err)?;
+                        while rows.next().map_err(map_err)?.is_some() {}
+                    } else {
+                        stmt.execute([]).map_err(map_err)?;
+                    }
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => report.executed += 1,
+                    Err(e) => {
+                        report.failed.push(crate::transfer::failure(index, st, e.message));
+                        if stop_on_error {
+                            break;
+                        }
+                    }
+                }
+                if index % 25 == 0 {
+                    progress(Progress { done: index as u64 + 1, total });
+                }
+            }
+            progress(Progress { done: statements.len() as u64, total });
+            Ok(report)
         })
         .await
     }

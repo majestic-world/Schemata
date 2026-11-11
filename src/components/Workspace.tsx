@@ -9,6 +9,7 @@ import { OBJECTS_TAB, useTabs, type NewTableTab, type Tab } from "../store/tabs"
 import { useWorkspace } from "../store/workspace";
 import { useConnection } from "../lib/useConnection";
 import { copyCreateStatement, designTable, dropObject, renameTable, truncateTable } from "../lib/objectActions";
+import { openTransfer } from "../store/transfer";
 
 function tabLabel(t: Tab) {
   switch (t.kind) {
@@ -113,6 +114,9 @@ function ObjectsView() {
               <DropdownMenu.Content className="menu" align="start">
                 <DropdownMenu.Item className="menu-item" disabled={!isTable} onSelect={() => ref && void renameTable(ref, qc)}>Rename Table…</DropdownMenu.Item>
                 <DropdownMenu.Item className="menu-item" onSelect={() => ref && void copyCreateStatement(ref)}>Copy CREATE Statement</DropdownMenu.Item>
+                <DropdownMenu.Separator className="menu-sep" />
+                <DropdownMenu.Item className="menu-item" onSelect={() => ref && openTransfer({ kind: "export", connectionId: ref.connectionId, database: ref.database, source: { kind: "table", table: ref.name }, label: ref.name })}>Export…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!isTable} onSelect={() => ref && openTransfer({ kind: "import", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Import CSV…</DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
                 <DropdownMenu.Item className="menu-item danger" disabled={!isTable} onSelect={() => ref && void truncateTable(ref, qc)}>Empty Table…</DropdownMenu.Item>
               </DropdownMenu.Content>

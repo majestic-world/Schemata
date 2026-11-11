@@ -4,7 +4,14 @@ use projectcat_core::{
     AppError, ChangeError, HistoryEntry, QueryHistory, StatementOutcome, ObjectKind, RowChange, TableDesign, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
     PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
 };
-use tauri::State;
+use projectcat_core::{
+    CancellationToken, CsvImport, CsvPreview, CsvReadOptions, ExportFormat, ExportReport, ExportSource, ImportReport, Progress,
+    ProgressFn, ScriptRunReport,
+};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, State};
 
 type CmdResult<T> = Result<T, AppError>;
 
@@ -192,4 +199,107 @@ pub async fn read_text_file(path: String) -> CmdResult<String> {
 #[tauri::command]
 pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
     Ok(tokio::fs::write(&path, contents).await?)
+}
+
+/// Cancellation tokens of running long operations, keyed by operation id.
+#[derive(Default)]
+pub struct Operations(Mutex<HashMap<String, CancellationToken>>);
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationProgress {
+    operation_id: String,
+    #[serde(flatten)]
+    progress: Progress,
+}
+
+/// Registers an operation and returns its progress reporter (as `operation-progress` events) and cancel token.
+fn begin(app: &AppHandle, ops: &Operations, operation_id: &str) -> (ProgressFn, CancellationToken) {
+    let token = CancellationToken::new();
+    ops.0.lock().unwrap().insert(operation_id.to_owned(), token.clone());
+    let (app, id) = (app.clone(), operation_id.to_owned());
+    let progress: ProgressFn = Arc::new(move |progress| {
+        let _ = app.emit("operation-progress", OperationProgress { operation_id: id.clone(), progress });
+    });
+    (progress, token)
+}
+
+fn end(ops: &Operations, operation_id: &str) {
+    ops.0.lock().unwrap().remove(operation_id);
+}
+
+#[tauri::command]
+pub fn cancel_operation(ops: State<'_, Operations>, operation_id: String) {
+    if let Some(token) = ops.0.lock().unwrap().get(&operation_id) {
+        token.cancel();
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn export_data(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    id: String,
+    db: String,
+    source: ExportSource,
+    format: ExportFormat,
+    path: PathBuf,
+    operation_id: String,
+) -> CmdResult<ExportReport> {
+    let driver = sessions.driver(&id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::export(driver.as_ref(), &db, &source, &format, &path, progress, cancel).await;
+    end(&ops, &operation_id);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn preview_csv(path: PathBuf, options: CsvReadOptions) -> CmdResult<CsvPreview> {
+    tokio::task::spawn_blocking(move || projectcat_core::preview_csv(&path, &options, 20))
+        .await
+        .map_err(|e| AppError::io(e.to_string()))?
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn import_csv(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    id: String,
+    db: String,
+    table: String,
+    path: PathBuf,
+    spec: CsvImport,
+    operation_id: String,
+) -> CmdResult<ImportReport> {
+    let driver = sessions.driver(&id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::import_csv(driver.as_ref(), &db, &table, &path, &spec, progress, cancel).await;
+    end(&ops, &operation_id);
+    result
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_sql_file(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    id: String,
+    db: String,
+    path: PathBuf,
+    stop_on_error: bool,
+    operation_id: String,
+) -> CmdResult<ScriptRunReport> {
+    let driver = sessions.driver(&id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::run_sql_file(driver.as_ref(), &db, &path, stop_on_error, progress, cancel).await;
+    end(&ops, &operation_id);
+    result
 }
