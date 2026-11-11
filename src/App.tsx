@@ -2,13 +2,13 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { useTabs } from "./store/tabs";
+import { OBJECTS_TAB, useTabs } from "./store/tabs";
 import { useWorkspace } from "./store/workspace";
 import { isMod, isWindows } from "./lib/platform";
 import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
 import { notifyError } from "./store/toasts";
 import { copyTable, pasteTable } from "./store/tableClipboard";
-import { designTable } from "./lib/objectActions";
+import { designTable, renameTable } from "./lib/objectActions";
 import { Toolbar } from "./components/Toolbar";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
@@ -74,6 +74,20 @@ export function App() {
           void qc.invalidateQueries({ queryKey: ["objects"] });
         } else {
           runRefreshHandler();
+        }
+        return;
+      }
+      if (e.key === "F6" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        if (
+          e.defaultPrevented || e.repeat ||
+          useTabs.getState().active !== OBJECTS_TAB ||
+          document.querySelector('[role="dialog"], [role="menu"]') ||
+          (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable="true"]'))
+        ) return;
+        const selection = useWorkspace.getState().selection;
+        if (selection?.database && selection.object?.kind === "table") {
+          e.preventDefault();
+          void renameTable({ connectionId: selection.connectionId, database: selection.database, name: selection.object.name, kind: "table" }, qc);
         }
         return;
       }

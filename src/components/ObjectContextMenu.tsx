@@ -21,7 +21,7 @@ export function ObjectContextMenu({ object, children }: { object: ObjectRef; chi
     ...(isTable
       ? [
           { label: `Copy (${MOD}+C)`, onSelect: () => copyTable({ connectionId, database, name }) },
-          { label: "Rename…", onSelect: () => void renameTable(object, qc) },
+          { label: "Rename… (F6)", onSelect: () => void renameTable(object, qc) },
         ]
       : []),
     { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(object) },
