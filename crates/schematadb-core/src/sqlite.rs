@@ -118,10 +118,19 @@ fn read_table_info(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     Ok(info)
 }
 
+/// SQLite exposes the implicit rowid through any unshadowed spelling.
+fn rowid_alias(columns: &[ColumnInfo]) -> Option<&'static str> {
+    ["rowid", "_rowid_", "oid"].into_iter().find(|alias| !columns.iter().any(|c| c.name.eq_ignore_ascii_case(alias)))
+}
+
 fn read_page(c: &Connection, db: &str, table: &str, req: &PageRequest) -> Result<Page> {
     let info = read_structure(c, db, table)?;
     let rowid = info.row_identity == RowIdentity::RowId;
-    let select_list = if rowid { format!("rowid AS {}, *", quote_ident(ROWID_COLUMN)) } else { "*".to_owned() };
+    let select_list = if rowid {
+        format!("{} AS {}, *", quote_ident(rowid_alias(&info.columns).unwrap()), quote_ident(ROWID_COLUMN))
+    } else {
+        "*".to_owned()
+    };
     let from = format!("{}.{}", quote_ident(db), quote_ident(table));
     let (sql, binds) = crate::sql::select_page(&select_list, &from, req, quote_ident)?;
     let mut columns: Vec<ColumnMeta> = Vec::new();
@@ -171,6 +180,36 @@ fn dependents(c: &Connection, db: &str, table: &str) -> Result<crate::design::sq
     Ok(crate::design::sqlite::Dependents { triggers, views })
 }
 
+/// Refuse rebuilds whose schema cannot be represented by TableDesign instead of silently weakening it.
+fn validate_rebuild(c: &Connection, db: &str, info: &TableInfo) -> Result<()> {
+    let upper = info.create_sql.to_ascii_uppercase();
+    let words: Vec<&str> = upper.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').collect();
+    if ["CHECK", "COLLATE", "STRICT", "GENERATED", "WITHOUT", "DEFERRABLE", "CONFLICT", "VIRTUAL", "DESC"]
+        .iter()
+        .any(|word| words.contains(word))
+        || info.foreign_keys.iter().any(|fk| fk.columns.len() != fk.ref_columns.len())
+    {
+        return Err(AppError::validation("This SQLite table has constraints or storage attributes the designer cannot preserve; use SQL"));
+    }
+    let mut stmt = c.prepare("SELECT name, partial FROM pragma_index_list(?1, ?2)").map_err(map_err)?;
+    let indexes = collect(&mut stmt, [info.name.as_str(), db], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+    for (name, partial) in indexes {
+        let unsupported: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_index_xinfo(?1, ?2) WHERE key = 1 AND (cid < 0 OR \"desc\" <> 0 OR coll <> 'BINARY'))",
+                [name.as_str(), db],
+                |r| r.get(0),
+            )
+            .map_err(map_err)?;
+        if partial || unsupported {
+            return Err(AppError::validation(
+                "This SQLite table has partial, expression, ordered or collated indexes the designer cannot preserve; use SQL",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
     let toggles_fk = statements.first().map(String::as_str) == Some(FK_OFF);
     if toggles_fk {
@@ -200,16 +239,32 @@ fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
 /// transaction or without FK enforcement, so both are restored before returning.
 fn run_statements(
     c: &mut Connection,
-    statements: &mut tokio::sync::mpsc::Receiver<String>,
+    statements: &mut tokio::sync::mpsc::Receiver<Result<String>>,
     stop_on_error: bool,
     cancel: &CancellationToken,
 ) -> Result<ScriptRunReport> {
     let mut report = ScriptRunReport::default();
+    let token = cancel.clone();
+    c.progress_handler(1000, Some(move || token.is_cancelled())).map_err(map_err)?;
+    let mut input_error = None;
     let mut index = 0;
-    while let Some(st) = statements.blocking_recv() {
+    while let Some(st) = tokio::runtime::Handle::current().block_on(async {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            statement = statements.recv() => statement,
+        }
+    }) {
         if cancel.is_cancelled() {
             break;
         }
+        let st = match st {
+            Ok(st) => st,
+            Err(error) => {
+                input_error = Some(error);
+                break;
+            }
+        };
         let result = (|| -> Result<()> {
             let mut stmt = c.prepare(&st).map_err(map_err)?;
             if stmt.column_count() > 0 {
@@ -231,12 +286,20 @@ fn run_statements(
         }
         index += 1;
     }
-    if !c.is_autocommit() {
-        c.execute_batch("ROLLBACK").map_err(map_err)?;
-    }
-    c.execute_batch(FK_ON).map_err(map_err)?;
+    let reset = c.progress_handler(0, None::<fn() -> bool>).map_err(map_err);
+    let rollback = if !c.is_autocommit() { c.execute_batch("ROLLBACK").map_err(map_err) } else { Ok(()) };
+    let foreign_keys = c.execute_batch(FK_ON).map_err(map_err);
+    reset?;
+    rollback?;
+    foreign_keys?;
     // The reader may stop at cancellation without sending another statement: check after the channel closes too.
-    if cancel.is_cancelled() { Err(AppError::cancelled()) } else { Ok(report) }
+    if cancel.is_cancelled() {
+        Err(AppError::cancelled())
+    } else if let Some(error) = input_error {
+        Err(error)
+    } else {
+        Ok(report)
+    }
 }
 
 fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
@@ -253,18 +316,27 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     let kind = if kind == "view" { ObjectKind::View } else { ObjectKind::Table };
     let upper_sql = create_sql.to_ascii_uppercase();
 
-    let mut stmt =
-        c.prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1, ?2) ORDER BY cid").map_err(map_err)?;
+    let mut stmt = c
+        .prepare("SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo(?1, ?2) WHERE hidden <> 1 ORDER BY cid")
+        .map_err(map_err)?;
     let raw = collect(&mut stmt, [name, db], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, bool>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+        ))
     })?;
     let pk_count = raw.iter().filter(|c| c.4 > 0).count();
     let columns: Vec<ColumnInfo> = raw
         .into_iter()
-        .map(|(name, data_type, notnull, default, pk)| ColumnInfo {
+        .map(|(name, data_type, notnull, default, pk, hidden)| ColumnInfo {
             auto_increment: pk > 0 && pk_count == 1 && data_type.eq_ignore_ascii_case("INTEGER") && upper_sql.contains("AUTOINCREMENT"),
             nullable: !notnull && pk == 0,
             primary_key: pk > 0,
+            generated: hidden == 2 || hidden == 3,
             name,
             data_type,
             default,
@@ -273,12 +345,14 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         .collect();
 
     let mut stmt =
-        c.prepare("SELECT name, \"unique\" FROM pragma_index_list(?1, ?2) WHERE origin <> 'pk' ORDER BY name").map_err(map_err)?;
-    let index_rows = collect(&mut stmt, [name, db], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+        c.prepare("SELECT name, \"unique\", partial FROM pragma_index_list(?1, ?2) WHERE origin <> 'pk' ORDER BY name").map_err(map_err)?;
+    let index_rows = collect(&mut stmt, [name, db], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?)))?;
     let mut indexes = Vec::new();
-    for (index, unique) in index_rows {
+    let mut identity_indexes = Vec::new();
+    for (index, unique, partial) in index_rows {
         let mut stmt = c.prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno").map_err(map_err)?;
         let cols = collect(&mut stmt, [index.as_str(), db], |r| r.get::<_, Option<String>>(0))?;
+        let identity_usable = !partial && cols.iter().all(Option::is_some);
         indexes.push(IndexInfo {
             name: index,
             columns: cols.into_iter().flatten().collect(),
@@ -287,6 +361,9 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
             comment: None,
             primary: false,
         });
+        if identity_usable {
+            identity_indexes.push(indexes.last().unwrap().clone());
+        }
     }
 
     let mut stmt = c
@@ -323,7 +400,16 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     }
 
     let row_identity = match kind {
-        ObjectKind::Table => derive_identity(&columns, &indexes, !upper_sql.contains("WITHOUT ROWID")),
+        ObjectKind::Table => {
+            let identity = derive_identity(&columns, &identity_indexes, !upper_sql.contains("WITHOUT ROWID"));
+            if identity == RowIdentity::RowId
+                && (rowid_alias(&columns).is_none() || columns.iter().any(|c| c.name.eq_ignore_ascii_case(ROWID_COLUMN)))
+            {
+                RowIdentity::None
+            } else {
+                identity
+            }
+        }
         ObjectKind::View => RowIdentity::None,
     };
     Ok(TableInfo {
@@ -490,14 +576,21 @@ impl Driver for SqliteDriver {
         columns: &[String],
         mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
         skip_errors: bool,
+        empty_first: bool,
     ) -> Result<ImportReport> {
         let marks = vec!["?"; columns.len()].join(", ");
         let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
         let sql = format!("INSERT INTO {}.{} ({cols}) VALUES ({marks})", quote_ident(db), quote_ident(table));
         let conn = self.conn.clone();
+        let (db, table, columns) = (db.to_owned(), table.to_owned(), columns.to_vec());
         tokio::task::spawn_blocking(move || {
             let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let info = read_structure(&guard, &db, &table)?;
+            info.validate_writable_columns(columns.iter().map(String::as_str))?;
             let tx = guard.transaction().map_err(map_err)?;
+            if empty_first {
+                tx.execute_batch(&format!("DELETE FROM {}.{}", quote_ident(&db), quote_ident(&table))).map_err(map_err)?;
+            }
             let mut report = ImportReport::default();
             {
                 let mut stmt = tx.prepare(&sql).map_err(map_err)?;
@@ -531,7 +624,7 @@ impl Driver for SqliteDriver {
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        mut statements: tokio::sync::mpsc::Receiver<String>,
+        mut statements: tokio::sync::mpsc::Receiver<Result<String>>,
         stop_on_error: bool,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
@@ -577,7 +670,11 @@ impl Driver for SqliteDriver {
                         ),
                     ));
                 } else {
-                    objects.push(format!("{sql};"));
+                    objects.push(if kind == "view" {
+                        format!("DROP VIEW IF EXISTS {};\n{sql};", quote_ident(&name))
+                    } else {
+                        format!("{sql};")
+                    });
                 }
             }
             let has_sequence: bool = c
@@ -627,8 +724,8 @@ impl Driver for SqliteDriver {
         let db = db.to_owned();
         self.with_conn(move |c| {
             let sql = format!(
-                "SELECT m.name, p.name FROM {}.sqlite_schema m JOIN pragma_table_info(m.name, ?1) p \
-                 WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' ORDER BY m.name, p.cid",
+                "SELECT m.name, p.name FROM {}.sqlite_schema m JOIN pragma_table_xinfo(m.name, ?1) p \
+                 WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' AND p.hidden <> 1 ORDER BY m.name, p.cid",
                 quote_ident(&db)
             );
             let mut stmt = c.prepare(&sql).map_err(map_err)?;
@@ -666,11 +763,22 @@ impl Driver for SqliteDriver {
         tokio::task::spawn_blocking(move || {
             let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
             let info = read_structure(&guard, &db, &table)?;
+            if info.row_identity == RowIdentity::None && !changes.is_empty() {
+                return Err(AppError::validation("This table has no safely addressable row identity and is read-only").into());
+            }
+            info.validate_changes(&changes)?;
             let table_ref = format!("{}.{}", quote_ident(&db), quote_ident(&table));
-            // A table without a key always has a rowid (WITHOUT ROWID requires a primary key), so SQLite never
-            // matches rows by value; the dialect still spells it correctly.
+            // The implicit key must use the same unshadowed alias as the page projection.
             let dialect = crate::sql::ChangeDialect { empty_insert: "DEFAULT VALUES", null_safe_eq: "IS", single_row: "" };
-            let statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
+            let mut statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
+            if info.row_identity == RowIdentity::RowId {
+                let alias = quote_ident(rowid_alias(&info.columns).unwrap());
+                for statement in &mut statements {
+                    if let Some((prefix, suffix)) = statement.sql.rsplit_once(" WHERE rowid =") {
+                        statement.sql = format!("{prefix} WHERE {alias} ={suffix}");
+                    }
+                }
+            }
             let tx = guard.transaction().map_err(map_err)?;
             for (index, st) in statements.iter().enumerate() {
                 let params: Vec<SqlValue> = st.binds.iter().map(to_sql).collect();
@@ -705,7 +813,32 @@ impl Driver for SqliteDriver {
         let (db, original, design) = (db.to_owned(), original.clone(), design.clone());
         self.with_conn(move |c| {
             let deps = dependents(c, &db, &original.name)?;
-            crate::design::sqlite::alter(&db, &original, &design, deps)
+            let info = read_structure(c, &db, &original.name)?;
+            if info.columns.iter().any(|c| c.generated) {
+                return Err(AppError::validation("Tables with generated columns cannot be altered by the table designer"));
+            }
+            let mut statements = crate::design::sqlite::alter(&db, &original, &design, deps)?;
+            if statements.first().map(String::as_str) == Some(FK_OFF) {
+                validate_rebuild(c, &db, &info)?;
+                if info.columns.iter().any(|c| c.auto_increment) && design.columns.iter().any(|c| c.auto_increment) {
+                    let schema = quote_ident(&db);
+                    let original_name = original.name.replace('\'', "''");
+                    let name = design.name.replace('\'', "''");
+                    let saved = quote_ident(&format!("_schematadb_sequence_{}", uuid::Uuid::new_v4().simple()));
+                    statements.insert(1, format!(
+                        "CREATE TEMP TABLE {saved} AS SELECT seq FROM {schema}.sqlite_sequence WHERE name = '{original_name}'"
+                    ));
+                    statements.insert(statements.len() - 2, format!(
+                        "UPDATE {schema}.sqlite_sequence SET seq = max(seq, coalesce((SELECT max(seq) FROM temp.{saved}), seq)) WHERE name = '{name}'"
+                    ));
+                    statements.insert(statements.len() - 2, format!(
+                        "INSERT INTO {schema}.sqlite_sequence (name, seq) SELECT '{name}', seq FROM temp.{saved} WHERE NOT EXISTS \
+                         (SELECT 1 FROM {schema}.sqlite_sequence WHERE name = '{name}')"
+                    ));
+                    statements.insert(statements.len() - 2, format!("DROP TABLE temp.{saved}"));
+                }
+            }
+            Ok(statements)
         })
         .await
     }

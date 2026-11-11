@@ -1,7 +1,8 @@
 mod common;
 
 use common::TestDb;
-use schematadb_core::{CellValue, Engine, Filter, FilterOp, Page, PageRequest, SortSpec};
+use schematadb_core::{CellValue, Engine, ErrorKind, Filter, FilterOp, Page, PageRequest, SortSpec, StatementOutcome, connect};
+use std::time::Duration;
 
 fn text(s: &str) -> CellValue {
     CellValue::Text(s.into())
@@ -124,3 +125,48 @@ async fn sqlite_tables_without_key_expose_hidden_rowid(t: TestDb) {
     assert_eq!(page.rows[0], vec![CellValue::Int(1), text("x")]);
 }
 scenario!(sqlite_tables_without_key_expose_hidden_rowid);
+
+async fn cancellation_does_not_wait_for_a_free_pool_slot(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    let observer = connect(&t.server.unwrap().params(Some(&t.db))).await.unwrap();
+    let mut running = Vec::new();
+    for index in 0..6 {
+        let (driver, db) = (t.driver.clone(), t.db.clone());
+        running.push(tokio::spawn(async move {
+            let id = format!("saturated_{index}");
+            driver.execute_script(Some(&db), "SELECT SLEEP(30)", 1, Some(&id)).await.unwrap()
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let sql = format!("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = '{}' AND INFO = 'SELECT SLEEP(30)'", t.db);
+            let result = observer.execute_script(Some(&t.db), &sql, 1, None).await.unwrap();
+            let count = match &result.outcomes[0] {
+                StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+                other => panic!("Unexpected result: {other:?}"),
+            };
+            if count == CellValue::Int(6) || count == CellValue::BigInt("6".into()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("All six pooled sessions should be executing");
+    tokio::time::timeout(Duration::from_secs(3), t.driver.cancel("saturated_0"))
+        .await
+        .expect("Cancellation must bypass the saturated pool")
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(3), running.remove(0)).await.unwrap().unwrap();
+    assert_eq!(first.error.unwrap().error.kind, ErrorKind::Cancelled);
+    for index in 1..6 {
+        t.driver.cancel(&format!("saturated_{index}")).await.unwrap();
+    }
+    for query in running {
+        assert_eq!(query.await.unwrap().error.unwrap().error.kind, ErrorKind::Cancelled);
+    }
+    t.driver.ping().await.unwrap();
+}
+scenario!(cancellation_does_not_wait_for_a_free_pool_slot);

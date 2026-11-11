@@ -29,6 +29,7 @@ function DesignerView({ tab }: { tab: TableTab }) {
   if (!conn) return null;
   return (
     <TableDesigner
+      tabId={tab.id}
       connectionId={tab.connectionId}
       database={tab.database}
       engine={conn.engine}

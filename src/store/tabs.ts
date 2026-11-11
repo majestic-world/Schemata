@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ObjectKind } from "../api/types";
 import { useGridStates } from "./gridState";
+import { useDesignerDrafts } from "./designerDrafts";
 
 export type TableView = "data" | "structure" | "info";
 
@@ -89,6 +90,8 @@ export const useTabs = create<TabsState>((set) => ({
   updateQuery: (id, p) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id && t.kind === "query" ? { ...t, ...p } : t)) })),
   replace: (id, t, view) =>
     set((s) => {
+      useDesignerDrafts.getState().forget(id);
+      useGridStates.getState().forget(id);
       const nid = tableTabId(t.connectionId, t.database, t.name);
       const tab: TableTab = { ...t, kind: "table", id: nid, view };
       return { tabs: s.tabs.filter((x) => x.id !== nid).map((x) => (x.id === id ? tab : x)), active: nid };
@@ -96,6 +99,7 @@ export const useTabs = create<TabsState>((set) => ({
   close: (id) =>
     set((s) => {
       useGridStates.getState().forget(id);
+      useDesignerDrafts.getState().forget(id);
       const idx = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
       const active = s.active !== id ? s.active : (tabs[idx] ?? tabs[idx - 1])?.id ?? OBJECTS_TAB;

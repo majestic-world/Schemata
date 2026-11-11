@@ -185,6 +185,15 @@ pub(crate) fn quote_for(engine: Engine) -> fn(&str) -> String {
     }
 }
 
+/// Generated values stay visible in query results but must be recomputed when INSERTs are restored.
+fn hide_generated(columns: &mut [ColumnMeta], info: &crate::TableInfo) {
+    for generated in info.columns.iter().filter(|c| c.generated) {
+        if let Some(column) = columns.iter_mut().find(|c| c.name == generated.name) {
+            column.hidden = true;
+        }
+    }
+}
+
 /// Writes `INSERT` statements for a batch of rows.
 pub(crate) fn insert_statements(
     out: &mut impl Write,
@@ -195,6 +204,15 @@ pub(crate) fn insert_statements(
 ) -> Result<()> {
     let q = quote_for(engine);
     let visible: Vec<usize> = (0..columns.len()).filter(|i| !columns[*i].hidden).collect();
+    if visible.is_empty() {
+        for _ in rows {
+            match engine {
+                Engine::Sqlite => writeln!(out, "INSERT INTO {} DEFAULT VALUES;", q(table))?,
+                Engine::MySql | Engine::MariaDb => writeln!(out, "INSERT INTO {} () VALUES ();", q(table))?,
+            }
+        }
+        return Ok(());
+    }
     let cols = visible.iter().map(|i| q(&columns[*i].name)).collect::<Vec<_>>().join(", ");
     for chunk in rows.chunks(INSERT_ROWS) {
         let values = chunk
@@ -227,12 +245,20 @@ pub async fn export(
         }
         ExportSource::Query { sql } => (sql.trim().trim_end_matches(';').to_owned(), None, "query_result".to_owned()),
     };
+    // SQLite's stream owns the connection until it is drained; metadata must be read first.
+    let table_info = match (source, format) {
+        (ExportSource::Table { table }, ExportFormat::Sql(_)) => Some(driver.table_info(db, table).await?),
+        _ => None,
+    };
     let mut stream = driver.stream_query(Some(db), &sql, BATCH).await?;
-    let columns = match stream.recv().await {
+    let mut columns = match stream.recv().await {
         Some(Ok(StreamItem::Columns(c))) => c,
         Some(Err(e)) => return Err(e),
         _ => return Err(AppError::sql("The query did not return a result set")),
     };
+    if let Some(info) = &table_info {
+        hide_generated(&mut columns, info);
+    }
     let (pending, file) = PendingFile::create(path)?;
     let mut done = 0u64;
     progress(Progress { done, total });
@@ -266,9 +292,10 @@ pub async fn export(
             writeln!(f, "-- Exported by Schemata")?;
             if o.include_create
                 && let ExportSource::Table { table } = source
+                && let Some(info) = &table_info
             {
-                let create = driver.table_info(db, table).await?.create_sql;
-                let create = if name != *table { create.replacen(table.as_str(), &name, 1) } else { create };
+                let renamed = (name != *table).then(|| info.create_sql.replacen(table.as_str(), &name, 1));
+                let create = renamed.as_deref().unwrap_or(&info.create_sql);
                 writeln!(f, "{};\n", create.trim_end_matches(';'))?;
             }
             Sink::Sql(f, name)
@@ -475,7 +502,7 @@ pub async fn import_csv(
         progress(Progress { done, total });
     });
     let columns: Vec<String> = spec.mapping.iter().map(|m| m.target.clone()).collect();
-    let report = driver.import_rows(db, table, &columns, rx, spec.skip_errors).await;
+    let report = driver.import_rows(db, table, &columns, rx, spec.skip_errors, false).await;
     let _ = producer.await;
     report
 }
@@ -515,42 +542,48 @@ pub async fn run_sql_file(
 ) -> Result<ScriptRunReport> {
     let file = std::fs::File::open(path)?;
     let total = file.metadata()?.len();
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String>>(64);
     let engine = driver.engine();
     let cancel_reader = cancel.clone();
-    let reader = tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut input = std::io::BufReader::new(file);
-        let mut splitter = Splitter::new(engine);
-        let mut line = Vec::new();
-        let mut read = 0u64;
-        let mut first = true;
-        loop {
-            line.clear();
-            let n = input.read_until(b'\n', &mut line)?;
-            if n == 0 || cancel_reader.is_cancelled() {
-                break;
-            }
-            read += n as u64;
-            let bytes = if first { line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line) } else { &line };
-            first = false;
-            for statement in splitter.feed(&String::from_utf8_lossy(bytes)) {
-                if tx.blocking_send(statement).is_err() {
-                    return Ok(());
-                }
-            }
-            progress(Progress { done: read, total: Some(total) });
-        }
-        if !cancel_reader.is_cancelled() {
-            for statement in splitter.finish() {
-                if tx.blocking_send(statement).is_err() {
+    let reader = tokio::task::spawn_blocking(move || {
+        let run = || -> Result<()> {
+            let mut input = std::io::BufReader::new(file);
+            let mut splitter = Splitter::new(engine);
+            let mut line = Vec::new();
+            let mut read = 0u64;
+            let mut first = true;
+            loop {
+                line.clear();
+                let n = input.read_until(b'\n', &mut line)?;
+                if n == 0 || cancel_reader.is_cancelled() {
                     break;
                 }
+                read += n as u64;
+                let bytes = if first { line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line) } else { &line };
+                first = false;
+                let text = std::str::from_utf8(bytes).map_err(|e| AppError::validation(format!("The SQL file is not valid UTF-8: {e}")))?;
+                for statement in splitter.feed(text) {
+                    if tx.blocking_send(Ok(statement)).is_err() {
+                        return Ok(());
+                    }
+                }
+                progress(Progress { done: read, total: Some(total) });
             }
+            if !cancel_reader.is_cancelled() {
+                for statement in splitter.finish() {
+                    if tx.blocking_send(Ok(statement)).is_err() {
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = run() {
+            let _ = tx.blocking_send(Err(error));
         }
-        Ok(())
     });
     let report = driver.execute_statements(Some(db), rx, stop_on_error, cancel).await;
-    reader.await.map_err(|e| AppError::io(e.to_string()))??;
+    reader.await.map_err(|e| AppError::io(e.to_string()))?;
     report
 }
 
@@ -671,6 +704,39 @@ async fn copy_rows(
         Some(Err(e)) => return Err(e),
         _ => return Err(AppError::sql("The table did not return a result set")),
     };
+    if source.engine() == Engine::Sqlite && std::ptr::addr_eq(source, target) {
+        // A SQLite stream holds the driver's only connection. Drain it to a temporary database first;
+        // columns without affinity retain integers, floats, text (including NULs) and BLOBs exactly.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rows.sqlite");
+        let staging = crate::connect(&crate::ConnectParams::sqlite(path.to_string_lossy().into_owned(), true)).await?;
+        let names = columns.iter().filter(|c| !c.hidden).map(|c| q(&c.name)).collect::<Vec<_>>().join(", ");
+        let created = staging.execute_script(Some("main"), &format!("CREATE TABLE staged_rows ({names})"), 1, None).await?;
+        if let Some(error) = created.error {
+            return Err(error.error);
+        }
+        let staged_target = CopyTableTarget { db: "main".into(), name: "staged_rows".into(), data: true };
+        import_stream(stream, &columns, staging.as_ref(), &staged_target, Arc::new(|_| {}), cancel.clone(), total).await?;
+        let mut staged_stream = staging.stream_query(Some("main"), "SELECT * FROM staged_rows", BATCH).await?;
+        let staged_columns = match staged_stream.recv().await {
+            Some(Ok(StreamItem::Columns(c))) => c,
+            Some(Err(e)) => return Err(e),
+            _ => return Err(AppError::sql("The staged table did not return a result set")),
+        };
+        return import_stream(staged_stream, &staged_columns, target, to, progress, cancel, total).await;
+    }
+    import_stream(stream, &columns, target, to, progress, cancel, total).await
+}
+
+async fn import_stream(
+    mut stream: RowStream,
+    columns: &[ColumnMeta],
+    target: &dyn Driver,
+    to: &CopyTableTarget,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+    total: Option<u64>,
+) -> Result<u64> {
     let visible: Vec<usize> = (0..columns.len()).filter(|i| !columns[*i].hidden).collect();
     let names: Vec<String> = visible.iter().map(|i| columns[*i].name.clone()).collect();
     progress(Progress { done: 0, total });
@@ -698,13 +764,22 @@ async fn copy_rows(
                 .map(|(i, mut r)| (done + i as u64 + 1, visible.iter().map(|c| std::mem::replace(&mut r[*c], Value::Null)).collect()))
                 .collect();
             done += batch.len() as u64;
-            if tx.send(Ok(batch)).await.is_err() {
-                break;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    let _ = tx.send(Err(AppError::cancelled())).await;
+                    break;
+                }
+                sent = tx.send(Ok(batch)) => {
+                    if sent.is_err() {
+                        break;
+                    }
+                }
             }
             progress(Progress { done, total });
         }
     };
-    let (report, ()) = tokio::join!(target.import_rows(&to.db, &to.name, &names, rx, false), feed);
+    let (report, ()) = tokio::join!(target.import_rows(&to.db, &to.name, &names, rx, false, false), feed);
     let report = report?;
     if let Some(f) = report.failed.first() {
         return Err(AppError::sql(format!("Row {} could not be copied: {}", f.line, f.message)));
@@ -777,6 +852,7 @@ pub async fn dump_database(
         if !options.data {
             continue;
         }
+        let info = driver.table_info(db, table).await?;
         let mut stream = driver.stream_query(Some(db), &format!("SELECT * FROM {}.{}", q(db), q(table)), BATCH).await?;
         let mut columns = Vec::new();
         loop {
@@ -787,7 +863,10 @@ pub async fn dump_database(
             match item {
                 None => break,
                 Some(Err(e)) => return Err(e),
-                Some(Ok(StreamItem::Columns(c))) => columns = c,
+                Some(Ok(StreamItem::Columns(mut c))) => {
+                    hide_generated(&mut c, &info);
+                    columns = c;
+                }
                 Some(Ok(StreamItem::Rows(rows))) => {
                     insert_statements(&mut out, engine, table, &columns, &rows)?;
                     done += rows.len() as u64;

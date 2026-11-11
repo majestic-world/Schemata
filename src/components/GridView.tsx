@@ -290,7 +290,7 @@ export function GridView(props: Props) {
                     onClick={(e) => {
                       if (!editor && !e.shiftKey && !e.ctrlKey && !e.metaKey) props.onCellEdit?.(r, name);
                     }}
-                    onDoubleClick={() => props.onCellActivate?.(r, name)}
+                    onDoubleClick={() => { if (!editor) props.onCellActivate?.(r, name); }}
                   >
                     {editor ?? <span className="cell-text">{d.text}</span>}
                   </div>

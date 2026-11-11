@@ -6,6 +6,9 @@ import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, In
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
 import { useDesignerPrefs } from "../store/designerPrefs";
+import { useDesignerDrafts } from "../store/designerDrafts";
+import { confirmAction } from "../store/confirm";
+import { hasPendingEdits, useGridStates } from "../store/gridState";
 import { MOD, isMod } from "../lib/platform";
 import { Dialog } from "./Dialog";
 import { ComboInput } from "./ComboInput";
@@ -88,6 +91,7 @@ const hasText = (row: HTMLTableRowElement, label: string) => !!row.querySelector
 const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 type Props = {
+  tabId: string;
   connectionId: string;
   database: string;
   engine: Engine;
@@ -96,7 +100,7 @@ type Props = {
   onSaved: (name: string) => void;
 };
 
-export function TableDesigner({ connectionId, database, engine, table, onSaved }: Props) {
+export function TableDesigner({ tabId, connectionId, database, engine, table, onSaved }: Props) {
   const qc = useQueryClient();
   const sqlite = engine === "sqlite";
   const original = useQuery({
@@ -104,14 +108,23 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     queryFn: () => api.tableDesign(connectionId, database, table!),
     enabled: !!table,
   });
-  const [design, setDesign] = useState<TableDesign | null>(table ? null : newDesign(engine));
+  const draft = useDesignerDrafts((s) => s.drafts[tabId]);
+  const design = draft?.design ?? null;
+  const baseline = draft?.original ?? null;
+  const setDesign = (change: TableDesign | ((d: TableDesign) => TableDesign)) =>
+    useDesignerDrafts.getState().update(tabId, (d) => typeof change === "function" ? change(d) : change);
   const [section, setSection] = useState<Section>("columns");
   /** Open review dialog. Existing tables: the planned statements. New tables: the name being entered (planned below). */
   const [review, setReview] = useState<{ statements: string[] } | { name: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const busy = draft?.busy ?? false;
+  const setBusy = (value: boolean) => useDesignerDrafts.getState().setBusy(tabId, value);
   useEffect(() => {
-    if (original.data) setDesign(structuredClone(original.data));
-  }, [original.data]);
+    if (table) {
+      if (original.data) useDesignerDrafts.getState().initialize(tabId, original.data, original.data);
+    } else {
+      useDesignerDrafts.getState().initialize(tabId, null, newDesign(engine));
+    }
+  }, [tabId, table, engine, original.data]);
 
   const objects = useQuery({ queryKey: ["objects", connectionId, database], queryFn: () => api.listObjects(connectionId, database) });
   const charsets = useQuery({ queryKey: ["charsets", connectionId], queryFn: () => api.listCharsets(connectionId), enabled: !sqlite, staleTime: Infinity });
@@ -119,8 +132,8 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   const ddl = useQuery({
     queryKey: ["plan", connectionId, database, table, designKey],
     // A new table is named on save; preview it under a placeholder until then.
-    queryFn: () => api.planTable(connectionId, database, original.data ?? null, table ? design! : withName(design!, design!.name || "new_table")),
-    enabled: section === "ddl" && !!design && (!table || !!original.data),
+    queryFn: () => api.planTable(connectionId, database, baseline, table ? design! : withName(design!, design!.name || "new_table")),
+    enabled: section === "ddl" && !!design && (!table || !!baseline),
     retry: false,
   });
   const reviewName = review && "name" in review ? review.name.trim() : "";
@@ -134,7 +147,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     retry: false,
     placeholderData: keepPreviousData,
   });
-  const dirty = useMemo(() => (table ? JSON.stringify(original.data) !== designKey : true), [table, original.data, designKey]);
+  const dirty = draft?.dirty ?? false;
   /** Latest Ctrl+S action, for the window-level shortcut (only the active tab's designer is mounted). */
   const saveShortcutRef = useRef<() => void>(() => {});
   /** Latest `startReview`, run after a blurred field's pending edit lands. */
@@ -204,16 +217,21 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   addRowRef.current = section === "indexes" ? addIndex : section === "foreignKeys" ? addFk : addColumn;
 
   const startReview = async () => {
+    const store = useDesignerDrafts.getState();
+    if (store.drafts[tabId]?.busy) return;
+    store.flush(tabId);
+    const current = useDesignerDrafts.getState().drafts[tabId];
+    if (!current) return;
     setBusy(true);
     try {
       if (table) {
-        const statements = await api.planTable(connectionId, database, original.data ?? null, design);
+        const statements = await api.planTable(connectionId, database, current.original, current.design);
         if (statements.length === 0) notify("No changes to save");
         else setReview({ statements });
       } else {
         // Surface design errors before asking for the name.
-        await api.planTable(connectionId, database, null, withName(design, design.name || "new_table"));
-        setReview({ name: design.name });
+        await api.planTable(connectionId, database, null, withName(current.design, current.design.name || "new_table"));
+        setReview({ name: current.design.name });
       }
     } catch (e) {
       notifyError("The design is not valid", e);
@@ -225,17 +243,31 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   const statements = !review ? null : "statements" in review ? review.statements : reviewName ? newPlan.data ?? null : null;
   const canApply = !busy && !!statements && (!!table || (reviewName !== "" && !newPlan.isFetching && !newPlan.isError));
   const apply = async () => {
-    if (!canApply || !statements) return;
+    if (!canApply || !statements || useDesignerDrafts.getState().drafts[tabId]?.busy) return;
     const saved = table ? design : finalDesign(design);
     setBusy(true);
     try {
+      if (useGridStates.getState().states[tabId]?.committing) {
+        notify("Save in progress", "Wait for the pending grid save to finish before altering this table.");
+        return;
+      }
+      if (table && saved.name !== table && hasPendingEdits(tabId) && !(await confirmAction({
+        title: "Discard grid changes",
+        message: "Renaming this table will close its current tab and discard pending grid edits. Continue?",
+        confirmLabel: "Discard and rename",
+        danger: true,
+      }))) return;
       await api.applyDdl(connectionId, database, statements);
       setReview(null);
-      setDesign(saved);
+      const canonical = await api.tableDesign(connectionId, database, saved.name).catch((error) => {
+        notifyError("Table saved, but its design could not be reloaded", error);
+        return { ...saved, columns: saved.columns.map((column) => ({ ...column, originalName: column.name })) };
+      });
+      useDesignerDrafts.getState().saved(tabId, canonical);
+      qc.setQueryData(["tableDesign", connectionId, database, saved.name], canonical);
       notify(table ? "Table altered" : "Table created", saved.name);
       await qc.invalidateQueries({ queryKey: ["objects", connectionId, database] });
       await qc.invalidateQueries({ queryKey: ["tableInfo", connectionId, database] });
-      await qc.invalidateQueries({ queryKey: ["tableDesign", connectionId, database] });
       await qc.invalidateQueries({ queryKey: ["page", connectionId, database] });
       onSaved(saved.name);
     } catch (e) {
@@ -278,7 +310,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
           </label>
         )}
         <div className="grow" />
-        {table && <button className="btn" disabled={!dirty || busy} onClick={() => original.data && setDesign(structuredClone(original.data))}><Undo2 size={15} />Revert</button>}
+        {table && <button className="btn" disabled={!dirty || busy} onClick={() => useDesignerDrafts.getState().revert(tabId)}><Undo2 size={15} />Revert</button>}
         <button className="btn primary" disabled={busy || !dirty || (!!table && !design.name.trim())} onClick={() => void startReview()} title={`${MOD}+S`}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
       </div>
       <div className="sheet-tabs" role="tablist">
@@ -289,7 +321,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
         ))}
       </div>
 
-      <div className="table-scroll designer-body">
+      <div className="table-scroll designer-body" inert={busy}>
         {section === "columns" && (
           <>
             <table className="list-table design-table">
@@ -313,7 +345,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                   return (
                     <tr key={i}>
                       <td className="center">{c.primaryKey && <KeyRound size={14} className="pk-icon" />}</td>
-                      <td><CommitInput value={c.name} label="Column name" onCommit={(name) => setColumn(i, { name })} /></td>
+                      <td><CommitInput tabId={tabId} field={`column:${i}`} value={c.name} label="Column name" onCommit={(name) => setColumn(i, { name })} /></td>
                       <td><ComboInput value={t.base} options={typeOptions} label="Column type" onChange={(base) => {
                             // Like Navicat, a new type brings its usual length (INT → 11, DECIMAL → 10,2).
                             setType({ base, length: lengthForType(engine, base, t.length), unsigned: t.unsigned && isNumericType(base) });
@@ -354,7 +386,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                 {design.indexes.map((x, i) => (
                   <tr key={i}>
                     <td><input className="cell-input" value={x.name} placeholder={x.columns.length ? `idx_${x.columns.join("_")}` : "idx_<columns>"} aria-label="Index name" onChange={(e) => setIndex(i, { name: e.target.value })} /></td>
-                    <td><ColumnList value={x.columns} options={columnNames} onChange={(columns) => setIndex(i, { columns })} /></td>
+                    <td><ColumnList tabId={tabId} field={`index:${i}`} value={x.columns} options={columnNames} onChange={(columns) => setIndex(i, { columns })} /></td>
                     <td>
                       <select
                         className="cell-input"
@@ -404,14 +436,14 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                 {design.foreignKeys.map((f, i) => (
                   <tr key={i}>
                     <td><input className="cell-input" value={f.name} aria-label="Foreign key name" onChange={(e) => setFk(i, { name: e.target.value })} /></td>
-                    <td><ColumnList value={f.columns} options={columnNames} onChange={(columns) => setFk(i, { columns })} /></td>
+                    <td><ColumnList tabId={tabId} field={`fk:${i}:columns`} value={f.columns} options={columnNames} onChange={(columns) => setFk(i, { columns })} /></td>
                     <td>
                       <select className="cell-input" value={f.refTable} aria-label="Referenced table" onChange={(e) => setFk(i, { refTable: e.target.value })}>
                         <option value="" />
                         {objects.data?.filter((o) => o.kind === "table").map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
                       </select>
                     </td>
-                    <td><ColumnList value={f.refColumns} onChange={(refColumns) => setFk(i, { refColumns })} /></td>
+                    <td><ColumnList tabId={tabId} field={`fk:${i}:references`} value={f.refColumns} onChange={(refColumns) => setFk(i, { refColumns })} /></td>
                     <td><select className="cell-input" value={f.onUpdate} aria-label="On update" onChange={(e) => setFk(i, { onUpdate: e.target.value })}>{FK_ACTIONS.map((a) => <option key={a}>{a}</option>)}</select></td>
                     <td><select className="cell-input" value={f.onDelete} aria-label="On delete" onChange={(e) => setFk(i, { onDelete: e.target.value })}>{FK_ACTIONS.map((a) => <option key={a}>{a}</option>)}</select></td>
                     <td><button className="icon-btn danger" title="Delete foreign key" onClick={() => patch({ foreignKeys: design.foreignKeys.filter((_, j) => j !== i) })}><Trash2 size={14} /></button></td>
@@ -521,29 +553,32 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   );
 }
 
-function ColumnList({ value, options, onChange }: { value: string[]; options?: string[]; onChange: (v: string[]) => void }) {
-  const [text, setText] = useState(value.join(", "));
-  useEffect(() => setText(value.join(", ")), [value]);
+function ColumnList({ tabId, field, value, options, onChange }: { tabId: string; field: string; value: string[]; options?: string[]; onChange: (v: string[]) => void }) {
+  const text = useDesignerDrafts((s) => s.drafts[tabId]?.inputs[field]) ?? value.join(", ");
+  const input = useDesignerDrafts((s) => s.input);
   const id = useMemo(() => `cols-${Math.random().toString(36).slice(2)}`, []);
   return (
     <>
-      <input className="cell-input" list={options ? id : undefined} value={text} aria-label="Columns" onChange={(e) => setText(e.target.value)} onBlur={() => onChange(splitList(text))} />
+      <input className="cell-input" list={options ? id : undefined} value={text} aria-label="Columns" onChange={(e) => input(tabId, field, e.target.value === value.join(", ") ? null : e.target.value)} onBlur={() => { onChange(splitList(text)); input(tabId, field, null); }} />
       {options && <datalist id={id}>{options.map((o) => <option key={o} value={o} />)}</datalist>}
     </>
   );
 }
 
 /** Text input that reports its value on blur or Enter, so renames propagate once per edit. */
-function CommitInput({ value, label, onCommit }: { value: string; label: string; onCommit: (v: string) => void }) {
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
-  const commit = () => text !== value && onCommit(text.trim());
+function CommitInput({ tabId, field, value, label, onCommit }: { tabId: string; field: string; value: string; label: string; onCommit: (v: string) => void }) {
+  const text = useDesignerDrafts((s) => s.drafts[tabId]?.inputs[field]) ?? value;
+  const input = useDesignerDrafts((s) => s.input);
+  const commit = () => {
+    if (text !== value) onCommit(text.trim());
+    input(tabId, field, null);
+  };
   return (
     <input
       className="cell-input"
       value={text}
       aria-label={label}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => input(tabId, field, e.target.value === value ? null : e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => e.key === "Enter" && commit()}
     />

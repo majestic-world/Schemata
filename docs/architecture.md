@@ -18,24 +18,28 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 ## Row editing
 
-- Row identity: primary key, else a unique key over non-null columns, else SQLite `rowid`, else (MySQL/MariaDB tables without a key, like Navicat) every column whose value matches exactly. By-value changes compare with `<=>` so NULL matches NULL and add `LIMIT 1`, so of several identical rows only one changes. FLOAT, binary, BIT, JSON and spatial columns are left out of the match (previews or approximate storage); with nothing left, and for views, the grid is read-only.
+- Row identity: primary key, else a complete nonpartial unique key over non-null named columns, else an unshadowed SQLite rowid alias, else (MySQL/MariaDB tables without a key, like Navicat) every column whose value matches exactly. By-value changes compare with `<=>` so NULL matches NULL and add `LIMIT 1`, so of several identical rows only one changes. FLOAT, binary, BIT, JSON and spatial columns are left out of the match (previews or approximate storage); with nothing left, and for views, the grid is read-only.
 - The UI accumulates a change set (updates keyed by row identity, inserts, deletes); the core applies it in one transaction and reports the first failing change. On failure the UI keeps the pending changes.
-- Pending edits address rows by position, so while any exist the grid keeps showing (and commits against) the page snapshot they were made on instead of refetched data. They live in a per-tab store, so switching tabs or views does not lose them.
+- Pending edits address rows by position, so while any exist the grid keeps showing (and commits against) the page snapshot they were made on instead of refetched data. They live in a per-tab store, so switching tabs or views does not lose them. Grid mutations are blocked while committing; saving finalizes the active cell before collecting the change set.
 
 ## Table design
 
 - A `TableDesign` value is the single input for create and alter. The core diffs the original and new designs into a DDL list; that list is both the preview the user reviews and exactly what gets executed.
 - MySQL/MariaDB alterations run as `ALTER TABLE`. SQLite changes its `ALTER TABLE` cannot express use the [official rebuild procedure](https://www.sqlite.org/lang_altertable.html#otheralter): foreign keys off, new table, copy data, drop, rename, recreate indexes, triggers and dependent views, `foreign_key_check`. A failed alteration leaves the table unchanged.
 - MySQL/MariaDB DDL names tables without the database (``CREATE TABLE `t` ``); `apply_ddl` runs `USE <db>` on its connection first. SQLite DDL stays schema-qualified, since SQLite has no `USE` and attached databases need the prefix.
+- Schema changes must not silently remove attributes the designer cannot represent. Unsupported SQLite rebuilds and MySQL column redefinitions are rejected before executing DDL. SQLite rebuilds preserve the AUTOINCREMENT high-water mark.
+- Generated columns remain visible in the data grid but are not writable and are excluded from backup/export INSERTs. SQLite row metadata and selected values use the same column ordering.
 - A new table is named in the review dialog when saving (button or Ctrl+S), not in the designer; until then the SQL preview tab uses the placeholder `new_table`.
 
 ## Scripts and cancellation
 
 - The script splitter is dialect-aware (quotes, backticks, comments, `DELIMITER`, trigger bodies). In the SQL editor, execution stops at the first error; result sets are capped at 1,000 rows with continuation.
-- Cancelling: MySQL/MariaDB issue `KILL QUERY <thread id>` from another connection; SQLite uses its interrupt handle. Export, import, dump and restore check a cancellation token between batches.
-- Long operations stream in batches between the database and files and emit progress events; the UI never holds whole tables in memory.
+- Cancelling: MySQL/MariaDB issue `KILL QUERY <thread id>` through a control connection independent of the work pool; SQLite uses its interrupt handle. File execution also interrupts the active statement, not only the next batch.
+- Long operations stream in batches between the database and files and emit progress events; the UI never holds whole tables in memory. SQLite table copies stage rows in a temporary file before importing, avoiding a reader/writer deadlock on the shared connection.
 - Running a `.sql` file or restoring a backup must not leave the session dirty: after an error or cancellation any open transaction is rolled back and foreign-key checks are re-enabled. The SQL editor does not do this, so deliberate transactions keep working across runs.
 - Exports and backups write to a uniquely named temporary file next to the destination and replace it only on success, so a failed or cancelled run never destroys an existing file.
+- SQL files require valid UTF-8 (with an optional BOM); invalid bytes fail the operation instead of silently replacing stored text.
+- Replacing existing rows during test-data generation uses DELETE and INSERT within the same transaction. Failed planning, insertion or cancellation must preserve the previous data. Operations requiring rollback reject nontransactional table engines.
 
 ## Dumps
 
@@ -65,6 +69,9 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - F6 opens the existing rename dialog for the selected table while Objects is active. It ignores key repeat, modifier chords, text editing, open dialogs/menus, and non-table selections.
 - Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
 - Single and grouped tab closures share `requestCloseTabs`. Unsaved SQL or pending grid edits require one confirmation before any targeted tab closes; cancelling leaves the entire group open.
+- Table-designer drafts survive tab and view switches and participate in the same discard confirmation. Native window closure (including Alt+F4) also checks unsaved work and active operations.
+- Query results retain the connection/database context of execution for continuation and export; changing the editor's database does not change existing results.
+- Changing a saved connection's target requires disconnecting first, including while its initial connection is being established.
 - Clicking empty space or a header in the object list clears all selected objects while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selection.
 - Right-clicking blank space in Objects opens database-scoped actions and clears object selection. New Table opens the designer; Execute Sql File opens the SQL runner; Dump Sql File and Dump Sql With Data reuse the backup dialog with structure-only and structure-plus-data presets. Table rows retain their own context menus, including table-specific data generation.
 - Execute SQL File separates General configuration from Message Log results. The log shows attempted/successful/failed statement counts from the final engine report, elapsed time and byte-read progress; counts remain unknown while running or when no report is available. Only a successful report turns the bar green. UTF-8/BOM decoding, continue-on-error and script-controlled transactions retain existing execution semantics.
@@ -78,8 +85,8 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Persistence
 
 - Connection definitions: JSON in the app-config directory, never containing passwords.
-- Passwords: OS credential store via `keyring`, keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect.
-- Query history: app-data directory. Window size/position: Tauri window-state plugin. Panel sizes and tree state: persisted frontend stores.
+- Passwords: OS credential store via `keyring`, keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect. Connections with password saving disabled never read an old stored credential; failures to remove credentials are reported.
+- Query history: app-data directory, atomically replaced; damaged history is preserved without preventing startup. A process-lifetime profile lock prevents concurrent application instances from overwriting saved state. Window size/position: Tauri window-state plugin. Panel sizes and tree state: persisted frontend stores.
 - Favorites (`schematadb.favorites`) and tree filters (`schematadb.treeFilter`, without the search text) persist in frontend storage. Favorites follow table renames and are dropped with the object.
 - The Create table dialog's "Add `created_at` and `updated_at`" choice (`schematadb.designerPrefs`, off by default) persists and applies to later new tables until changed; it appends two nullable `DATETIME` columns, skipping names the design already has.
 - Appearance: `schematadb.appearance` persists the light/dark choice in frontend storage. `main.tsx` applies it to the document root before React renders, so panes and portal-based dialogs share the same CSS tokens. The SQL editor also switches its CodeMirror theme for syntax highlighting.
@@ -94,6 +101,16 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Core tests exercise the public `schematadb-core` API against real engines (SQLite files, MySQL and MariaDB in Docker), running the same scenarios on all three. Assert resulting database state, returned values or produced files; generated SQL is verified by executing it, not by string matching.
 - Frontend: Vitest on pure state modules (grid pending changes, import column mapping, etc.). No automated UI end-to-end tests; UI is validated manually.
 
+## Release-candidate validation (2026-11-11)
+
+- Rust workspace: 207 tests passed, including real SQLite, MySQL 8.4 and MariaDB 11.4 scenarios; workspace Clippy passed with warnings denied.
+- Frontend: production build/typecheck, 52 Vitest tests and third-party license verification passed. Production npm dependency audit found no known vulnerabilities.
+- Real Windows UI smoke used an isolated application profile and disposable databases: Ctrl+S with only the active cell and with an existing pending edit, generated-column read-only behavior, designer drafts across tabs/views, cancellation of native close, locked connection targets, and continuation of a 1,001-row query after changing the editor's database.
+- Docker packaging produced `package/linux/Schemata_0.1.0_amd64.AppImage` and `package/macos/Schemata_0.1.0_aarch64.pkg`. These are build proofs, not installation/runtime validation on those operating systems.
+- Native Windows packaging produced `package/windows/Schemata_0.1.0_x64-setup.exe` with the final fixes. Installer execution was not performed; the real application UI was exercised separately in an isolated release-mode profile.
+- The approved native-close path requires both `core:window:allow-close` and `core:window:allow-destroy`: Tauri's `onCloseRequested` implementation calls `destroy()` after an event is accepted. Windows closure smoke verified that clicking the caption X removed the isolated application's window and terminated its process with exit code 0; merely dismissing the confirmation is not sufficient proof.
+
 ## Pending
 
-- The CI workflow (`.github/workflows/ci.yml`) has never run on GitHub: the Linux/macOS jobs and the `.deb`/`.AppImage`/`.dmg` artifacts are unverified until the first push.
+- The GitHub CI workflow has not been exercised here. Native Linux/macOS CI jobs, `.deb`/`.dmg` output, and installation/runtime smoke tests on Linux and macOS remain unverified.
+- Dependency audit on 2026-11-11: RustSec reports soundness warnings for Linux transitive dependencies `glib 0.18.5` (`RUSTSEC-2024-0429`, through Tauri/GTK) and `memmap2 0.5.10` (`RUSTSEC-2026-0186`, through decorum/linicon). Their patched major/minor versions are not drop-in replacements for the upstream dependency requirements. These warnings are not a clean Linux security approval. Five additional unmaintained-crate warnings remain; the audit reports no vulnerability errors.

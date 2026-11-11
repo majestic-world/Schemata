@@ -47,6 +47,7 @@ export function literalDefault(expr: string): CellValue | null {
 export function addRow(p: Pending, columns: ColumnInfo[]): { pending: Pending; row: RowRef } {
   const values: Record<string, CellValue> = {};
   for (const c of columns) {
+    if (c.generated) continue;
     const v = c.default === null || c.autoIncrement ? null : literalDefault(c.default);
     if (v) values[c.name] = v;
   }

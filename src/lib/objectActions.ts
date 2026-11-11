@@ -7,6 +7,7 @@ import { notify, notifyError } from "../store/toasts";
 import { useWorkspace } from "../store/workspace";
 import { useFavorites } from "../store/favorites";
 import { plural } from "./format";
+import { confirmDiscardTabs } from "./tabActions";
 
 export type ObjectRef = { connectionId: string; database: string; name: string; kind: ObjectKind };
 
@@ -72,9 +73,12 @@ export async function truncateTable(o: ObjectRef, qc: QueryClient) {
 export async function renameTable(o: ObjectRef, qc: QueryClient) {
   const to = await promptAction({ title: "Rename table", message: "", confirmLabel: "Rename", input: { label: "New name", initial: o.name } });
   if (!to || to === o.name) return;
+  const tabs = useTabs.getState().tabs.filter((tab) => tab.kind === "table" && tab.connectionId === o.connectionId && tab.database === o.database && tab.name === o.name);
+  if (!(await confirmDiscardTabs(tabs.map((tab) => tab.id)))) return;
+  // Discard only after approval, before the asynchronous rename can race with new edits in these tabs.
+  for (const tab of tabs) useTabs.getState().close(tab.id);
   try {
     await api.renameTable(o.connectionId, o.database, o.name, to);
-    closeTabsFor(o.connectionId, o.database, o.name);
     useFavorites.getState().rename(o, to);
     useWorkspace.getState().select({ connectionId: o.connectionId, database: o.database, object: { name: to, kind: o.kind } });
     refreshObjects(qc, o);

@@ -3,6 +3,16 @@ import type { ConnectionConfig } from "../api/types";
 
 type DialogState = { mode: "create" } | { mode: "edit"; config: ConnectionConfig };
 
+/** Cosmetic and credential changes do not change the live session's target. */
+export function connectionTargetChanged(original: ConnectionConfig, next: ConnectionConfig): boolean {
+  return original.engine !== next.engine
+    || original.host !== next.host
+    || original.port !== next.port
+    || original.user !== next.user
+    || original.database !== next.database
+    || original.filePath !== next.filePath;
+}
+
 type ConnectionsState = {
   /** Server version per open connection id. */
   open: Record<string, string>;

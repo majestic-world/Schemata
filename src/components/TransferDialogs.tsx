@@ -9,6 +9,7 @@ import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
 import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
+import { useOperationActivity } from "../store/operationActivity";
 import { Dialog } from "./Dialog";
 import { formatCount, plural } from "../lib/format";
 import { assign, autoMap, toMapping, type MappingDraft } from "../lib/importMapping";
@@ -22,23 +23,27 @@ function useOperation<R>() {
   const opId = useRef<string | null>(null);
   const progress = useRef<{ done: number; total: number | null }>({ done: 0, total: null });
   const run = async (start: (operationId: string) => Promise<R>) => {
+    if (opId.current) return;
     const id = crypto.randomUUID();
     opId.current = id;
     progress.current = { done: 0, total: null };
     setPhase({ state: "running", ...progress.current });
-    const unlisten = await listen<OperationProgress>("operation-progress", (e) => {
-      if (e.payload.operationId === id) {
-        progress.current = { done: e.payload.done, total: e.payload.total };
-        setPhase({ state: "running", ...progress.current });
-      }
-    });
+    useOperationActivity.getState().begin(id);
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<OperationProgress>("operation-progress", (e) => {
+        if (e.payload.operationId === id) {
+          progress.current = { done: e.payload.done, total: e.payload.total };
+          setPhase({ state: "running", ...progress.current });
+        }
+      });
       setPhase({ state: "done", report: await start(id) });
     } catch (e) {
       setPhase({ state: "failed", error: e as AppError });
     } finally {
-      unlisten();
       opId.current = null;
+      useOperationActivity.getState().end(id);
+      unlisten?.();
     }
   };
   const cancel = () => opId.current && void api.cancelOperation(opId.current);

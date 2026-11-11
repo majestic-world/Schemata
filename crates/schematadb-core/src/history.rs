@@ -1,5 +1,7 @@
+use crate::store::persist_json;
 use crate::{Result, ScriptResult, StatementOutcome};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,8 +28,18 @@ pub struct QueryHistory {
 
 impl QueryHistory {
     pub fn open(path: &Path) -> Result<Self> {
-        let entries = match std::fs::read_to_string(path) {
-            Ok(raw) => serde_json::from_str(&raw)?,
+        let entries = match std::fs::read(path) {
+            Ok(raw) => match serde_json::from_slice(&raw) {
+                Ok(entries) => entries,
+                Err(_) => {
+                    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+                    let mut backup = tempfile::Builder::new().prefix("history-corrupt-").suffix(".json").tempfile_in(dir)?;
+                    backup.write_all(&raw)?;
+                    backup.as_file().sync_all()?;
+                    backup.keep().map_err(|error| error.error)?;
+                    Vec::new()
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
@@ -50,10 +62,7 @@ impl QueryHistory {
                 }
             });
         }
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&self.path, serde_json::to_vec(&*entries)?)?;
+        persist_json(&self.path, &serde_json::to_vec(&*entries)?)?;
         Ok(())
     }
 
@@ -72,5 +81,33 @@ impl QueryHistory {
     /// Newest first.
     pub fn list(&self, connection_id: &str) -> Vec<HistoryEntry> {
         self.entries.lock().unwrap().iter().rev().filter(|e| e.connection_id == connection_id).cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueryHistory;
+
+    #[test]
+    fn malformed_history_is_preserved_and_does_not_prevent_new_queries() {
+        for damaged in [b"{not valid JSON".as_slice(), b"\xff\xfe".as_slice()] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("history.json");
+            std::fs::write(&path, damaged).unwrap();
+            let history = QueryHistory::open(&path).unwrap();
+            assert!(history.list("connection").is_empty());
+            assert_eq!(std::fs::read(&path).unwrap(), damaged);
+            let backups: Vec<_> = std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|entry| entry.file_name().unwrap().to_string_lossy().starts_with("history-corrupt-"))
+                .collect();
+            assert_eq!(backups.len(), 1);
+            assert_eq!(std::fs::read(&backups[0]).unwrap(), damaged);
+            history.record("connection", "SELECT 1", true, 1).unwrap();
+            let reopened = QueryHistory::open(&path).unwrap();
+            assert_eq!(reopened.list("connection")[0].sql, "SELECT 1");
+            assert_eq!(std::fs::read(&backups[0]).unwrap(), damaged);
+        }
     }
 }

@@ -67,7 +67,7 @@ impl Splitter {
             && self.state == State::Normal
             && !self.has_code
             && trimmed.len() > 10
-            && trimmed[..10].eq_ignore_ascii_case("DELIMITER ")
+            && trimmed.get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case("DELIMITER "))
         {
             self.delimiter = trimmed[10..].trim().to_owned();
             self.buf.clear();

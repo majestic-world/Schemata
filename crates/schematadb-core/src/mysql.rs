@@ -12,20 +12,28 @@ use sqlx::mysql::MySqlArguments;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::pool::PoolConnection;
 use sqlx::query::Query;
-use sqlx::{AssertSqlSafe, Column, Either, Row, Statement, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, Column, Connection, Either, Row, Statement, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+
+struct RunningQuery {
+    thread: u64,
+    cancelled: bool,
+    cancel_complete: Option<oneshot::Receiver<()>>,
+}
 
 pub struct MySqlDriver {
     pool: MySqlPool,
+    connect_options: MySqlConnectOptions,
     engine: Engine,
     version: String,
     uncached_statistics: bool,
     /// Server thread id per running execution, used by `KILL QUERY`.
-    running: Mutex<HashMap<String, u64>>,
+    running: Mutex<HashMap<String, RunningQuery>>,
 }
 
 pub(crate) fn quote_ident(name: &str) -> String {
@@ -183,7 +191,7 @@ fn default_expression(engine: Engine, raw: Option<String>, data_type: &str, extr
         let upper = raw.to_ascii_uppercase();
         return Some(if upper.starts_with("CURRENT_TIMESTAMP") || upper.starts_with("NOW") { raw } else { format!("({raw})") });
     }
-    if is_numeric_type(data_type) { Some(raw) } else { Some(format!("'{}'", raw.replace('\'', "''"))) }
+    if is_numeric_type(data_type) { Some(raw) } else { Some(crate::design::mysql::literal(&raw)) }
 }
 
 /// Column names of a statement, by preparing it. Used when a result set is empty and has no row to read them
@@ -254,14 +262,14 @@ impl MySqlDriver {
             .max_connections(6)
             .min_connections(1)
             .acquire_timeout(Duration::from_secs(15))
-            .connect_with(opts)
+            .connect_with(opts.clone())
             .await
             .map_err(map_err)?;
         let version: String = sqlx::query_scalar("SELECT VERSION()").fetch_one(&pool).await.map_err(map_err)?;
         let engine = if version.to_ascii_lowercase().contains("mariadb") { Engine::MariaDb } else { Engine::MySql };
         let uncached_statistics = engine == Engine::MySql
             && version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 8);
-        Ok(Self { pool, engine, version, uncached_statistics, running: Mutex::new(HashMap::new()) })
+        Ok(Self { pool, connect_options: opts, engine, version, uncached_statistics, running: Mutex::new(HashMap::new()) })
     }
 
     /// Read current engine statistics rather than MySQL 8's day-old INFORMATION_SCHEMA cache.
@@ -271,6 +279,29 @@ impl MySqlDriver {
             sqlx::query("SET SESSION information_schema_stats_expiry = 0").execute(&mut *conn).await.map_err(map_err)?;
         }
         Ok(conn)
+    }
+
+    /// Cancellation must not queue behind the very queries occupying every pooled connection.
+    async fn kill_query(&self, thread: u64) -> Result<()> {
+        let mut conn = sqlx::MySqlConnection::connect_with(&self.connect_options).await.map_err(map_err)?;
+        sqlx::raw_sql(AssertSqlSafe(format!("KILL QUERY {thread}"))).execute(&mut conn).await.map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn require_transactional(&self, db: &str, table: &str) -> Result<()> {
+        let supported: Option<String> = sqlx::query_scalar(
+            "SELECT e.TRANSACTIONS FROM information_schema.TABLES t \
+             JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?",
+        )
+        .bind(db)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?;
+        if supported.as_deref() != Some("YES") {
+            return Err(AppError::validation("Atomic edits and imports require a transactional storage engine (for example InnoDB)"));
+        }
+        Ok(())
     }
 
     async fn run_statement(conn: &mut sqlx::MySqlConnection, sql: &str, row_limit: usize) -> Result<StatementOutcome> {
@@ -376,12 +407,16 @@ impl Driver for MySqlDriver {
         }
         if let Some(id) = execution_id {
             let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
-            self.running.lock().unwrap().insert(id.to_owned(), thread);
+            self.running.lock().unwrap().insert(id.to_owned(), RunningQuery { thread, cancelled: false, cancel_complete: None });
         }
         let mut outcomes = Vec::new();
         let mut error = None;
+        let cancelled = || execution_id.is_some_and(|id| self.running.lock().unwrap().get(id).is_some_and(|query| query.cancelled));
         for (index, statement) in statements.into_iter().enumerate() {
-            match Self::run_statement(&mut conn, &statement, row_limit).await {
+            let result = if cancelled() { Err(AppError::cancelled()) } else { Self::run_statement(&mut conn, &statement, row_limit).await };
+            // MySQL may return a successful SLEEP result when KILL QUERY interrupts it.
+            let result = if cancelled() { Err(AppError::cancelled()) } else { result };
+            match result {
                 Ok(o) => outcomes.push(o),
                 Err(e) => {
                     error = Some(StatementError { index, statement, error: e });
@@ -390,7 +425,11 @@ impl Driver for MySqlDriver {
             }
         }
         if let Some(id) = execution_id {
-            self.running.lock().unwrap().remove(id);
+            let running = self.running.lock().unwrap().remove(id);
+            if let Some(complete) = running.and_then(|query| query.cancel_complete) {
+                // Do not return this server thread to the pool before its pending KILL has finished.
+                let _ = complete.await;
+            }
         }
         Ok(ScriptResult { outcomes, error })
     }
@@ -444,13 +483,22 @@ impl Driver for MySqlDriver {
         columns: &[String],
         mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
         skip_errors: bool,
+        empty_first: bool,
     ) -> Result<ImportReport> {
+        self.require_transactional(db, table).await?;
+        self.table_info(db, table).await?.validate_writable_columns(columns.iter().map(String::as_str))?;
         let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
         let one = format!("({})", vec!["?"; columns.len()].join(", "));
         let prefix = format!("INSERT INTO {}.{} ({cols}) VALUES ", quote_ident(db), quote_ident(table));
         // MySQL allows at most 65,535 placeholders per statement.
         let per_statement = (60_000 / columns.len().max(1)).max(1);
         let mut tx = self.pool.begin().await.map_err(map_err)?;
+        if empty_first {
+            sqlx::raw_sql(AssertSqlSafe(format!("DELETE FROM {}.{}", quote_ident(db), quote_ident(table))))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_err)?;
+        }
         let mut report = ImportReport::default();
         while let Some(batch) = rows.recv().await {
             let batch = batch?;
@@ -496,7 +544,7 @@ impl Driver for MySqlDriver {
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        mut statements: tokio::sync::mpsc::Receiver<String>,
+        mut statements: tokio::sync::mpsc::Receiver<Result<String>>,
         stop_on_error: bool,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
@@ -504,28 +552,59 @@ impl Driver for MySqlDriver {
         if let Some(db) = db {
             sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
         }
+        let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
         let mut report = ScriptRunReport::default();
         let mut index = 0;
-        while let Some(st) = statements.recv().await {
-            if cancel.is_cancelled() {
-                break;
-            }
-            match sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn).await {
-                Ok(_) => report.executed += 1,
-                Err(e) => {
-                    report.failed.push(crate::transfer::failure(index, &st, map_err(e).message));
-                    if stop_on_error {
+        let mut input_error = None;
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                next = statements.recv() => next,
+            };
+            let st = match next {
+                None => break,
+                Some(Ok(st)) => st,
+                Some(Err(error)) => {
+                    input_error = Some(error);
+                    break;
+                }
+            };
+            let result = {
+                let query = sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn);
+                tokio::pin!(query);
+                tokio::select! {
+                    biased;
+                    result = &mut query => result.map_err(map_err).map(|_| ()),
+                    _ = cancel.cancelled() => {
+                        // Poll the query while establishing the control connection too: cancellation can race
+                        // its first socket write. Drain the interrupted response before session cleanup.
+                        let (_, killed) = tokio::join!(&mut query, self.kill_query(thread));
+                        killed.and(Err(AppError::cancelled()))
+                    }
+                }
+            };
+            match result {
+                Ok(()) => report.executed += 1,
+                Err(error) => {
+                    report.failed.push(crate::transfer::failure(index, &st, error.message));
+                    if stop_on_error || cancel.is_cancelled() {
                         break;
                     }
                 }
             }
             index += 1;
         }
-        // Scripts may open a transaction or disable FK checks for their session; the pooled connection must not keep that.
+        // Never return a dirty script session to the pool, including on reader/decode failures.
         sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await.map_err(map_err)?;
         sqlx::raw_sql("SET FOREIGN_KEY_CHECKS = 1").execute(&mut *conn).await.map_err(map_err)?;
-        // The reader may stop at cancellation without sending another statement: check after the channel closes too.
-        if cancel.is_cancelled() { Err(AppError::cancelled()) } else { Ok(report) }
+        if cancel.is_cancelled() {
+            Err(AppError::cancelled())
+        } else if let Some(error) = input_error {
+            Err(error)
+        } else {
+            Ok(report)
+        }
     }
 
     async fn dump_script(&self, db: &str) -> Result<DumpScript> {
@@ -636,9 +715,19 @@ DELIMITER ;",
     }
 
     async fn cancel(&self, execution_id: &str) -> Result<()> {
-        let thread = self.running.lock().unwrap().get(execution_id).copied();
-        if let Some(thread) = thread {
-            sqlx::raw_sql(AssertSqlSafe(format!("KILL QUERY {thread}"))).execute(&self.pool).await.map_err(map_err)?;
+        let cancellation = self.running.lock().unwrap().get_mut(execution_id).and_then(|query| {
+            if query.cancelled {
+                return None;
+            }
+            let (done, complete) = oneshot::channel();
+            query.cancelled = true;
+            query.cancel_complete = Some(complete);
+            Some((query.thread, done))
+        });
+        if let Some((thread, done)) = cancellation {
+            let result = self.kill_query(thread).await;
+            let _ = done.send(());
+            result?;
         }
         Ok(())
     }
@@ -734,6 +823,8 @@ DELIMITER ;",
                     nullable: text(r, 2)?.as_deref() == Some("YES"),
                     default: default_expression(self.engine, text(r, 3)?, &data_type, &extra),
                     auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
+                    generated: extra.to_ascii_uppercase().contains("VIRTUAL GENERATED")
+                        || extra.to_ascii_uppercase().contains("STORED GENERATED"),
                     comment: text(r, 5)?.filter(|c| !c.is_empty()),
                     name,
                 })
@@ -831,6 +922,8 @@ DELIMITER ;",
 
     async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
         let info = self.table_info(db, table).await?;
+        self.require_transactional(db, table).await?;
+        info.validate_changes(changes)?;
         let table_ref = format!("{}.{}", quote_ident(db), quote_ident(table));
         let dialect = crate::sql::ChangeDialect { empty_insert: "() VALUES ()", null_safe_eq: "<=>", single_row: "LIMIT 1" };
         let statements = crate::sql::change_statements(changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
@@ -874,11 +967,45 @@ DELIMITER ;",
         Ok(int(&row, 0)?.unwrap_or(0) as u64)
     }
 
-    async fn plan_table(&self, _db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
-        match original {
-            None => crate::design::mysql::create(design),
-            Some(original) => crate::design::mysql::alter(original, design),
+    async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
+        let Some(original) = original else {
+            return crate::design::mysql::create(design);
+        };
+        let statements = crate::design::mysql::alter(original, design)?;
+        if statements.is_empty() {
+            return Ok(statements);
         }
+        let info = self.table_info(db, &original.name).await?;
+        if info.columns.iter().any(|c| c.generated) {
+            return Err(AppError::validation("Tables with generated columns cannot be altered by the table designer"));
+        }
+        if statements.iter().any(|sql| sql.contains("CHANGE COLUMN")) {
+            let columns =
+                sqlx::query("SELECT EXTRA, COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?")
+                    .bind(db)
+                    .bind(&original.name)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(map_err)?;
+            for column in &columns {
+                let extra = text(column, 0)?
+                    .unwrap_or_default()
+                    .to_ascii_uppercase()
+                    .replace("AUTO_INCREMENT", "")
+                    .replace("DEFAULT_GENERATED", "");
+                let collation = text(column, 1)?;
+                if !extra.trim().is_empty() || (collation.is_some() && collation != info.collation) {
+                    return Err(AppError::validation(
+                        "Column attributes (such as ON UPDATE or a column collation) cannot be preserved by the designer; use SQL",
+                    ));
+                }
+            }
+            let upper = info.create_sql.to_ascii_uppercase();
+            if ["COLUMN_FORMAT", " STORAGE ", " SRID ", " INVISIBLE"].iter().any(|attribute| upper.contains(attribute)) {
+                return Err(AppError::validation("This table contains column storage attributes the designer cannot preserve; use SQL"));
+            }
+        }
+        Ok(statements)
     }
 
     async fn apply_ddl(&self, db: &str, statements: &[String]) -> Result<()> {

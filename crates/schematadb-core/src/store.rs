@@ -1,5 +1,6 @@
 use crate::{AppError, Engine, Result, SecretStore};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -42,6 +43,8 @@ pub struct SaveOutcome {
     pub config: ConnectionConfig,
     /// False when a password was supplied but could not be stored in the credential store.
     pub password_saved: bool,
+    /// A credential-store failure; disabling password storage still prevents all future reads.
+    pub password_warning: Option<String>,
 }
 
 /// Saved connections persisted as JSON; passwords live in a [`SecretStore`].
@@ -73,17 +76,30 @@ impl ConnectionStore {
     pub fn save(&self, config: &ConnectionConfig, password: Option<&str>) -> Result<SaveOutcome> {
         let mut config = config.clone();
         let mut password_saved = false;
+        let mut password_warning = None;
         if config.save_password {
             match password {
                 Some(pw) => match self.secrets.set(&config.id, pw) {
                     Ok(()) => password_saved = true,
-                    Err(_) => config.save_password = false,
+                    Err(error) => {
+                        config.save_password = false;
+                        password_warning = Some(format!("The password could not be saved: {}", error.message));
+                    }
                 },
-                None => password_saved = matches!(self.secrets.get(&config.id), Ok(Some(_))),
+                None => match self.secrets.get(&config.id) {
+                    Ok(Some(_)) => password_saved = true,
+                    Ok(None) => config.save_password = false,
+                    Err(error) => {
+                        config.save_password = false;
+                        password_warning = Some(format!("The saved password could not be read: {}", error.message));
+                    }
+                },
             }
-        } else {
-            // The credential store may be unavailable; there is then nothing stored to remove.
-            let _ = self.secrets.delete(&config.id);
+        } else if let Err(error) = self.secrets.delete(&config.id) {
+            password_warning = Some(format!(
+                "Password saving is disabled, but an existing credential could not be removed from the credential store: {}",
+                error.message
+            ));
         }
         {
             let mut configs = self.configs.lock().unwrap();
@@ -93,7 +109,7 @@ impl ConnectionStore {
             }
             self.persist(&configs)?;
         }
-        Ok(SaveOutcome { config, password_saved })
+        Ok(SaveOutcome { config, password_saved, password_warning })
     }
 
     /// Copies a connection (and its stored password) under a new id.
@@ -115,6 +131,9 @@ impl ConnectionStore {
     }
 
     pub fn password(&self, id: &str) -> Result<Option<String>> {
+        if !self.configs.lock().unwrap().iter().any(|config| config.id == id && config.save_password) {
+            return Ok(None);
+        }
         match self.secrets.get(id) {
             Ok(p) => Ok(p),
             Err(_) => Ok(None),
@@ -122,12 +141,17 @@ impl ConnectionStore {
     }
 
     fn persist(&self, configs: &[ConnectionConfig]) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(configs)?)?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
+        persist_json(&self.path, &serde_json::to_vec_pretty(configs)?)
     }
+}
+
+/// Writes a complete JSON snapshot without exposing partial contents or reusing a temporary path.
+pub(crate) fn persist_json(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }

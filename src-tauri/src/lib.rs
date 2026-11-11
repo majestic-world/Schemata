@@ -2,6 +2,7 @@ mod commands;
 mod window_chrome;
 
 use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
@@ -25,6 +26,22 @@ fn adopt_legacy_file(path: &Path) -> std::io::Result<()> {
     std::fs::copy(legacy, path).map(|_| ())
 }
 
+/// Held by Tauri state until shutdown, before reading or migrating any persistent files.
+struct PersistenceLock {
+    _file: File,
+}
+
+fn lock_app_directory(directory: &Path) -> std::io::Result<PersistenceLock> {
+    std::fs::create_dir_all(directory)?;
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(directory.join("instance.lock"))?;
+    file.try_lock().map_err(|error| {
+        std::io::Error::other(format!(
+            "Cannot lock Schemata's configuration directory. Another Schemata instance may already be running; close it before starting this instance. {error}"
+        ))
+    })?;
+    Ok(PersistenceLock { _file: file })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -32,7 +49,9 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::all() & !StateFlags::VISIBLE).build())
         .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
-            let connections = app.path().app_config_dir()?.join("connections.json");
+            let config_directory = app.path().app_config_dir()?;
+            app.manage(lock_app_directory(&config_directory)?);
+            let connections = config_directory.join("connections.json");
             let history = app.path().app_data_dir()?.join("history.json");
             adopt_legacy_file(&connections)?;
             adopt_legacy_file(&history)?;
@@ -107,4 +126,25 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Schemata");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_app_directory;
+
+    #[test]
+    fn persistence_lock_rejects_another_instance_until_shutdown() {
+        let directory = std::env::temp_dir().join(format!("schemata-instance-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let connections = directory.join("connections.json");
+        std::fs::write(&connections, b"existing connections").unwrap();
+        let first = lock_app_directory(&directory).unwrap();
+        let error = lock_app_directory(&directory).err().expect("a second instance must not acquire the lock");
+        assert!(error.to_string().contains("Another Schemata instance"));
+        assert_eq!(std::fs::read(&connections).unwrap(), b"existing connections");
+        drop(first);
+        let next = lock_app_directory(&directory).unwrap();
+        drop(next);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

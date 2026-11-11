@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CellValue, ColumnInfo, ColumnMeta } from "../api/types";
+import { hasPendingEdits, useGridStates } from "../store/gridState";
 import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isUnset, literalDefault, setCell } from "./pendingChanges";
 
 const t = (value: string): CellValue => ({ type: "text", value });
@@ -62,8 +63,8 @@ describe("pending grid changes", () => {
   });
 });
 
-const info = (name: string, def: string | null, autoIncrement = false): ColumnInfo => ({
-  name, dataType: "", nullable: true, default: def, autoIncrement, primaryKey: false, comment: null,
+const info = (name: string, def: string | null, autoIncrement = false, generated = false): ColumnInfo => ({
+  name, dataType: "", nullable: true, default: def, autoIncrement, generated, primaryKey: false, comment: null,
 });
 
 describe("new row defaults", () => {
@@ -92,6 +93,102 @@ describe("new row defaults", () => {
     expect(isUnset(pending, row, "success")).toBe(false);
     expect(buildChangeSet(pending, page, columns, ["id"]).changes).toEqual([
       { kind: "insert", values: [{ column: "success", value: n(0) }, { column: "status", value: t("new") }] },
+    ]);
+  });
+
+  it("omits generated columns from new rows even when metadata supplies a literal default", () => {
+    const { pending, row } = addRow(emptyPending(), [
+      info("name", "'new'"),
+      info("computed", "'generated'", false, true),
+    ]);
+    expect(isUnset(pending, row, "computed")).toBe(true);
+    expect(buildChangeSet(pending, page, columns, ["id"]).changes).toEqual([
+      { kind: "insert", values: [{ column: "name", value: t("new") }] },
+    ]);
+  });
+});
+
+describe("saving grid changes", () => {
+  const id = "grid";
+  const snapshot = { rows: page, columns };
+  beforeEach(() => useGridStates.setState(useGridStates.getInitialState(), true));
+  afterEach(() => useGridStates.setState(useGridStates.getInitialState(), true));
+
+  it("submits the latest staged value, including the first edit", () => {
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("latest"), t("a")),
+      snapshot,
+    }));
+    const submitted = useGridStates.getState().beginCommit(id)!;
+    expect(buildChangeSet(submitted.pending, submitted.snapshot!.rows, submitted.snapshot!.columns, ["id"]).changes).toEqual([
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("latest") }] },
+    ]);
+    expect(useGridStates.getState().beginCommit(id)).toBeNull();
+  });
+
+  it("blocks edits, inserts, deletes, discard and navigation while the save is pending", () => {
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("submitted"), t("a")),
+      snapshot,
+    }));
+    const submitted = useGridStates.getState().beginCommit(id)!;
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(1), "name", t("unsent"), t("b")),
+    }));
+    useGridStates.getState().update(id, (state) => ({ pending: addRow(state.pending, []).pending }));
+    useGridStates.getState().update(id, (state) => ({ pending: deleteRows(state.pending, [existing(2)]) }));
+    useGridStates.getState().update(id, () => ({ pending: emptyPending(), snapshot: null, offset: 500 }));
+    const locked = useGridStates.getState().states[id];
+    expect(locked.committing).toBe(true);
+    expect(locked.offset).toBe(0);
+    expect(locked.snapshot).toBe(snapshot);
+    expect(buildChangeSet(locked.pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("submitted") }] },
+    ]);
+
+    useGridStates.getState().finishCommit(id, submitted.pending, true);
+    expect(hasPendingEdits(id)).toBe(false);
+    expect(useGridStates.getState().states[id].snapshot).toBeNull();
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(1), "name", t("after save"), t("b")),
+    }));
+    expect(hasPendingEdits(id)).toBe(true);
+  });
+
+  it("retains failed changes and their page, then allows correcting the failed row", () => {
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("invalid"), t("a")),
+      snapshot,
+    }));
+    const submitted = useGridStates.getState().beginCommit(id)!;
+    useGridStates.getState().finishCommit(id, submitted.pending, false, existing(0));
+    expect(hasPendingEdits(id)).toBe(true);
+    expect(useGridStates.getState().states[id].snapshot).toBe(snapshot);
+    expect(useGridStates.getState().states[id].failedRow).toEqual(existing(0));
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("corrected"), t("a")),
+    }));
+    const retried = useGridStates.getState().beginCommit(id)!;
+    expect(buildChangeSet(retried.pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("corrected") }] },
+    ]);
+  });
+
+  it("ignores a stale save response instead of clearing newer, unsent changes", () => {
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("first"), t("a")),
+    }));
+    const first = useGridStates.getState().beginCommit(id)!;
+    useGridStates.getState().finishCommit(id, first.pending, true);
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(1), "name", t("second"), t("b")),
+    }));
+    useGridStates.getState().beginCommit(id);
+    useGridStates.getState().finishCommit(id, first.pending, true);
+    expect(hasPendingEdits(id)).toBe(true);
+    expect(useGridStates.getState().states[id].committing).toBe(true);
+    expect(buildChangeSet(useGridStates.getState().states[id].pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
+      { kind: "update", key: [n(2)], values: [{ column: "name", value: t("second") }] },
     ]);
   });
 });

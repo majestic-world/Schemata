@@ -6,6 +6,7 @@ use schematadb_core::{
     copy_table,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 fn no_progress() -> ProgressFn {
     Arc::new(|_| {})
@@ -129,4 +130,60 @@ async fn copies_from_mysql_into_sqlite() {
     assert_eq!(rows(target.as_ref(), "main", "customer").await, rows(t.driver.as_ref(), &t.db, "customer").await);
     assert_eq!(rows(target.as_ref(), "main", "orders").await.len(), 3);
     assert_eq!(target.table_info("main", "orders").await.unwrap().foreign_keys.len(), 1);
+}
+
+#[tokio::test]
+async fn sqlite_copies_ten_thousand_rows_on_the_same_connection() {
+    let t = TestDb::sqlite().await;
+    t.exec(
+        "CREATE TABLE large_source (id INTEGER PRIMARY KEY, note TEXT, amount REAL, payload BLOB, optional TEXT, large INTEGER);
+         WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 10000)
+         INSERT INTO large_source SELECT n, 'row-' || n || char(0) || 'é', 2.5, X'00FF', NULL, 9007199254740993 FROM seq;",
+    )
+    .await;
+    let target = to(&t.db, "large_copy", true);
+    let report = tokio::time::timeout(
+        Duration::from_secs(15),
+        copy_table(t.driver.as_ref(), &t.db, "large_source", t.driver.as_ref(), &target, no_progress(), CancellationToken::new()),
+    )
+    .await
+    .expect("copy must finish reading before importing through the same SQLite connection")
+    .unwrap();
+    assert_eq!(report.rows, 10000);
+    assert_eq!(t.driver.count_rows(&t.db, "large_copy", &[]).await.unwrap(), 10000);
+    for offset in (0..10000).step_by(1000) {
+        let request = PageRequest { offset, limit: 1000, sort: Some(SortSpec { column: "id".into(), desc: false }), filters: vec![] };
+        let original = t.driver.fetch_page(&t.db, "large_source", &request).await.unwrap();
+        let copied = t.driver.fetch_page(&t.db, "large_copy", &request).await.unwrap();
+        assert_eq!(copied.rows, original.rows);
+    }
+}
+
+#[tokio::test]
+async fn sqlite_copy_cancellation_during_streaming_removes_the_destination() {
+    let t = TestDb::sqlite().await;
+    t.exec(
+        "CREATE TABLE cancel_source (id INTEGER PRIMARY KEY, note TEXT);
+         WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 10000)
+         INSERT INTO cancel_source SELECT n, 'row-' || n FROM seq;",
+    )
+    .await;
+    let cancel = CancellationToken::new();
+    let token = cancel.clone();
+    let progress: ProgressFn = Arc::new(move |p| {
+        if p.done >= 500 {
+            token.cancel();
+        }
+    });
+    let target = to(&t.db, "cancel_copy", true);
+    let error = tokio::time::timeout(
+        Duration::from_secs(15),
+        copy_table(t.driver.as_ref(), &t.db, "cancel_source", t.driver.as_ref(), &target, progress, cancel),
+    )
+    .await
+    .expect("cancelling a blocked batch send must finish the copy")
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Cancelled);
+    assert_eq!(t.driver.count_rows(&t.db, "cancel_source", &[]).await.unwrap(), 10000);
+    assert!(!t.driver.list_objects(&t.db).await.unwrap().iter().any(|o| o.name == "cancel_copy"));
 }

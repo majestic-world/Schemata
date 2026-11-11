@@ -25,6 +25,13 @@ fn mysql_backslash_escapes_do_not_end_strings() {
 }
 
 #[test]
+fn mysql_splitter_accepts_multibyte_text_at_the_directive_boundary() {
+    for engine in [Engine::MySql, Engine::MariaDb] {
+        assert_eq!(split_statements("SELECT 'aé'; SELECT '🦀';", engine), vec!["SELECT 'aé'", "SELECT '🦀'"]);
+    }
+}
+
+#[test]
 fn keeps_sqlite_trigger_bodies_whole() {
     let sql = "CREATE TRIGGER tr AFTER INSERT ON t BEGIN INSERT INTO log VALUES (CASE WHEN 1 THEN 'x' END); DELETE FROM q; END; SELECT 1";
     assert_eq!(
@@ -148,14 +155,14 @@ async fn sqlite_script_cancellation_rolls_back_its_transaction() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let cancel = CancellationToken::new();
     for st in ["PRAGMA foreign_keys = OFF", "BEGIN TRANSACTION", "CREATE TABLE half (a INT)"] {
-        tx.send(st.to_owned()).await.unwrap();
+        tx.send(Ok(st.to_owned())).await.unwrap();
     }
     let driver = t.driver.clone();
     let token = cancel.clone();
     let run = tokio::spawn(async move { driver.execute_statements(Some("main"), rx, true, token).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     cancel.cancel();
-    tx.send("CREATE TABLE never (a INT)".into()).await.unwrap();
+    let _ = tx.send(Ok("CREATE TABLE never (a INT)".into())).await;
     drop(tx);
     let err = run.await.unwrap().unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
@@ -174,7 +181,7 @@ async fn sqlite_scripts_can_target_an_attached_database() {
     let other = dir.path().join("other.db").to_string_lossy().into_owned();
     t.driver.attach_database(&other, "other").await.unwrap();
     let (tx, rx) = tokio::sync::mpsc::channel(4);
-    tx.send("CREATE TABLE only_here (a INT)".to_owned()).await.unwrap();
+    tx.send(Ok("CREATE TABLE only_here (a INT)".to_owned())).await.unwrap();
     drop(tx);
     let report = t.driver.execute_statements(Some("other"), rx, true, CancellationToken::new()).await.unwrap();
     assert_eq!(report.executed, 1);
@@ -187,10 +194,61 @@ async fn cancellation_is_reported_when_the_script_stops_early() {
     let t = TestDb::sqlite().await;
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let cancel = CancellationToken::new();
-    tx.send("CREATE TABLE first (a INT)".to_owned()).await.unwrap();
+    tx.send(Ok("CREATE TABLE first (a INT)".to_owned())).await.unwrap();
     cancel.cancel();
     drop(tx);
     // The reader stopped without sending more; the consumer must still report cancellation.
     let err = t.driver.execute_statements(Some("main"), rx, true, cancel).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
 }
+
+async fn statement_reader_errors_roll_back_and_restore_foreign_keys(t: TestDb) {
+    t.exec("CREATE TABLE reader_error (id INT PRIMARY KEY)").await;
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let disable_fk = if t.engine == Engine::Sqlite { "PRAGMA foreign_keys = OFF" } else { "SET FOREIGN_KEY_CHECKS = 0" };
+    for statement in [disable_fk, "BEGIN", "INSERT INTO reader_error VALUES (1)"] {
+        tx.send(Ok(statement.to_owned())).await.unwrap();
+    }
+    tx.send(Err(schematadb_core::AppError::io("The SQL file could not be read"))).await.unwrap();
+    drop(tx);
+    let error = t.driver.execute_statements(Some(&t.db), rx, false, CancellationToken::new()).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Io);
+    assert_eq!(t.driver.count_rows(&t.db, "reader_error", &[]).await.unwrap(), 0);
+    let inspect_fk = if t.engine == Engine::Sqlite { "PRAGMA foreign_keys" } else { "SELECT @@FOREIGN_KEY_CHECKS" };
+    let report = t.driver.execute_script(Some(&t.db), inspect_fk, 1, None).await.unwrap();
+    assert!(report.error.is_none(), "{:?}", report.error);
+    let StatementOutcome::Rows { rows, .. } = &report.outcomes[0] else { panic!() };
+    assert_eq!(rows[0][0], CellValue::Int(1));
+}
+scenario!(statement_reader_errors_roll_back_and_restore_foreign_keys);
+
+async fn statement_consumer_cancels_an_active_query(t: TestDb) {
+    t.exec("CREATE TABLE cancelled_file (id INT PRIMARY KEY)").await;
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    for statement in ["BEGIN", "INSERT INTO cancelled_file VALUES (1)"] {
+        tx.send(Ok(statement.to_owned())).await.unwrap();
+    }
+    let query = if t.engine == Engine::Sqlite {
+        "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 1000000000) SELECT sum(n) FROM seq"
+    } else {
+        "SELECT SLEEP(10)"
+    };
+    tx.send(Ok(query.to_owned())).await.unwrap();
+    drop(tx);
+    let driver = t.driver.clone();
+    let db = t.db.clone();
+    let cancel = CancellationToken::new();
+    let token = cancel.clone();
+    let run = tokio::spawn(async move { driver.execute_statements(Some(&db), rx, true, token).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cancel.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .expect("cancellation must interrupt the active statement")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Cancelled);
+    assert_eq!(t.driver.count_rows(&t.db, "cancelled_file", &[]).await.unwrap(), 0);
+    t.exec("BEGIN; INSERT INTO cancelled_file VALUES (2); ROLLBACK;").await;
+}
+scenario!(statement_consumer_cancels_an_active_query);

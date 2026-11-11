@@ -6,6 +6,7 @@ use schematadb_core::{
     PageRequest, ProgressFn, SortSpec, SqlExportOptions, TextEncoding, export, import_csv, preview_csv, run_sql_file,
 };
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 fn no_progress() -> ProgressFn {
     Arc::new(|_| {})
@@ -194,3 +195,85 @@ async fn failed_export_keeps_an_existing_file() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "precious");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no partial files are left behind");
 }
+
+async fn invalid_utf8_sql_file_rolls_back_its_open_transaction(t: TestDb) {
+    t.exec("CREATE TABLE decoded (id INT PRIMARY KEY, note TEXT)").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("invalid.sql");
+    std::fs::write(
+        &file,
+        b"\xEF\xBB\xBFBEGIN;\nINSERT INTO decoded VALUES (1, 'valid');\nINSERT INTO decoded VALUES (2, '\xFF');\nCOMMIT;\n",
+    )
+    .unwrap();
+    for stop_on_error in [true, false] {
+        let error =
+            run_sql_file(t.driver.as_ref(), &t.db, &file, stop_on_error, no_progress(), CancellationToken::new()).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(t.driver.count_rows(&t.db, "decoded", &[]).await.unwrap(), 0);
+        t.exec("BEGIN; INSERT INTO decoded VALUES (3, 'session usable'); ROLLBACK;").await;
+    }
+}
+scenario!(invalid_utf8_sql_file_rolls_back_its_open_transaction);
+
+#[tokio::test]
+async fn sqlite_sql_export_with_structure_streams_more_than_the_channel_capacity() {
+    let t = TestDb::sqlite().await;
+    t.exec(
+        "CREATE TABLE large_export (id INTEGER PRIMARY KEY, note TEXT);
+         WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 3000)
+         INSERT INTO large_export SELECT n, 'row-' || n FROM seq;",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("large.sql");
+    let source = ExportSource::Table { table: "large_export".into() };
+    let format = ExportFormat::Sql(SqlExportOptions { include_create: true, table_name: None });
+    let report = tokio::time::timeout(
+        Duration::from_secs(15),
+        export(t.driver.as_ref(), &t.db, &source, &format, &file, no_progress(), CancellationToken::new()),
+    )
+    .await
+    .expect("SQL export must not wait for metadata while its stream owns the connection")
+    .unwrap();
+    assert_eq!(report.rows, 3000);
+    t.exec("DROP TABLE large_export").await;
+    let restored = run_sql_file(t.driver.as_ref(), &t.db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert!(restored.failed.is_empty(), "{:?}", restored.failed);
+    assert_eq!(t.driver.count_rows(&t.db, "large_export", &[]).await.unwrap(), 3000);
+    let request = PageRequest { offset: 2999, limit: 1, sort: Some(SortSpec { column: "id".into(), desc: false }), filters: vec![] };
+    let page = t.driver.fetch_page(&t.db, "large_export", &request).await.unwrap();
+    assert_eq!(
+        page.rows[0].iter().zip(&page.columns).filter(|(_, c)| !c.hidden).map(|(v, _)| v.clone()).collect::<Vec<_>>(),
+        vec![CellValue::Int(3000), CellValue::Text("row-3000".into())]
+    );
+}
+
+async fn sql_export_recomputes_generated_columns(t: TestDb) {
+    t.exec(
+        "CREATE TABLE generated_export (
+             id INT PRIMARY KEY, base INT,
+             doubled INT GENERATED ALWAYS AS (base * 2) STORED,
+             tripled INT GENERATED ALWAYS AS (base * 3) VIRTUAL);
+         INSERT INTO generated_export (id, base) VALUES (1, 7), (2, NULL);",
+    )
+    .await;
+    let original = rows(&t, "generated_export").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("generated.sql");
+    export(
+        t.driver.as_ref(),
+        &t.db,
+        &ExportSource::Table { table: "generated_export".into() },
+        &ExportFormat::Sql(SqlExportOptions { include_create: true, table_name: None }),
+        &file,
+        no_progress(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    t.exec("DROP TABLE generated_export").await;
+    let restored = run_sql_file(t.driver.as_ref(), &t.db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert!(restored.failed.is_empty(), "{:?}", restored.failed);
+    assert_eq!(rows(&t, "generated_export").await, original);
+}
+scenario!(sql_export_recomputes_generated_columns);

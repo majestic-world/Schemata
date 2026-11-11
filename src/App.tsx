@@ -6,6 +6,7 @@ import { OBJECTS_TAB, useTabs } from "./store/tabs";
 import { useWorkspace } from "./store/workspace";
 import { isMod, isWindows } from "./lib/platform";
 import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
+import { requestAppClose } from "./lib/tabActions";
 import { notifyError } from "./store/toasts";
 import { copyTable, pasteTable } from "./store/tableClipboard";
 import { designTable, renameTable } from "./lib/objectActions";
@@ -35,16 +36,38 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     let frame: number | undefined;
-    // Wait for the committed shell, fonts and a rendered frame, not remote connections.
-    void document.fonts.ready.then(() => {
+    let approvedClose = false;
+    const win = getCurrentWindow();
+    const unlisten = win.onCloseRequested((event) => {
+      if (approvedClose) {
+        approvedClose = false;
+        return;
+      }
+      event.preventDefault();
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      void requestAppClose(async () => {
+        approvedClose = true;
+        try {
+          await win.close();
+        } catch (error) {
+          approvedClose = false;
+          throw error;
+        }
+      }).catch((error) => notifyError("Could not close Schemata", error));
+    });
+    // Register the guard before exposing any native close path on the visible shell.
+    void unlisten.then(() => document.fonts.ready).then(() => {
       if (disposed) return;
       frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => void getCurrentWindow().show());
+        frame = requestAnimationFrame(() => {
+          if (!disposed) void win.show();
+        });
       });
-    });
+    }).catch((error) => notifyError("Could not initialize the window", error));
     return () => {
       disposed = true;
       if (frame !== undefined) cancelAnimationFrame(frame);
+      void unlisten.then((off) => off());
     };
   }, []);
 

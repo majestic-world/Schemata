@@ -1,6 +1,6 @@
 //! SQL text building shared by the drivers. Values are always returned as bind parameters.
 
-use crate::{AppError, ChangeError, Filter, FilterOp, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity, Value};
+use crate::{AppError, ChangeError, Filter, FilterOp, PageRequest, Result, RowChange, RowIdentity, Value};
 
 /// Builds ` WHERE ...` (or an empty string) and its bind values.
 pub(crate) fn where_clause(filters: &[Filter], quote: fn(&str) -> String) -> Result<(String, Vec<Value>)> {
@@ -85,8 +85,11 @@ pub(crate) fn change_statements(
     quote: fn(&str) -> String,
     dialect: &ChangeDialect,
 ) -> Result<Vec<ChangeStatement>, ChangeError> {
-    let key_columns: Vec<String> =
-        identity.columns().into_iter().map(|c| if c == ROWID_COLUMN { "rowid".to_owned() } else { quote(&c) }).collect();
+    let key_columns: Vec<String> = if matches!(identity, RowIdentity::RowId) {
+        vec!["rowid".to_owned()]
+    } else {
+        identity.columns().into_iter().map(|c| quote(&c)).collect()
+    };
     let needs_key = changes.iter().any(|c| !matches!(c, RowChange::Insert { .. }));
     if needs_key && key_columns.is_empty() {
         return Err(AppError::validation("This table has no primary or unique key, so its rows cannot be edited").into());

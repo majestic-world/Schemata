@@ -21,8 +21,8 @@ pub fn list_connections(sessions: State<'_, Sessions>) -> Vec<ConnectionConfig> 
 }
 
 #[tauri::command]
-pub fn save_connection(sessions: State<'_, Sessions>, config: ConnectionConfig, password: Option<String>) -> CmdResult<SaveOutcome> {
-    sessions.store().save(&config, password.as_deref())
+pub async fn save_connection(sessions: State<'_, Sessions>, config: ConnectionConfig, password: Option<String>) -> CmdResult<SaveOutcome> {
+    sessions.save_connection(&config, password.as_deref()).await
 }
 
 #[tauri::command]

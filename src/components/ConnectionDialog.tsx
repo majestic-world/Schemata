@@ -6,7 +6,7 @@ import { Dialog } from "./Dialog";
 import { EngineIcon } from "./icons";
 import { api } from "../api/client";
 import { ENGINE_LABEL, type AppError, type ConnectParams, type ConnectionConfig, type Engine } from "../api/types";
-import { useConnections } from "../store/connections";
+import { connectionTargetChanged, useConnections } from "../store/connections";
 import { notify, notifyError } from "../store/toasts";
 
 const COLORS = [null, "#14a3a3", "#2f7fc1", "#8b5cf6", "#e04f55", "#e8912d", "#2e9e5b"];
@@ -31,7 +31,7 @@ function blank(): ConnectionConfig {
 type TestState = { ok: true; version: string } | { ok: false; error: AppError } | null;
 
 export function ConnectionDialog() {
-  const { dialog, showDialog } = useConnections();
+  const { dialog, showDialog, open } = useConnections();
   const qc = useQueryClient();
   const [config, setConfig] = useState<ConnectionConfig>(blank);
   const [password, setPassword] = useState("");
@@ -51,6 +51,7 @@ export function ConnectionDialog() {
 
   if (!dialog) return null;
   const editing = dialog.mode === "edit";
+  const targetLocked = editing && dialog.config.id in open;
   const sqlite = config.engine === "sqlite";
   const patch = (p: Partial<ConnectionConfig>) => {
     setConfig((c) => ({ ...c, ...p }));
@@ -85,16 +86,18 @@ export function ConnectionDialog() {
   const valid = config.name.trim() !== "" && (sqlite ? !!config.filePath : !!config.host && !!config.user);
 
   const submit = async () => {
+    const cleaned: ConnectionConfig = sqlite
+      ? { ...config, host: null, port: null, user: null, database: null, savePassword: false }
+      : { ...config, filePath: null };
+    if (editing && config.id in useConnections.getState().open && connectionTargetChanged(dialog.config, cleaned)) {
+      notifyError("Connection is open", { message: "Disconnect this connection before changing its server, user, database or file." });
+      return;
+    }
     setBusy(true);
     try {
       if (sqlite && createFile) await api.testConnection(await params(), null);
-      const cleaned: ConnectionConfig = sqlite
-        ? { ...config, host: null, port: null, user: null, database: null, savePassword: false }
-        : { ...config, filePath: null };
       const outcome = await api.saveConnection({ ...cleaned, name: config.name.trim() }, sqlite ? null : typedPassword);
-      if (!sqlite && config.savePassword && typedPassword !== null && !outcome.passwordSaved) {
-        notifyError("Password not saved", { message: "The system credential store is unavailable; you will be asked for the password when connecting." });
-      }
+      if (outcome.passwordWarning) notifyError("Credential store warning", { message: outcome.passwordWarning });
       await qc.invalidateQueries({ queryKey: ["connections"] });
       notify(editing ? "Connection updated" : "Connection created", outcome.config.name);
       showDialog(null);
@@ -132,6 +135,9 @@ export function ConnectionDialog() {
       }
     >
       <div className="conn-form">
+        {targetLocked && (
+          <p className="hint span-all" role="status">Disconnect this connection before changing its server, user, database or file. Name, color and saved credentials can still be updated.</p>
+        )}
         {!editing && (
           <div className="segmented engine-picker span-all" role="radiogroup" aria-label="Database engine">
             {(Object.keys(ENGINE_LABEL) as Engine[]).map((e) => (
@@ -168,11 +174,11 @@ export function ConnectionDialog() {
             <div className="conn-section">File</div>
             <label className="field span-all">
               <span>Database file</span>
-              <input value={config.filePath ?? ""} onChange={(e) => { patch({ filePath: e.target.value || null }); setCreateFile(false); }} placeholder="C:\data\app.db" />
+              <input disabled={targetLocked} value={config.filePath ?? ""} onChange={(e) => { patch({ filePath: e.target.value || null }); setCreateFile(false); }} placeholder="C:\data\app.db" />
             </label>
             <div className="conn-actions span-all">
-              <button type="button" className="btn" onClick={() => pickFile(false)}><FolderOpen size={15} />Open existing…</button>
-              <button type="button" className="btn" onClick={() => pickFile(true)}><FilePlus2 size={15} />Create new…</button>
+              <button type="button" className="btn" disabled={targetLocked} onClick={() => pickFile(false)}><FolderOpen size={15} />Open existing…</button>
+              <button type="button" className="btn" disabled={targetLocked} onClick={() => pickFile(true)}><FilePlus2 size={15} />Create new…</button>
               {createFile && <span className="hint">A new file will be created.</span>}
             </div>
           </>
@@ -181,16 +187,16 @@ export function ConnectionDialog() {
             <div className="conn-section">Server</div>
             <label className="field span-2">
               <span>Host</span>
-              <input value={config.host ?? ""} onChange={(e) => patch({ host: e.target.value })} placeholder="localhost" />
+              <input disabled={targetLocked} value={config.host ?? ""} onChange={(e) => patch({ host: e.target.value })} placeholder="localhost" />
             </label>
             <label className="field">
               <span>Port</span>
-              <input type="number" value={config.port ?? ""} onChange={(e) => patch({ port: e.target.value ? Number(e.target.value) : null })} />
+              <input disabled={targetLocked} type="number" value={config.port ?? ""} onChange={(e) => patch({ port: e.target.value ? Number(e.target.value) : null })} />
             </label>
             <div className="conn-section">Authentication</div>
             <label className="field">
               <span>User</span>
-              <input value={config.user ?? ""} onChange={(e) => patch({ user: e.target.value })} />
+              <input disabled={targetLocked} value={config.user ?? ""} onChange={(e) => patch({ user: e.target.value })} />
             </label>
             <label className="field span-2">
               <span>Password</span>
@@ -207,7 +213,7 @@ export function ConnectionDialog() {
             </label>
             <label className="field span-all">
               <span>Default database <em className="optional">optional</em></span>
-              <input value={config.database ?? ""} onChange={(e) => patch({ database: e.target.value || null })} />
+              <input disabled={targetLocked} value={config.database ?? ""} onChange={(e) => patch({ database: e.target.value || null })} />
             </label>
           </>
         )}

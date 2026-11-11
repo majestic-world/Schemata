@@ -79,6 +79,9 @@ pub struct ColumnInfo {
     /// Default as a SQL expression (string literals quoted), `None` when there is no default.
     pub default: Option<String>,
     pub auto_increment: bool,
+    /// Computed by the engine; never supplied by inserts or updates.
+    #[serde(default)]
+    pub generated: bool,
     pub primary_key: bool,
     pub comment: Option<String>,
 }
@@ -181,6 +184,34 @@ pub struct TableInfo {
     /// `CREATE TABLE` / `CREATE VIEW` statement.
     pub create_sql: String,
     pub row_identity: RowIdentity,
+}
+
+impl TableInfo {
+    pub(crate) fn validate_writable_columns<'a>(&self, columns: impl IntoIterator<Item = &'a str>) -> crate::Result<()> {
+        for name in columns {
+            let column = self
+                .columns
+                .iter()
+                .find(|c| c.name == name)
+                .ok_or_else(|| crate::AppError::validation(format!("Column {name} not found")))?;
+            if column.generated {
+                return Err(crate::AppError::validation(format!("Column {name} is generated and cannot be written")));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_changes(&self, changes: &[RowChange]) -> Result<(), ChangeError> {
+        for (index, change) in changes.iter().enumerate() {
+            let values = match change {
+                RowChange::Insert { values } | RowChange::Update { values, .. } => values,
+                RowChange::Delete { .. } => continue,
+            };
+            self.validate_writable_columns(values.iter().map(|v| v.column.as_str()))
+                .map_err(|error| ChangeError { index: Some(index), error })?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

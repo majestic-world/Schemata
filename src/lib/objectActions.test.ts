@@ -4,7 +4,10 @@ import { api } from "../api/client";
 import { useConfirm } from "../store/confirm";
 import { useTabs } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
-import { dropObjects } from "./objectActions";
+import { dropObjects, renameTable } from "./objectActions";
+import { useDesignerDrafts } from "../store/designerDrafts";
+import { useGridStates } from "../store/gridState";
+import { setCell } from "./pendingChanges";
 
 vi.hoisted(() => {
   const values = new Map<string, string>();
@@ -28,6 +31,8 @@ beforeEach(() => {
   useConfirm.getState().settle(null);
   useTabs.setState(useTabs.getInitialState(), true);
   useWorkspace.setState(useWorkspace.getInitialState(), true);
+  useDesignerDrafts.setState(useDesignerDrafts.getInitialState(), true);
+  useGridStates.setState(useGridStates.getInitialState(), true);
   useWorkspace.getState().selectObjects({ ...scope, objects });
   client = new QueryClient();
   client.setQueryData(["objects", scope.connectionId, scope.database], objects);
@@ -38,6 +43,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   useTabs.setState(useTabs.getInitialState(), true);
   useWorkspace.setState(useWorkspace.getInitialState(), true);
+  useDesignerDrafts.setState(useDesignerDrafts.getInitialState(), true);
+  useGridStates.setState(useGridStates.getInitialState(), true);
 });
 afterAll(() => vi.unstubAllGlobals());
 
@@ -91,5 +98,64 @@ describe("deleting selected database objects", () => {
 
     expect(useWorkspace.getState().selection).toEqual({ connectionId: "other", database: "other-db" });
     expect(useWorkspace.getState().selectedObjects).toEqual([]);
+  });
+});
+
+describe("renaming tables with open drafts", () => {
+  it("cancels the entire rename before touching the database or discarding grid/designer edits", async () => {
+    const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
+    const id = open("first");
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    useDesignerDrafts.getState().initialize(id, design, design);
+    useDesignerDrafts.getState().input(id, "column:0", "draft");
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, { kind: "existing", index: 0 }, "name", { type: "text", value: "new" }, { type: "text", value: "old" }),
+    }));
+    const grid = useGridStates.getState().states[id];
+    const draft = useDesignerDrafts.getState().drafts[id];
+    const operation = renameTable({ ...scope, name: "first", kind: "table" }, client);
+    useConfirm.getState().settle("renamed");
+    await Promise.resolve();
+    expect(useConfirm.getState().request?.title).toBe("Discard changes");
+    useConfirm.getState().settle(null);
+    await operation;
+
+    expect(rename).not.toHaveBeenCalled();
+    expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([id]);
+    expect(useDesignerDrafts.getState().drafts[id]).toBe(draft);
+    expect(useGridStates.getState().states[id]).toBe(grid);
+  });
+
+  it("renames only after discard approval and leaves unrelated tabs intact", async () => {
+    const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
+    const id = open("first");
+    const kept = open("other");
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    useDesignerDrafts.getState().initialize(id, design, design);
+    useDesignerDrafts.getState().update(id, (value) => ({ ...value, name: "draft" }));
+    const operation = renameTable({ ...scope, name: "first", kind: "table" }, client);
+    useConfirm.getState().settle("renamed");
+    await Promise.resolve();
+    expect(rename).not.toHaveBeenCalled();
+    useConfirm.getState().settle("ok");
+    await operation;
+
+    expect(rename).toHaveBeenCalledWith(scope.connectionId, scope.database, "first", "renamed");
+    expect(useDesignerDrafts.getState().drafts[id]).toBeUndefined();
+    expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([kept]);
+    expect(useWorkspace.getState().selection?.object?.name).toBe("renamed");
+  });
+
+  it("does not rename a table while its DDL is running", async () => {
+    const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
+    const id = open("first");
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    useDesignerDrafts.getState().initialize(id, design, design);
+    useDesignerDrafts.getState().setBusy(id, true);
+    const operation = renameTable({ ...scope, name: "first", kind: "table" }, client);
+    useConfirm.getState().settle("renamed");
+    await operation;
+    expect(rename).not.toHaveBeenCalled();
+    expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([id]);
   });
 });

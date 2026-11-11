@@ -101,3 +101,51 @@ async fn preview_inserts_nothing_and_empty_first_replaces_rows(t: TestDb) {
     assert_eq!(scalar(&t, "SELECT COUNT(*) FROM customer").await, 7);
 }
 scenario!(preview_inserts_nothing_and_empty_first_replaces_rows);
+
+async fn failed_replacement_keeps_original_rows(t: TestDb) {
+    t.exec("CREATE TABLE replacement (id INT PRIMARY KEY, required INT NOT NULL); INSERT INTO replacement VALUES (99, 42)").await;
+    let invalid =
+        GenerateSpec { rows: 3, empty_first: true, columns: vec![ColumnGenerator { column: "id".into(), kind: GeneratorKind::Sequence }] };
+    assert!(generate_data(t.driver.as_ref(), &t.db, "replacement", &invalid, no_progress(), CancellationToken::new()).await.is_err());
+    assert_eq!(scalar(&t, "SELECT required FROM replacement WHERE id = 99").await, 42);
+    let mut invalid_plan = invalid.clone();
+    invalid_plan.columns[0].column = "missing".into();
+    assert!(generate_data(t.driver.as_ref(), &t.db, "replacement", &invalid_plan, no_progress(), CancellationToken::new()).await.is_err());
+    assert_eq!(scalar(&t, "SELECT COUNT(*) FROM replacement").await, 1);
+    let token = CancellationToken::new();
+    token.cancel();
+    assert_eq!(
+        generate_data(t.driver.as_ref(), &t.db, "replacement", &invalid, no_progress(), token).await.unwrap_err().kind,
+        ErrorKind::Cancelled
+    );
+    assert_eq!(scalar(&t, "SELECT required FROM replacement WHERE id = 99").await, 42);
+}
+scenario!(failed_replacement_keeps_original_rows);
+
+async fn generated_columns_are_skipped_by_generation(t: TestDb) {
+    t.exec("CREATE TABLE generated_data (id INT PRIMARY KEY, base INT NOT NULL, doubled INT GENERATED ALWAYS AS (base * 2) STORED)").await;
+    let spec = spec(&t, "generated_data", 5, false).await;
+    assert_eq!(spec.columns.iter().find(|c| c.column == "doubled").unwrap().kind, GeneratorKind::Skip);
+    generate_data(t.driver.as_ref(), &t.db, "generated_data", &spec, no_progress(), CancellationToken::new()).await.unwrap();
+    assert_eq!(scalar(&t, "SELECT COUNT(*) FROM generated_data WHERE doubled = base * 2").await, 5);
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(Ok(vec![(1, vec![schematadb_core::Value::Int(1), schematadb_core::Value::Int(2)])])).await.unwrap();
+    drop(tx);
+    let error = t.driver.import_rows(&t.db, "generated_data", &["id".into(), "doubled".into()], rx, false, true).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(scalar(&t, "SELECT COUNT(*) FROM generated_data WHERE doubled = base * 2").await, 5);
+}
+scenario!(generated_columns_are_skipped_by_generation);
+
+async fn non_transactional_generation_is_rejected_before_empty_first(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE legacy_data (id INT PRIMARY KEY) ENGINE=MyISAM; INSERT INTO legacy_data VALUES (99)").await;
+    let spec =
+        GenerateSpec { rows: 3, empty_first: true, columns: vec![ColumnGenerator { column: "id".into(), kind: GeneratorKind::Sequence }] };
+    let error = generate_data(t.driver.as_ref(), &t.db, "legacy_data", &spec, no_progress(), CancellationToken::new()).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(scalar(&t, "SELECT id FROM legacy_data").await, 99);
+}
+scenario!(non_transactional_generation_is_rejected_before_empty_first);

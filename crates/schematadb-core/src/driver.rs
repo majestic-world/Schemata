@@ -64,14 +64,14 @@ pub trait Driver: Send + Sync {
         columns: &[String],
         rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
         skip_errors: bool,
+        empty_first: bool,
     ) -> Result<ImportReport>;
-    /// Runs statements from `statements` one by one on a single session, outside a transaction. On SQLite
-    /// only the main database is accepted (statements are unqualified). Cancellation (checked between
-    /// statements) rolls back an open transaction and returns `Cancelled`.
+    /// Runs streamed statements on one session. Cancellation interrupts the active statement.
+    /// Reader errors and cancellation roll back open transactions and restore foreign-key enforcement.
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        statements: tokio::sync::mpsc::Receiver<String>,
+        statements: tokio::sync::mpsc::Receiver<Result<String>>,
         stop_on_error: bool,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport>;
@@ -84,7 +84,11 @@ pub trait Driver: Send + Sync {
     async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page>;
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64>;
     async fn table_design(&self, db: &str, table: &str) -> Result<TableDesign> {
-        Ok(TableDesign::from_info(&self.table_info(db, table).await?))
+        let info = self.table_info(db, table).await?;
+        if info.columns.iter().any(|c| c.generated) {
+            return Err(AppError::validation("Tables with generated columns cannot be edited in the table designer; use SQL"));
+        }
+        Ok(TableDesign::from_info(&info))
     }
     /// DDL that creates `design` (no `original`) or alters `original` into it. Empty when nothing changes.
     async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>>;

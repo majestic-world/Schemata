@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Filter, Page, SortSpec } from "../api/types";
+import type { Filter, Page, SortSpec, TableInfo } from "../api/types";
 import { emptyPending, isDirty, type Pending, type RowRef } from "../lib/pendingChanges";
 
 export type DraftFilter = { column: string; op: Filter["op"]; value: string };
@@ -17,6 +17,9 @@ export type GridState = {
   /** The page the pending edits refer to. Pending edits address rows by position, so while there are
    * any the grid keeps showing (and keys commits by) this snapshot instead of refetched data. */
   snapshot: Page | null;
+  snapshotInfo: TableInfo | null;
+  /** Locks the tab, including unmounted grids, until its submitted change set settles. */
+  committing: boolean;
   failedRow: RowRef | null;
 };
 
@@ -29,20 +32,47 @@ const initial = (): GridState => ({
   showFilters: false,
   pending: emptyPending(),
   snapshot: null,
+  snapshotInfo: null,
+  committing: false,
   failedRow: null,
 });
 
 type Store = {
   states: Record<string, GridState>;
   update: (tabId: string, f: (s: GridState) => Partial<GridState>) => void;
+  beginCommit: (tabId: string) => GridState | null;
+  finishCommit: (tabId: string, submitted: Pending, saved: boolean, failedRow?: RowRef | null) => void;
   forget: (tabId: string) => void;
 };
 
-export const useGridStates = create<Store>((set) => ({
+export const useGridStates = create<Store>((set, get) => ({
   states: {},
   update: (tabId, f) => set((s) => {
     const current = s.states[tabId] ?? initial();
+    if (current.committing) return s;
     return { states: { ...s.states, [tabId]: { ...current, ...f(current) } } };
+  }),
+  beginCommit: (tabId) => {
+    const current = get().states[tabId];
+    if (!current || current.committing || !isDirty(current.pending)) return null;
+    set((s) => ({ states: { ...s.states, [tabId]: { ...current, committing: true } } }));
+    return current;
+  },
+  finishCommit: (tabId, submitted, saved, failedRow = null) => set((s) => {
+    const current = s.states[tabId];
+    // A response for a closed/recreated tab must never erase another change set.
+    if (!current?.committing || current.pending !== submitted) return s;
+    return {
+      states: {
+        ...s.states,
+        [tabId]: {
+          ...current,
+          committing: false,
+          failedRow: saved ? null : failedRow,
+          ...(saved ? { pending: emptyPending(), snapshot: null, snapshotInfo: null } : {}),
+        },
+      },
+    };
   }),
   forget: (tabId) => set((s) => {
     const states = { ...s.states };

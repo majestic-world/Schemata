@@ -26,7 +26,7 @@ export type ConnectParams = {
   createFile: boolean;
 };
 
-export type SaveOutcome = { config: ConnectionConfig; passwordSaved: boolean };
+export type SaveOutcome = { config: ConnectionConfig; passwordSaved: boolean; passwordWarning: string | null };
 
 export type ErrorKind = "connection" | "authentication" | "sql" | "cancelled" | "io" | "validation";
 export type AppError = { kind: ErrorKind; message: string; sqlState: string | null };
@@ -68,6 +68,7 @@ export type ColumnInfo = {
   nullable: boolean;
   default: string | null;
   autoIncrement: boolean;
+  generated: boolean;
   primaryKey: boolean;
   comment: string | null;
 };

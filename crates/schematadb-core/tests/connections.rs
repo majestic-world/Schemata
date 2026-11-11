@@ -1,7 +1,12 @@
 mod common;
 
 use common::TestDb;
-use schematadb_core::{ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, connect};
+use schematadb_core::{
+    AppError, ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, Result, SecretStore,
+    Sessions, connect,
+};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn store_persists_connections_without_secrets() {
@@ -53,6 +58,73 @@ async fn store_reports_unavailable_secret_service() {
     let saved = store.save(&config, Some("pw")).unwrap();
     assert!(!saved.password_saved);
     assert!(!store.list()[0].save_password, "config must reflect that the password was not saved");
+}
+
+#[derive(Clone, Default)]
+struct DeleteFailingSecrets {
+    stored: MemorySecrets,
+    reads: Arc<AtomicUsize>,
+}
+
+impl SecretStore for DeleteFailingSecrets {
+    fn get(&self, id: &str) -> Result<Option<String>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.stored.get(id)
+    }
+
+    fn set(&self, id: &str, secret: &str) -> Result<()> {
+        self.stored.set(id, secret)
+    }
+
+    fn delete(&self, _id: &str) -> Result<()> {
+        Err(AppError::io("Credential deletion denied"))
+    }
+}
+
+#[tokio::test]
+async fn disabling_password_ignores_retained_credentials_and_reports_failed_deletion() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.json");
+    let secrets = DeleteFailingSecrets::default();
+    let store = ConnectionStore::open(&path, Box::new(secrets.clone())).unwrap();
+    let mut config = ConnectionConfig::new("Previously saved", Engine::MySql);
+    config.save_password = true;
+    store.save(&config, Some("retained-secret")).unwrap();
+    config.save_password = false;
+    let saved = store.save(&config, None).unwrap();
+    assert!(!saved.config.save_password);
+    assert!(!saved.password_saved);
+    let warning = saved.password_warning.expect("the retained credential must not be reported as removed");
+    assert!(warning.contains("could not be removed"));
+    assert_eq!(secrets.stored.get(&config.id).unwrap().as_deref(), Some("retained-secret"));
+    assert_eq!(store.password(&config.id).unwrap(), None);
+    assert_eq!(secrets.reads.load(Ordering::SeqCst), 0);
+    drop(store);
+    let reopened = ConnectionStore::open(&path, Box::new(secrets.clone())).unwrap();
+    assert!(!reopened.get(&config.id).unwrap().save_password);
+    assert_eq!(reopened.password(&config.id).unwrap(), None);
+    let sessions = Sessions::new(reopened);
+    let error = sessions.open(&config.id, None).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Authentication, "disabled passwords must prompt rather than connecting with the old secret");
+    assert!(sessions.open_ids().await.is_empty());
+    assert_eq!(secrets.reads.load(Ordering::SeqCst), 0, "disabled passwords must never even read the credential store");
+}
+
+#[test]
+fn connection_snapshots_replace_atomically_without_overwriting_an_unrelated_temporary_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.json");
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, b"unrelated").unwrap();
+    let store = ConnectionStore::open(&path, Box::new(MemorySecrets::default())).unwrap();
+    let mut config = ConnectionConfig::new("Original", Engine::Sqlite);
+    store.save(&config, None).unwrap();
+    config.name = "Updated".into();
+    store.save(&config, None).unwrap();
+    assert_eq!(std::fs::read(&temporary).unwrap(), b"unrelated");
+    let reopened = ConnectionStore::open(&path, Box::new(MemorySecrets::default())).unwrap();
+    assert_eq!(reopened.get(&config.id).unwrap().name, "Updated");
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
 }
 
 #[tokio::test]

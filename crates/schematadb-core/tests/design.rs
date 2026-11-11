@@ -285,3 +285,78 @@ async fn unqualified_ddl_lands_in_the_target_database(t: TestDb) {
     assert_eq!(info.foreign_keys[0].ref_table, "category");
 }
 scenario!(unqualified_ddl_lands_in_the_target_database);
+
+async fn sqlite_unrepresentable_rebuilds_are_rejected_without_changes(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    for (name, definition, suffix) in [
+        ("checked", "id INTEGER PRIMARY KEY, value INT CHECK (value > 0)", ""),
+        ("collated", "id INTEGER PRIMARY KEY, value TEXT COLLATE NOCASE", ""),
+        ("strict_table", "id INTEGER PRIMARY KEY, value INT", " STRICT"),
+    ] {
+        t.exec(&format!("CREATE TABLE {name} ({definition}){suffix};")).await;
+        t.exec(&format!("INSERT INTO {name} VALUES (1, 5)")).await;
+        let original = t.driver.table_design(&t.db, name).await.unwrap();
+        let before = t.driver.table_info(&t.db, name).await.unwrap().create_sql;
+        let mut changed = original.clone();
+        changed.columns[1].nullable = !changed.columns[1].nullable;
+        assert!(t.driver.plan_table(&t.db, Some(&original), &changed).await.is_err());
+        assert_eq!(t.driver.table_info(&t.db, name).await.unwrap().create_sql, before);
+        assert_eq!(all_rows(&t, name, "id").await.len(), 1);
+    }
+}
+scenario!(sqlite_unrepresentable_rebuilds_are_rejected_without_changes);
+
+async fn sqlite_rebuild_preserves_autoincrement_high_water_mark(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE sequence_test (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT, obsolete INT); \
+            INSERT INTO sequence_test (id, value) VALUES (100, 'old'); DELETE FROM sequence_test",
+    )
+    .await;
+    let original = t.driver.table_design(&t.db, "sequence_test").await.unwrap();
+    let mut changed = original.clone();
+    changed.columns.pop();
+    let plan = t.driver.plan_table(&t.db, Some(&original), &changed).await.unwrap();
+    // The reviewed plan must preserve sequence changes made before it is actually applied too.
+    t.exec("INSERT INTO sequence_test (id, value) VALUES (200, 'new'); DELETE FROM sequence_test").await;
+    t.driver.apply_ddl(&t.db, &plan).await.unwrap();
+    t.exec("INSERT INTO sequence_test (value) VALUES ('next')").await;
+    assert_eq!(all_rows(&t, "sequence_test", "id").await[0][0], CellValue::Int(201));
+}
+scenario!(sqlite_rebuild_preserves_autoincrement_high_water_mark);
+
+async fn mysql_column_attributes_are_not_silently_removed(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE attributes (id INT PRIMARY KEY, updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP); \
+            INSERT INTO attributes (id) VALUES (1)",
+    )
+    .await;
+    let original = t.driver.table_design(&t.db, "attributes").await.unwrap();
+    let before = t.driver.table_info(&t.db, "attributes").await.unwrap().create_sql;
+    let mut changed = original.clone();
+    changed.columns[1].name = "renamed".into();
+    assert!(t.driver.plan_table(&t.db, Some(&original), &changed).await.is_err());
+    assert_eq!(t.driver.table_info(&t.db, "attributes").await.unwrap().create_sql, before);
+}
+scenario!(mysql_column_attributes_are_not_silently_removed);
+
+async fn mysql_backslash_defaults_survive_column_changes(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec(r"CREATE TABLE escaped_default (id INT PRIMARY KEY, value VARCHAR(100) DEFAULT 'C:\\temp\\new')").await;
+    let original = t.driver.table_design(&t.db, "escaped_default").await.unwrap();
+    let mut changed = original.clone();
+    changed.columns[1].data_type = "VARCHAR(120)".into();
+    apply(&t, Some(&original), &changed).await;
+    t.exec("INSERT INTO escaped_default (id) VALUES (1)").await;
+    assert_eq!(all_rows(&t, "escaped_default", "id").await[0][1], CellValue::Text(r"C:\temp\new".into()));
+}
+scenario!(mysql_backslash_defaults_survive_column_changes);

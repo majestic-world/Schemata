@@ -140,3 +140,41 @@ async fn sqlite_backup_of_attached_database_reads_its_own_rows() {
         vec![vec![CellValue::Int(1), CellValue::Text("other".into())], vec![CellValue::Int(2), CellValue::Text("other".into())],]
     );
 }
+
+async fn backup_restores_generated_columns_over_existing_views(t: TestDb) {
+    t.exec(
+        "CREATE TABLE generated_backup (
+             id INT PRIMARY KEY, base INT,
+             doubled INT GENERATED ALWAYS AS (base * 2) STORED,
+             tripled INT GENERATED ALWAYS AS (base * 3) VIRTUAL);
+         INSERT INTO generated_backup (id, base) VALUES (1, 7), (2, NULL);
+         CREATE VIEW generated_view AS SELECT id, doubled, tripled FROM generated_backup;
+         CREATE VIEW dependent_view AS SELECT * FROM generated_view;",
+    )
+    .await;
+    let expected =
+        vec![vec![CellValue::Int(1), CellValue::Int(14), CellValue::Int(21)], vec![CellValue::Int(2), CellValue::Null, CellValue::Null]];
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("generated.sql");
+    let report = dump_database(
+        t.driver.as_ref(),
+        &t.db,
+        &file,
+        &DumpOptions { structure: true, data: true },
+        no_progress(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.rows, 2);
+    t.exec("UPDATE generated_backup SET base = 99 WHERE id = 1").await;
+    let restored = run_sql_file(t.driver.as_ref(), &t.db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert!(restored.failed.is_empty(), "{:?}", restored.failed);
+    assert_eq!(rows(t.driver.as_ref(), &t.db, "dependent_view", "id").await, expected);
+    t.exec("UPDATE generated_backup SET base = 5 WHERE id = 1").await;
+    assert_eq!(
+        rows(t.driver.as_ref(), &t.db, "generated_view", "id").await[0],
+        vec![CellValue::Int(1), CellValue::Int(10), CellValue::Int(15)]
+    );
+}
+scenario!(backup_restores_generated_columns_over_existing_views);

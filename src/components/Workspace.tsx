@@ -14,6 +14,7 @@ import { copyCreateStatement, designTable, dropObjects, renameTable, truncateTab
 import { openTransfer } from "../store/transfer";
 import { requestCloseTabs } from "../lib/tabActions";
 import { MOD } from "../lib/platform";
+import { useDesignerDrafts } from "../store/designerDrafts";
 
 function TabContextMenu({ id, children }: { id: string; children: ReactNode }) {
   const tabs = useTabs((s) => s.tabs);
@@ -52,6 +53,7 @@ function tabLabel(t: Tab) {
 export function Workspace() {
   const { tabs, active, activate } = useTabs();
   const activeTab = tabs.find((t) => t.id === active);
+  const designerDrafts = useDesignerDrafts((s) => s.drafts);
   return (
     <>
       <div className="tabs" role="tablist">
@@ -79,7 +81,7 @@ export function Workspace() {
               >
                 {icon}
                 <span className="title">{tabLabel(t)}</span>
-                {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
+                {((t.kind === "query" && t.sql !== t.savedSql) || designerDrafts[t.id]?.dirty) && <span className="dirty" title="Unsaved changes" />}
                 <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestCloseTabs([t.id]); }}>
                   <X size={16} />
                 </button>
@@ -108,6 +110,7 @@ function NewTableView({ tab }: { tab: NewTableTab }) {
   if (!conn) return null;
   return (
     <TableDesigner
+      tabId={tab.id}
       connectionId={tab.connectionId}
       database={tab.database}
       engine={conn.engine}

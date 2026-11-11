@@ -97,7 +97,7 @@ pub fn suggest_generator(info: &TableInfo, c: &ColumnInfo) -> GeneratorKind {
     let t = SqlType::parse(&c.data_type);
     let name = c.name.to_ascii_lowercase();
     let base = t.base.as_str();
-    if c.auto_increment {
+    if c.auto_increment || c.generated {
         return K::Skip;
     }
     if single_column_fk(info, &c.name).is_some() {
@@ -238,7 +238,13 @@ pub fn suggest_generator(info: &TableInfo, c: &ColumnInfo) -> GeneratorKind {
 }
 
 pub fn suggest_generators(info: &TableInfo) -> Vec<ColumnGenerator> {
-    info.columns.iter().map(|c| ColumnGenerator { column: c.name.clone(), kind: suggest_generator(info, c) }).collect()
+    info.columns
+        .iter()
+        .map(|c| ColumnGenerator {
+            column: c.name.clone(),
+            kind: if c.generated { GeneratorKind::Skip } else { suggest_generator(info, c) },
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- types
@@ -692,7 +698,7 @@ async fn scalar_values(driver: &dyn Driver, db: &str, sql: &str) -> Result<Vec<V
 
 /// Resolves every chosen generator against the table: limits from the column type, the next sequence value,
 /// existing values of referenced columns.
-async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[ColumnGenerator]) -> Result<Vec<ColumnPlan>> {
+async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[ColumnGenerator], empty_first: bool) -> Result<Vec<ColumnPlan>> {
     let q = quote_for(driver.engine());
     let single_pk: Vec<&ColumnInfo> = info.columns.iter().filter(|c| c.primary_key).collect();
     let mut plans = Vec::new();
@@ -702,12 +708,13 @@ async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[Column
             .iter()
             .find(|c| c.name == g.column)
             .ok_or_else(|| AppError::validation(format!("Column {} is not in {}", g.column, info.name)))?;
+        info.validate_writable_columns([c.name.as_str()])?;
         let sql_type = SqlType::parse(&c.data_type);
         let lower = c.name.to_ascii_lowercase();
         let unique = (single_pk.len() == 1 && single_pk[0].name == c.name)
             || info.indexes.iter().any(|i| i.kind == crate::IndexKind::Unique && i.columns.len() == 1 && i.columns[0] == c.name);
         let mut next_seq = 1;
-        if g.kind == GeneratorKind::Sequence || (unique && g.kind == GeneratorKind::Integer) {
+        if !empty_first && (g.kind == GeneratorKind::Sequence || (unique && g.kind == GeneratorKind::Integer)) {
             let max = scalar_values(driver, db, &format!("SELECT MAX({}) FROM {}.{}", q(&c.name), q(db), q(&info.name))).await?;
             next_seq = match max.first() {
                 Some(Value::Int(i)) => i + 1,
@@ -720,12 +727,19 @@ async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[Column
         if g.kind == GeneratorKind::ForeignKey {
             let fk = single_column_fk(info, &c.name)
                 .ok_or_else(|| AppError::validation(format!("Column {} has no foreign key to take values from", c.name)))?;
-            references = scalar_values(
-                driver,
-                db,
-                &format!("SELECT DISTINCT {} FROM {}.{} WHERE {0} IS NOT NULL LIMIT 1000", q(&fk.ref_columns[0]), q(db), q(&fk.ref_table)),
-            )
-            .await?;
+            if !empty_first || fk.ref_table != info.name {
+                references = scalar_values(
+                    driver,
+                    db,
+                    &format!(
+                        "SELECT DISTINCT {} FROM {}.{} WHERE {0} IS NOT NULL LIMIT 1000",
+                        q(&fk.ref_columns[0]),
+                        q(db),
+                        q(&fk.ref_table)
+                    ),
+                )
+                .await?;
+            }
             if references.is_empty() && !c.nullable {
                 return Err(AppError::validation(format!(
                     "{} references {}, which has no rows yet. Generate data for {} first.",
@@ -912,7 +926,7 @@ fn new_gen() -> Gen {
 /// A few generated rows, not inserted, so the user can check the choices.
 pub async fn preview_generated(driver: &dyn Driver, db: &str, table: &str, columns: &[ColumnGenerator], rows: usize) -> Result<Page> {
     let info = driver.table_info(db, table).await?;
-    let mut plans = plan(driver, db, &info, columns).await?;
+    let mut plans = plan(driver, db, &info, columns, false).await?;
     let mut g = new_gen();
     let metas = plans
         .iter()
@@ -938,15 +952,14 @@ pub async fn generate_data(
     if spec.rows == 0 || spec.rows > MAX_GENERATED_ROWS {
         return Err(AppError::validation(format!("Generate between 1 and {MAX_GENERATED_ROWS} rows")));
     }
-    let info = driver.table_info(db, table).await?;
-    if spec.empty_first {
-        // DELETE rather than TRUNCATE: MySQL refuses to truncate a table other tables reference.
-        let q = quote_for(driver.engine());
-        if let Some(e) = driver.execute_script(Some(db), &format!("DELETE FROM {}.{}", q(db), q(table)), 1, None).await?.error {
-            return Err(e.error);
-        }
+    if cancel.is_cancelled() {
+        return Err(AppError::cancelled());
     }
-    let mut plans = plan(driver, db, &info, &spec.columns).await?;
+    let info = driver.table_info(db, table).await?;
+    let mut plans = plan(driver, db, &info, &spec.columns, spec.empty_first).await?;
+    if cancel.is_cancelled() {
+        return Err(AppError::cancelled());
+    }
     let names: Vec<String> = plans.iter().map(|p| p.name.clone()).collect();
     let total = spec.rows;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportBatch>>(4);
@@ -967,8 +980,11 @@ pub async fn generate_data(
             done += n;
             progress(Progress { done, total: Some(total) });
         }
+        if cancel.is_cancelled() {
+            let _ = tx.send(Err(AppError::cancelled())).await;
+        }
     };
-    let (report, ()) = tokio::join!(driver.import_rows(db, table, &names, rx, false), feed);
+    let (report, ()) = tokio::join!(driver.import_rows(db, table, &names, rx, false, spec.empty_first), feed);
     let report = report?;
     if let Some(f) = report.failed.first() {
         return Err(AppError::sql(format!("Row {} could not be inserted: {}", f.line, f.message)));

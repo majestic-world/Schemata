@@ -82,6 +82,8 @@ on a Mac.
 
 English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync. Installers have no distribution signature or notarization.
 
+Safety restrictions: transactional grid edits and test-data replacement require a transactional table engine. The designer refuses changes it cannot reproduce without losing existing constraints or column attributes; generated columns are read-only. Disconnect a connection before changing its host, user, database, engine or SQLite file.
+
 ## License
 
 MIT; see [LICENSE](LICENSE). The app bundles third-party Rust crates, npm packages and logo artwork under their own (permissive) licenses; their notices are in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) and in the app under **Settings → About → Licenses…**. After adding, removing or updating a dependency, run `pnpm notices` to regenerate the file; CI fails (`pnpm notices --check`) while it is stale. Database logos are trademarks of their respective owners.

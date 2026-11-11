@@ -53,23 +53,25 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
       const text = onlySelection && selection.trim() ? selection : (state?.doc.toString() ?? tab.sql);
       if (!text.trim() || useQueryResults.getState().runs[tab.id]?.running) return;
       const executionId = crypto.randomUUID();
-      setRun(tab.id, { result: null, failure: null, running: true, executionId, startedAt: Date.now(), finishedAt: null });
+      const connectionId = tab.connectionId;
+      const database = tab.database;
+      setRun(tab.id, { connectionId, database, result: null, failure: null, running: true, executionId, startedAt: Date.now(), finishedAt: null });
       try {
-        const result = await api.executeScript(tab.connectionId, tab.database, text, ROW_LIMIT, executionId);
-        patchRun(tab.id, { result, running: false, finishedAt: Date.now() });
-        // DDL and writes may have changed the schema or data shown elsewhere.
-        void qc.invalidateQueries({ queryKey: ["objects", tab.connectionId] });
-        void qc.invalidateQueries({ queryKey: ["databases", tab.connectionId] });
-        void qc.invalidateQueries({ queryKey: ["columns", tab.connectionId] });
-        void qc.invalidateQueries({ queryKey: ["history", tab.connectionId] });
+        const result = await api.executeScript(connectionId, database, text, ROW_LIMIT, executionId);
+        patchRun(tab.id, { result, running: false, finishedAt: Date.now() }, executionId);
       } catch (e) {
-        patchRun(tab.id, { failure: toAppError(e), running: false, finishedAt: Date.now() });
+        patchRun(tab.id, { failure: toAppError(e), running: false, finishedAt: Date.now() }, executionId);
+      } finally {
+        // Even a failed script may have committed earlier statements.
+        for (const key of ["objects", "databases", "columns", "history", "page", "count", "tableInfo", "tableDesign"]) {
+          void qc.invalidateQueries({ queryKey: [key, connectionId] });
+        }
       }
     },
     [tab.connectionId, tab.database, tab.id, tab.sql, qc, setRun, patchRun],
   );
 
-  const stop = () => run?.executionId && void api.cancelExecution(tab.connectionId, run.executionId).catch((e) => notifyError("Could not cancel", e));
+  const stop = () => run?.executionId && void api.cancelExecution(run.connectionId, run.executionId).catch((e) => notifyError("Could not cancel", e));
 
   const saveFile = async () => {
     try {
@@ -144,7 +146,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
           </div>
           <HSplitter height={resultsHeight} onChange={setResultsHeight} />
           <div className="query-results" style={{ height: resultsHeight }}>
-            <Results tabId={tab.id} connectionId={tab.connectionId} database={tab.database} />
+            <Results tabId={tab.id} />
           </div>
         </div>
         {showHistory && <HistoryPanel connectionId={tab.connectionId} onPick={(sql) => update(tab.id, { sql })} onClose={() => setShowHistory(false)} />}
@@ -170,7 +172,7 @@ function HSplitter({ height, onChange }: { height: number; onChange: (h: number)
   );
 }
 
-function Results({ tabId, connectionId, database }: { tabId: string; connectionId: string; database: string | null }) {
+function Results({ tabId }: { tabId: string }) {
   const run = useQueryResults((s) => s.runs[tabId]);
   const patch = useQueryResults((s) => s.patch);
   const [selected, setSelected] = useState<number | "summary">("summary");
@@ -193,9 +195,9 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
     if (o.kind !== "rows" || !run.result) return;
     setLoading(true);
     try {
-      const page = await api.fetchMore(connectionId, database, o.statement, o.rows.length, ROW_LIMIT);
+      const page = await api.fetchMore(run.connectionId, run.database, o.statement, o.rows.length, ROW_LIMIT);
       const updated: StatementOutcome = { ...o, rows: [...o.rows, ...page.rows], hasMore: page.rows.length === ROW_LIMIT };
-      patch(tabId, { result: { ...run.result, outcomes: outcomes.map((x, i) => (i === index ? updated : x)) } });
+      patch(tabId, { result: { ...run.result, outcomes: outcomes.map((x, i) => (i === index ? updated : x)) } }, run.executionId);
     } catch (e) {
       notifyError("Could not load more rows", e);
     } finally {
@@ -223,9 +225,9 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
             <div className="grow" />
             <button
               className="btn sm"
-              disabled={!database}
-              title={database ? "Export every row of this result" : "Choose a database to export"}
-              onClick={() => database && openTransfer({ kind: "export", connectionId, database, source: { kind: "query", sql: current.statement }, label: "query_result" })}
+              disabled={!run.database}
+              title={run.database ? "Export every row of this result" : "This result was run without a database; run it again with a database to export"}
+              onClick={() => run.database && openTransfer({ kind: "export", connectionId: run.connectionId, database: run.database, source: { kind: "query", sql: current.statement }, label: "query_result" })}
             >
               <Upload size={13} />Export
             </button>

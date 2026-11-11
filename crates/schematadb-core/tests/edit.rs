@@ -13,6 +13,10 @@ fn set(column: &str, value: CellValue) -> ColumnValue {
     ColumnValue { column: column.into(), value }
 }
 
+fn page_request() -> PageRequest {
+    PageRequest { offset: 0, limit: 100, sort: None, filters: vec![] }
+}
+
 async fn rows(t: &TestDb, table: &str) -> Vec<Vec<CellValue>> {
     let req = PageRequest { offset: 0, limit: 100, sort: Some(SortSpec { column: "id".into(), desc: false }), filters: vec![] };
     t.driver.fetch_page(&t.db, table, &req).await.unwrap().rows
@@ -140,3 +144,131 @@ async fn written_values_round_trip(t: TestDb) {
     assert_eq!(rows(&t, "w").await[0][5], CellValue::Null);
 }
 scenario!(written_values_round_trip);
+
+async fn generated_columns_are_visible_but_not_writable(t: TestDb) {
+    t.exec(
+        "CREATE TABLE computed (id INT PRIMARY KEY, base INT, doubled INT GENERATED ALWAYS AS (base * 2) STORED, tail INT); \
+            INSERT INTO computed (id, base, tail) VALUES (1, 7, 90)",
+    )
+    .await;
+    let info = t.driver.table_info(&t.db, "computed").await.unwrap();
+    assert!(info.columns[2].generated);
+    assert!(!info.columns[3].generated);
+    let page = t.driver.fetch_page(&t.db, "computed", &page_request()).await.unwrap();
+    assert_eq!(page.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "base", "doubled", "tail"]);
+    assert_eq!(page.rows[0], vec![int(1), int(7), int(14), int(90)]);
+    t.driver.apply_changes(&t.db, "computed", &[RowChange::Update { key: vec![int(1)], values: vec![set("base", int(8))] }]).await.unwrap();
+    let error = t
+        .driver
+        .apply_changes(
+            &t.db,
+            "computed",
+            &[
+                RowChange::Update { key: vec![int(1)], values: vec![set("tail", int(91))] },
+                RowChange::Update { key: vec![int(1)], values: vec![set("doubled", int(0))] },
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.error.kind, ErrorKind::Validation);
+    assert_eq!(error.index, Some(1));
+    let page = t.driver.fetch_page(&t.db, "computed", &page_request()).await.unwrap();
+    assert_eq!(page.rows[0], vec![int(1), int(8), int(16), int(90)]);
+    assert!(t.driver.table_design(&t.db, "computed").await.is_err());
+}
+scenario!(generated_columns_are_visible_but_not_writable);
+
+async fn sqlite_partial_and_expression_indexes_never_identify_rows(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE indexed (a INT NOT NULL, b INT, enabled INT); \
+            CREATE UNIQUE INDEX partial_key ON indexed (a) WHERE enabled = 1; \
+            CREATE UNIQUE INDEX expression_key ON indexed (a, abs(b)); \
+            INSERT INTO indexed VALUES (1, 2, 0), (1, 3, 0)",
+    )
+    .await;
+    assert_eq!(t.driver.table_info(&t.db, "indexed").await.unwrap().row_identity, schematadb_core::RowIdentity::RowId);
+    let page = t.driver.fetch_page(&t.db, "indexed", &page_request()).await.unwrap();
+    t.driver
+        .apply_changes(&t.db, "indexed", &[RowChange::Update { key: vec![page.rows[0][0].clone()], values: vec![set("enabled", int(1))] }])
+        .await
+        .unwrap();
+    let page = t.driver.fetch_page(&t.db, "indexed", &page_request()).await.unwrap();
+    assert_eq!(page.rows.iter().filter(|r| r[3] == int(1)).count(), 1);
+}
+scenario!(sqlite_partial_and_expression_indexes_never_identify_rows);
+
+async fn sqlite_uses_unshadowed_rowid_or_is_read_only(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE shadowed (rowid INT, _rowid_ INT, payload INT); \
+            INSERT INTO shadowed VALUES (10, 20, 1), (10, 20, 2)",
+    )
+    .await;
+    let page = t.driver.fetch_page(&t.db, "shadowed", &page_request()).await.unwrap();
+    assert_ne!(page.rows[0][0], page.rows[1][0]);
+    t.driver.apply_changes(&t.db, "shadowed", &[RowChange::Delete { key: vec![page.rows[0][0].clone()] }]).await.unwrap();
+    assert_eq!(t.driver.fetch_page(&t.db, "shadowed", &page_request()).await.unwrap().rows.len(), 1);
+    t.exec("CREATE TABLE fully_shadowed (rowid INT, _rowid_ INT, oid INT); INSERT INTO fully_shadowed VALUES (1, 1, 1)").await;
+    assert_eq!(t.driver.table_info(&t.db, "fully_shadowed").await.unwrap().row_identity, schematadb_core::RowIdentity::None);
+    assert!(t.driver.apply_changes(&t.db, "fully_shadowed", &[RowChange::Delete { key: vec![int(1)] }]).await.is_err());
+}
+scenario!(sqlite_uses_unshadowed_rowid_or_is_read_only);
+
+async fn non_transactional_changes_are_rejected_before_writing(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE non_atomic (id INT PRIMARY KEY, amount INT) ENGINE=MyISAM; INSERT INTO non_atomic VALUES (1, 10)").await;
+    let error = t
+        .driver
+        .apply_changes(
+            &t.db,
+            "non_atomic",
+            &[
+                RowChange::Update { key: vec![int(1)], values: vec![set("amount", int(20))] },
+                RowChange::Insert { values: vec![set("id", int(1))] },
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.error.kind, ErrorKind::Validation);
+    assert_eq!(rows(&t, "non_atomic").await[0], vec![int(1), int(10)]);
+}
+scenario!(non_transactional_changes_are_rejected_before_writing);
+
+async fn literal_rowid_alias_primary_key_addresses_its_own_column(t: TestDb) {
+    t.exec("CREATE TABLE literal_key (__rowid__ INT PRIMARY KEY, payload INT); INSERT INTO literal_key VALUES (10, 1), (20, 2)").await;
+    t.driver
+        .apply_changes(&t.db, "literal_key", &[RowChange::Update { key: vec![int(20)], values: vec![set("payload", int(7))] }])
+        .await
+        .unwrap();
+    let page = t.driver.fetch_page(&t.db, "literal_key", &page_request()).await.unwrap();
+    let row = page.rows.iter().find(|row| row[0] == int(20)).unwrap();
+    assert_eq!(row[1], int(7));
+    assert_eq!(page.rows.iter().find(|row| row[0] == int(10)).unwrap()[1], int(1));
+}
+scenario!(literal_rowid_alias_primary_key_addresses_its_own_column);
+
+async fn sqlite_reserved_rowid_alias_without_key_is_read_only(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE reserved_alias (__rowid__ INT, payload INT); INSERT INTO reserved_alias VALUES (10, 1)").await;
+    assert_eq!(t.driver.table_info(&t.db, "reserved_alias").await.unwrap().row_identity, schematadb_core::RowIdentity::None);
+    let page = t.driver.fetch_page(&t.db, "reserved_alias", &page_request()).await.unwrap();
+    assert_eq!(page.columns.iter().filter(|c| c.name == "__rowid__").count(), 1);
+    assert!(!page.columns[0].hidden);
+    assert_eq!(page.rows[0], vec![int(10), int(1)]);
+    assert!(
+        t.driver
+            .apply_changes(&t.db, "reserved_alias", &[RowChange::Update { key: vec![int(10)], values: vec![set("payload", int(7))] }])
+            .await
+            .is_err()
+    );
+}
+scenario!(sqlite_reserved_rowid_alias_without_key_is_read_only);
