@@ -271,7 +271,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
             return isDeleted(pending, ref) ? "row-deleted" : undefined;
           }}
           cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
-          onCellDoubleClick={startEdit}
+          onCellActivate={startEdit}
           renderEditor={(r, column) =>
             editing?.row === r && editing.column === column ? (
               <CellEditor

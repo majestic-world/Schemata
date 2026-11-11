@@ -22,7 +22,8 @@ type Props = {
   cellValue?: (row: number, column: string, original: CellValue) => CellValue;
   rowClass?: (row: number) => string | undefined;
   cellClass?: (row: number, column: string) => string | undefined;
-  onCellDoubleClick?: (row: number, column: string) => void;
+  /** Double-click or Enter on a cell. */
+  onCellActivate?: (row: number, column: string) => void;
   renderEditor?: (row: number, column: string) => ReactNode | null;
   onSelectionChange?: (s: GridSelection) => void;
   /** Changes when the underlying data is replaced, clearing the selection and scroll. */
@@ -147,7 +148,16 @@ export function GridView(props: Props) {
       ref={scrollRef}
       tabIndex={0}
       onKeyDown={(e) => {
-        if (e.target instanceof HTMLInputElement) return;
+        if (e.target instanceof HTMLInputElement) {
+          // Closing the cell editor removes the focused input; give focus back so navigation continues.
+          if (e.key === "Enter" || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
+          return;
+        }
+        if (e.key === "Enter" && focus && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          props.onCellActivate?.(focus.r, visible[focus.c].c.name);
+          return;
+        }
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
           e.preventDefault();
           void copy();
@@ -216,7 +226,7 @@ export function GridView(props: Props) {
                       dragging.current = true;
                     }}
                     onMouseEnter={() => dragging.current && setFocus({ r, c })}
-                    onDoubleClick={() => props.onCellDoubleClick?.(r, name)}
+                    onDoubleClick={() => props.onCellActivate?.(r, name)}
                   >
                     {editor ?? <span className="cell-text">{d.text}</span>}
                   </div>
