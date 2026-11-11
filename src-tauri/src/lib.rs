@@ -24,6 +24,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
             let connections = app.path().app_config_dir()?.join("connections.json");
             let history = app.path().app_data_dir()?.join("history.json");
@@ -33,7 +34,7 @@ pub fn run() {
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
             if let Some(window) = app.get_webview_window("main") {
-                window_chrome::match_theme(&window);
+                window_chrome::apply(&window)?;
                 // Window-state restores the last size first; always start maximized on top of it so un-maximizing
                 // still returns to the remembered size.
                 window.maximize()?;

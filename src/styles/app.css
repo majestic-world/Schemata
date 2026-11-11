@@ -35,6 +35,21 @@ button:focus-visible { outline: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .pad { padding: 8px; }
 
+/* ---------- Title bar (Windows) ---------- */
+.titlebar { display: flex; align-items: center; flex: none; height: 32px; padding-left: 12px; background: var(--chrome-top); }
+.titlebar-icon { width: 16px; height: 16px; margin-right: 10px; pointer-events: none; }
+.titlebar-title { flex: 1; font-size: 12px; color: var(--text); pointer-events: none; white-space: nowrap; }
+.titlebar.inactive .titlebar-title, .titlebar.inactive .caption-btn { color: var(--text-faint); }
+.titlebar-controls { display: flex; align-self: stretch; }
+.caption-btn {
+  width: 46px; padding: 0; border: none; border-radius: 0; background: transparent; color: var(--text);
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: 10px;
+}
+.caption-btn:hover { background: rgba(0, 0, 0, 0.06); }
+.caption-btn:active { background: rgba(0, 0, 0, 0.1); }
+.caption-btn.close:hover { background: #c42b1c; color: #fff; }
+.caption-btn.close:active { background: #c84031; color: #fff; }
+
 /* ---------- Toolbar ---------- */
 .toolbar {
   display: flex; align-items: center; gap: 2px; height: 72px; padding: 0 10px;

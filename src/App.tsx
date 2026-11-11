@@ -3,12 +3,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useTabs } from "./store/tabs";
 import { useWorkspace } from "./store/workspace";
-import { isMod } from "./lib/platform";
+import { isMod, isWindows } from "./lib/platform";
 import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
 import { notifyError } from "./store/toasts";
 import { copyTable, pasteTable } from "./store/tableClipboard";
 import { designTable } from "./lib/objectActions";
 import { Toolbar } from "./components/Toolbar";
+import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 import { Inspector } from "./components/Inspector";
@@ -112,6 +113,7 @@ export function App() {
 
   return (
     <div className="app">
+      {isWindows && <TitleBar />}
       <Toolbar />
       <div className="app-body">
         <aside className="panel sidebar" style={{ width: layout.sidebarWidth }}>
