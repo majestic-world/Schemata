@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, RefreshCw } from "lucide-react";
 import { DatabaseIcon, TableIcon, ViewIcon } from "./icons";
@@ -40,6 +40,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   const select = useWorkspace((s) => s.select);
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
+  const tableRef = useRef<HTMLTableElement>(null);
   const connectionId = selection?.connectionId;
   const database = selection?.database;
   const objects = useQuery({
@@ -47,6 +48,23 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
     queryFn: () => api.listObjects(connectionId!, database!),
     enabled: !!connectionId && !!database,
   });
+  const lastUpdate = useRef({ connectionId, database, at: objects.dataUpdatedAt });
+  useEffect(() => {
+    const previous = lastUpdate.current;
+    lastUpdate.current = { connectionId, database, at: objects.dataUpdatedAt };
+    if (
+      previous.connectionId !== connectionId || previous.database !== database ||
+      previous.at === 0 || previous.at === objects.dataUpdatedAt || !objects.isSuccess
+    ) return;
+
+    // A completed refetch flashes even when structural sharing keeps the same rows.
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const animation = tableRef.current?.animate(
+      [{ opacity: reducedMotion ? 0.8 : 0.35 }, { opacity: 1 }],
+      { duration: reducedMotion ? 120 : 240, easing: "ease-out" },
+    );
+    return () => animation?.cancel();
+  }, [connectionId, database, objects.dataUpdatedAt, objects.isSuccess]);
   useRefreshShortcut(() => {
     if (!connectionId) return;
     if (!database) {
@@ -94,12 +112,12 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
         </button>
       </div>
-      <div className="table-scroll object-list" tabIndex={-1} onClick={(e) => {
+      <div className="table-scroll object-list" tabIndex={-1} aria-busy={objects.isFetching} onClick={(e) => {
         if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
           select({ connectionId, database });
         }
       }}>
-        <table className="list-table">
+        <table ref={tableRef} className="list-table">
           <thead>
             <tr>
               {header("name", "Name")}

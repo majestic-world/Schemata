@@ -62,6 +62,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
 - Single and grouped tab closures share `requestCloseTabs`. Unsaved SQL or pending grid edits require one confirmation before any targeted tab closes; cancelling leaves the entire group open.
 - Clicking empty space or a header in the object list clears the selected object while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selected object.
+- Successful object-list refetches briefly fade the existing table and restore it, even when its rows have not changed. F5/Ctrl+R and the refresh button share this feedback without remounting rows or clearing selection. The pulse lasts 240 ms, reduced to 120 ms with a gentler opacity change when reduced motion is preferred; initial loads and failed fetches do not pulse.
 
 ## Persistence
 
