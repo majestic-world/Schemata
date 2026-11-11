@@ -58,6 +58,8 @@ on the host. ARM64 hosts need Docker's x86_64 emulation for these targets.
 The first build downloads the toolchains and dependencies; subsequent builds reuse
 Docker layers and Cargo caches. Temporary native build files remain under
 `target/package-native/`; only installers are exported to `package/`.
+The packaging scripts use Node's built-in modules, with no Python dependency
+or additional npm packages.
 
 The macOS Docker build uses the Apple SDK provided by
 [`rust-linux-darwin-builder`](https://github.com/joseluisq/rust-linux-darwin-builder).

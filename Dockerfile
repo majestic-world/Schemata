@@ -78,7 +78,7 @@ RUN --mount=type=cache,id=schematadb-mac-registry,target=/root/.cargo/registry \
 
 FROM frontend AS mac-package
 RUN apt-get update && apt-get install --yes --no-install-recommends \
-    build-essential ca-certificates curl cpio file libarchive-tools python3 \
+    build-essential ca-certificates curl cpio file libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 # Pin the BOM writer; it is a build-only tool, not shipped in the application.
 RUN curl --fail --location --silent --show-error \
@@ -99,12 +99,12 @@ RUN curl --fail --location --silent --show-error \
     && echo "$(cat /tmp/rcodesign.sha256)  /tmp/rcodesign.tar.gz" | sha256sum --check \
     && tar -xzf /tmp/rcodesign.tar.gz -C /usr/local/bin --strip-components=1 \
     && rm /tmp/rcodesign.tar.gz /tmp/rcodesign.sha256
-COPY scripts/package-macos.py ./scripts/package-macos.py
+COPY scripts/package-macos.mjs ./scripts/package-macos.mjs
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 COPY src-tauri/icons/icon.icns ./src-tauri/icons/icon.icns
 COPY --from=mac-builder /artifacts/schematadb ./target/aarch64-apple-darwin/release/schematadb
 RUN file target/aarch64-apple-darwin/release/schematadb \
-    && python3 scripts/package-macos.py
+    && node scripts/package-macos.mjs
 
 FROM scratch AS mac
 COPY --from=mac-package /out/ /
