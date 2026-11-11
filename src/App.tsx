@@ -7,6 +7,7 @@ import { isMod } from "./lib/platform";
 import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
 import { notifyError } from "./store/toasts";
 import { copyTable, pasteTable } from "./store/tableClipboard";
+import { designTable } from "./lib/objectActions";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
@@ -70,6 +71,18 @@ export function App() {
         const connectionId = sel && sel.connectionId in useConnections.getState().open ? sel.connectionId : open[0];
         if (connectionId) useTabs.getState().newQuery({ connectionId, database: sel?.connectionId === connectionId ? (sel.database ?? null) : null });
         else notifyError("No open connection", { message: "Open a connection to start a query." });
+      } else if (key === "d" && !e.shiftKey) {
+        // Navicat: Ctrl+D designs the open table, or the table selected in the tree / object list.
+        const tabs = useTabs.getState();
+        const tab = tabs.tabs.find((t) => t.id === tabs.active);
+        const sel = useWorkspace.getState().selection;
+        if (tab?.kind === "table") {
+          e.preventDefault();
+          tabs.setView(tab.id, "structure");
+        } else if (!tab && sel?.database && sel.object?.kind === "table") {
+          e.preventDefault();
+          designTable({ connectionId: sel.connectionId, database: sel.database, name: sel.object.name, kind: "table" });
+        }
       } else if (
         (key === "c" || key === "v") &&
         !e.shiftKey &&
