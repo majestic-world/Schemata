@@ -81,3 +81,7 @@ on a Mac.
 ## Limitations
 
 English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync. Installers have no distribution signature or notarization.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The app bundles third-party Rust crates, npm packages and logo artwork under their own (permissive) licenses; their notices are in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) and in the app under **Settings → About → Licenses…**. After adding, removing or updating a dependency, run `pnpm notices` to regenerate the file; CI fails (`pnpm notices --check`) while it is stale. Database logos are trademarks of their respective owners.

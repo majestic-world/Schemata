@@ -22,7 +22,7 @@ jobs:
       - run: cargo test -p schematadb-core
 
   frontend:
-    name: Frontend typecheck and tests
+    name: Frontend typecheck, tests and license notices
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +31,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      # The app ships THIRD_PARTY_LICENSES.txt; fail when a dependency change left it stale.
+      - run: pnpm notices --check
 
   bundle:
     name: Bundle (${{ matrix.platform }})

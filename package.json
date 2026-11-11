@@ -2,13 +2,15 @@
   "name": "schematadb",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "notices": "node scripts/third-party-licenses.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
