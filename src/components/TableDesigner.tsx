@@ -49,8 +49,9 @@ const planError = (e: unknown) => (e && typeof e === "object" && "message" in e 
 
 /**
  * Keyboard handler for a design table body: ArrowUp/ArrowDown move to the same field of the adjacent row, and
- * ArrowDown on the last row calls `append` (like Navicat), which declines by returning false. `append` gets the
- * last row's element because fields that commit on blur may not have reached the design yet.
+ * ArrowDown on the last row calls `append` (like Navicat), which declines by returning false; the new row opens on
+ * its first field (the name). `append` gets the last row's element because fields that commit on blur may not have
+ * reached the design yet.
  */
 function rowArrowKeys(append: (lastRow: HTMLTableRowElement) => boolean) {
   return (e: KeyboardEvent<HTMLTableSectionElement>) => {
@@ -61,12 +62,13 @@ function rowArrowKeys(append: (lastRow: HTMLTableRowElement) => boolean) {
     const row = cell?.parentElement;
     if (!cell || !(row instanceof HTMLTableRowElement)) return;
     const body = e.currentTarget;
-    const focusRow = (r: number) => (body.rows[r]?.cells[cell.cellIndex]?.querySelector("input, select") as HTMLElement | null)?.focus();
+    const fieldOf = (r: number, c?: number) => body.rows[r]?.querySelector<HTMLElement>(c === undefined ? "input, select" : `td:nth-child(${c + 1}) :is(input, select)`);
+    const focusRow = (r: number) => fieldOf(r, cell.cellIndex)?.focus();
     e.preventDefault();
     const r = row.sectionRowIndex;
     if (e.key === "ArrowUp") focusRow(r - 1);
     else if (r < body.rows.length - 1) focusRow(r + 1);
-    else if (append(row)) requestAnimationFrame(() => focusRow(r + 1));
+    else if (append(row)) requestAnimationFrame(() => fieldOf(r + 1)?.focus());
   };
 }
 
