@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
 import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, TableDesign } from "../api/types";
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
-import { isMod } from "../lib/platform";
+import { MOD, isMod } from "../lib/platform";
 import { Dialog } from "./Dialog";
 import { ComboInput } from "./ComboInput";
 
@@ -30,6 +30,22 @@ function newDesign(engine: Engine): TableDesign {
   const id: ColumnDesign = { ...blankColumn(), name: "id", dataType: engine === "sqlite" ? "INTEGER" : "INT", nullable: false, autoIncrement: true, primaryKey: true };
   return { name: "", columns: [id], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
 }
+
+/** Names a new table, renaming foreign keys that still carry the name-derived default (`fk_<table>_N`). */
+function withName(d: TableDesign, name: string): TableDesign {
+  const auto = new RegExp(`^fk_${(d.name || "table").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_(\\d+)$`);
+  return {
+    ...d,
+    name,
+    foreignKeys: d.foreignKeys.map((fk) => {
+      const n = auto.exec(fk.name)?.[1];
+      return n ? { ...fk, name: `fk_${name}_${n}` } : fk;
+    }),
+  };
+}
+
+/** Message of a rejected `planTable` call (an `AppError` from the backend). */
+const planError = (e: unknown) => (e && typeof e === "object" && "message" in e ? String(e.message) : String(e));
 
 /**
  * Keyboard handler for a design table body: ArrowUp/ArrowDown move to the same field of the adjacent row, and
@@ -78,7 +94,8 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   });
   const [design, setDesign] = useState<TableDesign | null>(table ? null : newDesign(engine));
   const [section, setSection] = useState<Section>("columns");
-  const [preview, setPreview] = useState<string[] | null>(null);
+  /** Open review dialog. Existing tables: the planned statements. New tables: the name being entered (planned below). */
+  const [review, setReview] = useState<{ statements: string[] } | { name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (original.data) setDesign(structuredClone(original.data));
@@ -89,14 +106,33 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   const designKey = JSON.stringify(design);
   const ddl = useQuery({
     queryKey: ["plan", connectionId, database, table, designKey],
-    queryFn: () => api.planTable(connectionId, database, original.data ?? null, design!),
+    // A new table is named on save; preview it under a placeholder until then.
+    queryFn: () => api.planTable(connectionId, database, original.data ?? null, table ? design! : withName(design!, design!.name || "new_table")),
     enabled: section === "ddl" && !!design && (!table || !!original.data),
     retry: false,
   });
+  const reviewName = review && "name" in review ? review.name.trim() : "";
+  const newPlan = useQuery({
+    queryKey: ["plan", connectionId, database, null, designKey, reviewName],
+    queryFn: () => api.planTable(connectionId, database, null, withName(design!, reviewName)),
+    enabled: !!design && reviewName !== "",
+    retry: false,
+    placeholderData: keepPreviousData,
+  });
   const dirty = useMemo(() => (table ? JSON.stringify(original.data) !== designKey : true), [table, original.data, designKey]);
-  /** Latest `review`, for the Ctrl+S handler that runs it after pending field edits land. */
-  const reviewRef = useRef<() => Promise<void>>(async () => {});
-
+  /** Latest Ctrl+S action, for the window-level shortcut (only the active tab's designer is mounted). */
+  const saveShortcutRef = useRef<() => void>(() => {});
+  /** Latest `startReview`, run after a blurred field's pending edit lands. */
+  const startReviewRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    const onKey = (e: WindowEventMap["keydown"]) => {
+      if (!isMod(e) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "s") return;
+      e.preventDefault();
+      if (!e.repeat) saveShortcutRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   if (!design) return <div className="empty"><p>{original.isError ? (original.error as { message: string }).message : "Loading…"}</p></div>;
 
   const patch = (p: Partial<TableDesign>) => setDesign((d) => (d ? { ...d, ...p } : d));
@@ -132,37 +168,58 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
       d ? { ...d, foreignKeys: [...d.foreignKeys, { name: `fk_${d.name || "table"}_${d.foreignKeys.length + 1}`, columns: [], refTable: "", refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] } : d,
     );
 
-  const review = async () => {
+  const startReview = async () => {
     setBusy(true);
     try {
-      const statements = await api.planTable(connectionId, database, original.data ?? null, design);
-      if (statements.length === 0) notify("No changes to save");
-      else setPreview(statements);
+      if (table) {
+        const statements = await api.planTable(connectionId, database, original.data ?? null, design);
+        if (statements.length === 0) notify("No changes to save");
+        else setReview({ statements });
+      } else {
+        // Surface design errors before asking for the name.
+        await api.planTable(connectionId, database, null, withName(design, design.name || "new_table"));
+        setReview({ name: design.name });
+      }
     } catch (e) {
       notifyError("The design is not valid", e);
     } finally {
       setBusy(false);
     }
   };
+  startReviewRef.current = startReview;
+  const statements = !review ? null : "statements" in review ? review.statements : reviewName ? newPlan.data ?? null : null;
+  const canApply = !busy && !!statements && (!!table || (reviewName !== "" && !newPlan.isFetching && !newPlan.isError));
   const apply = async () => {
-    if (!preview) return;
+    if (!canApply || !statements) return;
+    const saved = table ? design : withName(design, reviewName);
     setBusy(true);
     try {
-      await api.applyDdl(connectionId, database, preview);
-      setPreview(null);
-      notify(table ? "Table altered" : "Table created", design.name);
+      await api.applyDdl(connectionId, database, statements);
+      setReview(null);
+      setDesign(saved);
+      notify(table ? "Table altered" : "Table created", saved.name);
       await qc.invalidateQueries({ queryKey: ["objects", connectionId, database] });
       await qc.invalidateQueries({ queryKey: ["tableInfo", connectionId, database] });
       await qc.invalidateQueries({ queryKey: ["tableDesign", connectionId, database] });
       await qc.invalidateQueries({ queryKey: ["page", connectionId, database] });
-      onSaved(design.name);
+      onSaved(saved.name);
     } catch (e) {
       notifyError(table ? "The table was not altered" : "The table was not created", e);
     } finally {
       setBusy(false);
     }
   };
-  reviewRef.current = review;
+  // Same as the Save button: review the SQL first; in the review, Ctrl+S applies it.
+  saveShortcutRef.current = () => {
+    if (review) {
+      void apply();
+      return;
+    }
+    if (busy || !dirty) return;
+    // Blur first so a field that commits on blur (column name, index columns) lands in the design.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    requestAnimationFrame(() => void startReviewRef.current());
+  };
 
   const columnNames = design.columns.map((c) => c.name).filter(Boolean);
   const typeOptions = typeSuggestions(engine);
@@ -177,29 +234,17 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   ];
 
   return (
-    <div
-      className="designer"
-      onKeyDown={(e) => {
-        if (!isMod(e) || e.key.toLowerCase() !== "s") return;
-        e.preventDefault();
-        // Same as the Save button: review the SQL first; in the review, Ctrl+S applies it.
-        if (preview) {
-          if (!busy) void apply();
-          return;
-        }
-        // Blur first so a field that commits on blur (column name, index columns) lands in the design.
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-        requestAnimationFrame(() => reviewRef.current());
-      }}
-    >
+    <div className="designer">
       <div className="action-bar">
-        <label className="inline-field">
-          <span>Table name</span>
-          <input className="input" value={design.name} onChange={(e) => patch({ name: e.target.value })} placeholder="new_table" autoFocus={!table} aria-label="Table name" />
-        </label>
+        {table && (
+          <label className="inline-field">
+            <span>Table name</span>
+            <input className="input" value={design.name} onChange={(e) => patch({ name: e.target.value })} aria-label="Table name" />
+          </label>
+        )}
         <div className="grow" />
         {table && <button className="btn" disabled={!dirty || busy} onClick={() => original.data && setDesign(structuredClone(original.data))}><Undo2 size={15} />Revert</button>}
-        <button className="btn primary" disabled={busy || !dirty || !design.name.trim()} onClick={review}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
+        <button className="btn primary" disabled={busy || !dirty || (!!table && !design.name.trim())} onClick={() => void startReview()} title={`${MOD}+S`}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
       </div>
       <div className="sheet-tabs" role="tablist">
         {sections.map((s) => (
@@ -389,23 +434,46 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
         )}
       </div>
 
-      {preview && (
+      {review && (
         <Dialog
           open
-          onClose={() => setPreview(null)}
-          title={table ? "Review changes" : "Review new table"}
+          onClose={() => setReview(null)}
+          title={table ? "Review changes" : "Create table"}
           width={720}
           footer={
             <>
-              <button className="btn" onClick={() => void navigator.clipboard.writeText(preview.map((s) => `${s};`).join("\n\n")).then(() => notify("SQL copied"))}><Copy size={14} />Copy SQL</button>
+              <button className="btn" disabled={!statements} onClick={() => statements && void navigator.clipboard.writeText(statements.map((s) => `${s};`).join("\n\n")).then(() => notify("SQL copied"))}><Copy size={14} />Copy SQL</button>
               <div className="grow" />
-              <button className="btn" onClick={() => setPreview(null)}>Cancel</button>
-              <button className="btn primary" disabled={busy} onClick={apply}>Apply</button>
+              <button className="btn" onClick={() => setReview(null)}>Cancel</button>
+              <button className="btn primary" disabled={!canApply} onClick={() => void apply()}>{table ? "Apply" : "Create Table"}</button>
             </>
           }
         >
-          <p className="dialog-text">The following SQL will run{preview.length > 1 ? " in order" : ""}:</p>
-          <pre className="code-block tall">{preview.map((s) => `${s};`).join("\n\n")}</pre>
+          {"name" in review && (
+            <label className="field review-name">
+              <span>Table name</span>
+              <input
+                className="input"
+                value={review.name}
+                onChange={(e) => setReview({ name: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  void apply();
+                }}
+                placeholder="new_table"
+                autoFocus
+                spellCheck={false}
+                aria-label="Table name"
+              />
+            </label>
+          )}
+          <p className="dialog-text">The following SQL will run{statements && statements.length > 1 ? " in order" : ""}:</p>
+          {"name" in review && newPlan.isError ? (
+            <p className="error-text">{planError(newPlan.error)}</p>
+          ) : (
+            <pre className="code-block tall">{statements ? statements.map((s) => `${s};`).join("\n\n") : reviewName ? "…" : "Enter a table name."}</pre>
+          )}
         </Dialog>
       )}
     </div>

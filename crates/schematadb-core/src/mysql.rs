@@ -873,15 +873,17 @@ DELIMITER ;",
         Ok(int(&row, 0)?.unwrap_or(0) as u64)
     }
 
-    async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
+    async fn plan_table(&self, _db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
         match original {
-            None => crate::design::mysql::create(db, design),
-            Some(original) => crate::design::mysql::alter(db, original, design),
+            None => crate::design::mysql::create(design),
+            Some(original) => crate::design::mysql::alter(original, design),
         }
     }
 
-    async fn apply_ddl(&self, _db: &str, statements: &[String]) -> Result<()> {
+    async fn apply_ddl(&self, db: &str, statements: &[String]) -> Result<()> {
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        // Planned statements name tables without the database, as shown in the SQL preview.
+        sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
         for st in statements {
             sqlx::raw_sql(AssertSqlSafe(st.clone())).execute(&mut *conn).await.map_err(map_err)?;
         }

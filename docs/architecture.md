@@ -26,6 +26,8 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - A `TableDesign` value is the single input for create and alter. The core diffs the original and new designs into a DDL list; that list is both the preview the user reviews and exactly what gets executed.
 - MySQL/MariaDB alterations run as `ALTER TABLE`. SQLite changes its `ALTER TABLE` cannot express use the [official rebuild procedure](https://www.sqlite.org/lang_altertable.html#otheralter): foreign keys off, new table, copy data, drop, rename, recreate indexes, triggers and dependent views, `foreign_key_check`. A failed alteration leaves the table unchanged.
+- MySQL/MariaDB DDL names tables without the database (``CREATE TABLE `t` ``); `apply_ddl` runs `USE <db>` on its connection first. SQLite DDL stays schema-qualified, since SQLite has no `USE` and attached databases need the prefix.
+- A new table is named in the review dialog when saving (button or Ctrl+S), not in the designer; until then the SQL preview tab uses the placeholder `new_table`.
 
 ## Scripts and cancellation
 

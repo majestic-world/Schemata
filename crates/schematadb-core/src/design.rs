@@ -280,7 +280,8 @@ pub(crate) mod mysql {
         out
     }
 
-    pub fn create(db: &str, d: &TableDesign) -> crate::Result<Vec<String>> {
+    /// Unqualified, like the statements a user would type: [`crate::Driver::apply_ddl`] runs them in the target database.
+    pub fn create(d: &TableDesign) -> crate::Result<Vec<String>> {
         let d = &prepare(d)?;
         let mut parts: Vec<String> = d.columns.iter().map(column_def).collect();
         let pk = d.primary_key();
@@ -289,7 +290,7 @@ pub(crate) mod mysql {
         }
         parts.extend(d.indexes.iter().map(index_clause));
         parts.extend(d.foreign_keys.iter().map(|f| fk_clause(f, q)));
-        let mut sql = format!("CREATE TABLE {}.{} (\n  {}\n)", q(db), q(&d.name), parts.join(",\n  "));
+        let mut sql = format!("CREATE TABLE {} (\n  {}\n)", q(&d.name), parts.join(",\n  "));
         let opts = options(&d.options, None);
         if !opts.is_empty() {
             sql += &format!(" {}", opts.join(" "));
@@ -297,8 +298,8 @@ pub(crate) mod mysql {
         Ok(vec![sql])
     }
 
-    /// One `ALTER TABLE` statement, which MySQL applies atomically.
-    pub fn alter(db: &str, original: &TableDesign, d: &TableDesign) -> crate::Result<Vec<String>> {
+    /// One unqualified `ALTER TABLE` statement, which MySQL applies atomically.
+    pub fn alter(original: &TableDesign, d: &TableDesign) -> crate::Result<Vec<String>> {
         let d = &prepare(d)?;
         let map = rename_map(d);
         let orig_cols: HashMap<&str, &ColumnDesign> = original.columns.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -377,12 +378,12 @@ pub(crate) mod mysql {
         }
         clauses.extend(options(&d.options, Some(&original.options)));
         if d.name != original.name {
-            clauses.push(format!("RENAME TO {}.{}", q(db), q(&d.name)));
+            clauses.push(format!("RENAME TO {}", q(&d.name)));
         }
         if clauses.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(vec![format!("ALTER TABLE {}.{}\n  {}", q(db), q(&original.name), clauses.join(",\n  "))])
+        Ok(vec![format!("ALTER TABLE {}\n  {}", q(&original.name), clauses.join(",\n  "))])
     }
 }
 

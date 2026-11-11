@@ -541,3 +541,4 @@ select.cell-input { padding: 0 4px; }
 .settings-about .btn { align-self: flex-start; }
 .licenses-dialog .dialog-body { display: flex; padding: 12px; }
 .licenses-text { flex: 1; height: min(60vh, 560px); margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; outline: none; }
+.review-name { margin-bottom: 14px; }

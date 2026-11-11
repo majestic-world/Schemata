@@ -3,7 +3,7 @@ mod common;
 use common::TestDb;
 use schematadb_core::{
     CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, ObjectKind, PageRequest, SortSpec,
-    TableDesign, TableOptions,
+    TableDesign, TableOptions, connect,
 };
 
 fn index(name: &str, column: &str, kind: IndexKind) -> IndexDesign {
@@ -249,3 +249,39 @@ async fn drops_truncates_and_renames(t: TestDb) {
     assert_eq!(objects, vec!["a2"]);
 }
 scenario!(drops_truncates_and_renames);
+
+/// MySQL/MariaDB DDL names tables without the database; applying it must still target the chosen database,
+/// even on a connection whose default database is a different one (or none).
+async fn unqualified_ddl_lands_in_the_target_database(t: TestDb) {
+    let Some(server) = &t.server else { return };
+    t.exec("CREATE TABLE category (id INT PRIMARY KEY)").await;
+    let mut id = col("id", "INT");
+    id.primary_key = true;
+    id.nullable = false;
+    let design = TableDesign {
+        name: "product".into(),
+        columns: vec![id, col("category_id", "INT")],
+        indexes: vec![],
+        foreign_keys: vec![ForeignKeyDesign {
+            name: "fk_product_category".into(),
+            columns: vec!["category_id".into()],
+            ref_table: "category".into(),
+            ref_columns: vec!["id".into()],
+            on_update: "NO ACTION".into(),
+            on_delete: "NO ACTION".into(),
+        }],
+        options: TableOptions::default(),
+    };
+    let other = connect(&server.params(None)).await.unwrap();
+    let create = other.plan_table(&t.db, None, &design).await.unwrap();
+    assert!(create[0].starts_with("CREATE TABLE `product`"), "{}", create[0]);
+    other.apply_ddl(&t.db, &create).await.unwrap();
+
+    let original = t.driver.table_design(&t.db, "product").await.unwrap();
+    let mut renamed = original.clone();
+    renamed.name = "item".into();
+    other.apply_ddl(&t.db, &other.plan_table(&t.db, Some(&original), &renamed).await.unwrap()).await.unwrap();
+    let info = t.driver.table_info(&t.db, "item").await.unwrap();
+    assert_eq!(info.foreign_keys[0].ref_table, "category");
+}
+scenario!(unqualified_ddl_lands_in_the_target_database);
