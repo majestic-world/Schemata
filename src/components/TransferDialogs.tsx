@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Tabs } from "radix-ui";
 import { useConnection } from "../lib/useConnection";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, CheckCircle2, FolderOpen } from "lucide-react";
 import { api } from "../api/client";
-import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, TextEncoding } from "../api/types";
+import { ENGINE_LABEL } from "../api/types";
+import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
 import { Dialog } from "./Dialog";
 import { formatCount, plural } from "../lib/format";
@@ -18,12 +20,17 @@ type Phase<R> = { state: "form" } | { state: "running"; done: number; total: num
 function useOperation<R>() {
   const [phase, setPhase] = useState<Phase<R>>({ state: "form" });
   const opId = useRef<string | null>(null);
+  const progress = useRef<{ done: number; total: number | null }>({ done: 0, total: null });
   const run = async (start: (operationId: string) => Promise<R>) => {
     const id = crypto.randomUUID();
     opId.current = id;
-    setPhase({ state: "running", done: 0, total: null });
+    progress.current = { done: 0, total: null };
+    setPhase({ state: "running", ...progress.current });
     const unlisten = await listen<OperationProgress>("operation-progress", (e) => {
-      if (e.payload.operationId === id) setPhase({ state: "running", done: e.payload.done, total: e.payload.total });
+      if (e.payload.operationId === id) {
+        progress.current = { done: e.payload.done, total: e.payload.total };
+        setPhase({ state: "running", ...progress.current });
+      }
     });
     try {
       setPhase({ state: "done", report: await start(id) });
@@ -35,7 +42,7 @@ function useOperation<R>() {
     }
   };
   const cancel = () => opId.current && void api.cancelOperation(opId.current);
-  return { phase, run, cancel, reset: () => setPhase({ state: "form" }) };
+  return { phase, progress: progress.current, run, cancel, reset: () => setPhase({ state: "form" }) };
 }
 
 function ProgressView({ done, total, unit }: { done: number; total: number | null; unit: string }) {
@@ -296,53 +303,120 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
 
 function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" }> }) {
   const qc = useQueryClient();
+  const connection = useConnection(req.connectionId);
+  const id = useId();
   const close = () => useTransfer.getState().open(null);
+  const [tab, setTab] = useState("general");
   const [path, setPath] = useState("");
   const [stopOnError, setStopOnError] = useState(true);
-  const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
+  const [execution, setExecution] = useState<{ file: string; stopOnError: boolean } | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const startedAt = useRef(0);
+  const op = useOperation<ScriptRunReport>();
+  const running = op.phase.state === "running";
+  const report = op.phase.state === "done" ? op.phase.report : null;
+  const failed = op.phase.state === "failed" || (report !== null && report.failed.length > 0);
+  const succeeded = report !== null && !failed;
+  const initial = op.phase.state === "form";
+  const percent = succeeded ? 100 : op.progress.total
+    ? Math.min(100, Math.round((op.progress.done / op.progress.total) * 100))
+    : initial || failed ? 0 : null;
+  const time = `${String(Math.floor(elapsed / 60_000)).padStart(2, "0")}:${String(Math.floor(elapsed / 1_000) % 60).padStart(2, "0")}.${String(Math.floor(elapsed / 10) % 100).padStart(2, "0")}`;
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setElapsed(performance.now() - startedAt.current), 100);
+    return () => window.clearInterval(timer);
+  }, [running]);
   const pick = async () => {
     const p = await pickSqlFile();
     if (p) setPath(p);
   };
-  const start = () =>
-    op.run(async (id) => {
-      const report = await api.runSqlFile(req.connectionId, req.database, path, stopOnError, id);
+  const start = async () => {
+    startedAt.current = performance.now();
+    setElapsed(0);
+    setExecution({ file: path.split(/[\\/]/).pop() ?? path, stopOnError });
+    setTab("log");
+    await op.run(async (operationId) => {
+      const result = await api.runSqlFile(req.connectionId, req.database, path, stopOnError, operationId);
       void qc.invalidateQueries({ queryKey: ["objects", req.connectionId] });
       void qc.invalidateQueries({ queryKey: ["databases", req.connectionId] });
-      return report;
+      return result;
     });
+    setElapsed(performance.now() - startedAt.current);
+  };
   return (
     <Dialog
       open
-      onClose={() => (op.phase.state === "running" ? op.cancel() : close())}
-      title={`Run SQL file on ${req.database}`}
-      width={560}
+      onClose={() => running ? op.cancel() : close()}
+      title={`${succeeded ? "100% - " : running ? "Executing - " : ""}Execute SQL File`}
+      width={580}
+      className="sql-file-dialog"
       footer={
-        op.phase.state === "running" ? (
-          <button className="btn danger" onClick={op.cancel}>Cancel</button>
-        ) : op.phase.state === "form" ? (
-          <><button className="btn" onClick={close}>Cancel</button><button className="btn primary" disabled={!path} onClick={start}>Run</button></>
-        ) : (
-          <button className="btn primary" onClick={close}>Close</button>
-        )
+        <>
+          <button className="btn primary" disabled={!path.trim() || running} onClick={() => void start()}>Start</button>
+          <button className="btn" onClick={() => running ? op.cancel() : close()}>{running ? "Stop" : "Close"}</button>
+        </>
       }
     >
-      {op.phase.state === "form" && (
-        <div className="form">
-          <div className="row">
-            <label className="field grow"><span>SQL file</span><input value={path} onChange={(e) => setPath(e.target.value)} aria-label="SQL file" /></label>
-            <button className="btn" onClick={pick}><FolderOpen size={15} />Browse…</button>
+      <Tabs.Root className="sql-file" value={tab} onValueChange={setTab}>
+        <Tabs.List className="sql-file-tabs" aria-label="SQL file execution">
+          <Tabs.Trigger value="general">General</Tabs.Trigger>
+          <Tabs.Trigger value="log">Message Log</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="general" className="sql-file-panel">
+          <fieldset className="sql-file-fields" disabled={running}>
+            <span>Server:</span><span title={connection?.name}>{connection ? ENGINE_LABEL[connection.engine] : "—"}</span>
+            <span>Database:</span><span className="sql-file-database" title={req.database}>{req.database}</span>
+            <label htmlFor={`${id}-path`}>File:</label>
+            <div className="sql-file-path">
+              <input id={`${id}-path`} className="input" value={path} onChange={(e) => setPath(e.target.value)} aria-label="SQL file" />
+              <button className="btn" onClick={pick} aria-label="Browse SQL file" title="Browse SQL file"><FolderOpen size={14} /></button>
+            </div>
+            <label htmlFor={`${id}-encoding`}>Encoding:</label>
+            <select id={`${id}-encoding`} className="input" disabled title="SQL files currently use UTF-8, with an optional BOM.">
+              <option>65001 (UTF-8)</option>
+            </select>
+            <div className="sql-file-options">
+              <label className="check"><input type="checkbox" checked={!stopOnError} onChange={(e) => setStopOnError(!e.target.checked)} />Continue on error</label>
+              <p className="hint">Statements run sequentially. Transactions are controlled by the SQL file.</p>
+            </div>
+          </fieldset>
+        </Tabs.Content>
+        <Tabs.Content value="log" className="sql-file-panel sql-file-results">
+          <dl className="sql-file-stats">
+            <dt title="Statements attempted in this execution">Queries:</dt><dd>{formatCount(report ? report.executed + report.failed.length : initial ? 0 : null)}</dd>
+            <dt title="Statements executed successfully">Processed:</dt><dd>{formatCount(report?.executed ?? (initial ? 0 : null))}</dd>
+            <dt>Errors:</dt><dd className={failed ? "error-text" : undefined}>{formatCount(report?.failed.length ?? (initial ? 0 : null))}</dd>
+            <dt>Time:</dt><dd>{time}</dd>
+          </dl>
+          <div className="sql-file-log" role="log" aria-label="Execution messages" aria-live="polite">
+            {!execution && <span className="muted">No execution started.</span>}
+            {execution && <div>[SQL] {execution.file} start</div>}
+            {running && <div>[SQL] Reading file and executing statements…</div>}
+            {report?.failed.slice(0, 20).map((error) => (
+              <div className="error-text" key={error.index}>[ERR] Query #{error.index + 1}: {error.message}{"\n"}{error.statement}</div>
+            ))}
+            {report && report.failed.length > 20 && <div>[ERR] {plural(report.failed.length - 20, "additional error")}.</div>}
+            {report && <div className={failed ? "error-text" : undefined}>[SQL] {failed ? execution?.stopOnError ? "Stopped at the first error." : "Finished with errors." : "Finished successfully."}</div>}
+            {op.phase.state === "failed" && (
+              <div className="error-text">{op.phase.error.kind === "cancelled" ? "[SQL] Stopped by user. Completed statements may already be committed." : `[ERR] ${op.phase.error.message}`}</div>
+            )}
           </div>
-          <label className="check"><input type="checkbox" checked={stopOnError} onChange={(e) => setStopOnError(e.target.checked)} />Stop at the first error</label>
-        </div>
-      )}
-      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="bytes read" />}
-      {op.phase.state === "done" && (
-        <Outcome ok={op.phase.report.failed.length === 0} title={`${plural(op.phase.report.executed, "statement")} executed${op.phase.report.failed.length ? `, ${op.phase.report.failed.length} failed` : ""}`}>
-          {op.phase.report.failed.slice(0, 20).map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
-        </Outcome>
-      )}
-      {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Stopped" : "Failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
+          <div className="sql-file-read hint">
+            <span>Bytes read</span><span>{formatCount(op.progress.done)} / {formatCount(op.progress.total)}</span>
+          </div>
+          <div
+            className={`progress-bar sql-file-progress${succeeded ? " complete" : failed ? " failed" : ""}`}
+            role="progressbar"
+            aria-label="SQL file bytes read"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent ?? undefined}
+          >
+            <div className={percent === null ? "indeterminate" : undefined} style={percent === null ? undefined : { width: `${percent}%` }} />
+          </div>
+        </Tabs.Content>
+      </Tabs.Root>
     </Dialog>
   );
 }
