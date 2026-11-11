@@ -437,33 +437,44 @@ select.cell-input { padding: 0 4px; }
 .outcome-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .outcome-text span, .outcome-text code { color: var(--text); font-weight: 400; overflow-wrap: anywhere; }
 
-/* Compact SQL-file runner: native-style tabs, aligned fields and an execution transcript. */
-.sql-file-dialog .dialog-body { padding: 8px; }
-.sql-file-dialog .dialog-footer { padding: 8px; }
-.sql-file-dialog .dialog-footer .btn { min-width: 76px; }
-.sql-file { display: flex; flex-direction: column; height: 300px; max-height: calc(100vh - 160px); }
-.sql-file-tabs { display: flex; flex: none; align-items: flex-end; padding-left: 2px; }
-.sql-file-tabs button { height: 24px; padding: 0 8px; border: 1px solid var(--border-strong); border-bottom: 0; background: var(--surface-2); color: var(--text-muted); font-size: var(--fs-sm); }
-.sql-file-tabs button + button { border-left: 0; }
-.sql-file-tabs button[data-state="active"] { position: relative; z-index: 1; margin-bottom: -1px; height: 25px; background: var(--surface); color: var(--text); }
-.sql-file-tabs button:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
-.sql-file-panel { flex: 1; min-height: 0; padding: 10px; border: 1px solid var(--border-strong); outline: none; }
+/* Compact SQL-file runner: folder tabs, aligned label/value grid and an execution transcript. */
+.sql-file-dialog .dialog-body { padding: 12px 14px 14px; }
+.sql-file-dialog .dialog-footer { padding: 10px 14px; }
+.sql-file-dialog .dialog-footer .btn { min-width: 80px; justify-content: center; }
+.sql-file { display: flex; flex-direction: column; height: 286px; max-height: calc(100vh - 160px); }
+.sql-file-tabs { display: flex; flex: none; align-items: flex-end; gap: 2px; padding-left: 8px; }
+.sql-file-tabs button {
+  position: relative; height: 28px; padding: 0 14px; border: 1px solid transparent; border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: transparent; color: var(--text-muted); font-size: var(--fs-sm);
+}
+.sql-file-tabs button:hover { background: var(--surface-hover); color: var(--text); }
+.sql-file-tabs button[data-state="active"] { z-index: 1; margin-bottom: -1px; height: 29px; border-color: var(--border); background: var(--surface); color: var(--text); }
+.sql-file-tabs button[data-state="active"]::before { content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: var(--accent); }
+.sql-file-tabs button:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
+.sql-file-panel { flex: 1; min-height: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); outline: none; }
 .sql-file-panel[data-state="active"] { display: flex; flex-direction: column; }
-.sql-file-fields { display: grid; grid-template-columns: 78px minmax(0, 1fr); align-items: center; gap: 8px 10px; min-width: 0; margin: 0; padding: 0; border: 0; font-size: var(--fs-sm); }
-.sql-file-database { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
-.sql-file-path { display: flex; gap: 4px; min-width: 0; }
-.sql-file-path .input { flex: 1; min-width: 0; }
-.sql-file-fields .input, .sql-file-path .btn { height: 25px; border-radius: 0; }
-.sql-file-path .btn { flex: none; width: 25px; padding: 0; }
-.sql-file-fields select:disabled { opacity: 1; }
-.sql-file-options { grid-column: 2; display: flex; flex-direction: column; gap: 10px; }
+.sql-file-fields { display: grid; grid-template-columns: 72px minmax(0, 1fr); grid-auto-rows: minmax(20px, auto); align-items: center; gap: 8px 12px; min-width: 0; margin: 0; padding: 0; border: 0; font-size: var(--fs-sm); }
+.sql-file-label, .sql-file-stats dt { color: var(--text-muted); }
+.sql-file-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.sql-file-divider { grid-column: 1 / -1; height: 1px; margin: 4px 0; background: var(--border-soft); }
+.sql-file-path { display: flex; min-width: 0; }
+.sql-file-path .input { flex: 1; min-width: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.sql-file-path .btn { flex: none; justify-content: center; width: 30px; margin-left: -1px; padding: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; color: var(--text-muted); }
+.sql-file-path .btn:hover:not(:disabled) { color: var(--text); }
+.sql-file-path .input:focus { position: relative; z-index: 1; }
+.sql-file-fields .input { font-size: var(--fs-sm); }
+.sql-file-fields select.input { padding-left: 4px; }
+.sql-file-fields select:disabled { opacity: 1; color: var(--text); }
+.sql-file-options { grid-column: 2; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.sql-file-options .check { align-self: flex-start; }
+.sql-file-options .check input { flex: none; margin: 0; }
 .sql-file-options .hint { margin: 0; }
-.sql-file-results { gap: 6px; }
-.sql-file-stats { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 1px 10px; margin: 0; font-size: var(--fs-sm); line-height: 1.4; font-variant-numeric: tabular-nums; }
+.sql-file-results { gap: 8px; }
+.sql-file-stats { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 2px 12px; margin: 0; font-size: var(--fs-sm); line-height: 1.5; font-variant-numeric: tabular-nums; }
 .sql-file-stats dd { margin: 0; }
-.sql-file-log { flex: 1; min-height: 0; overflow: auto; padding: 4px; border: 1px solid var(--border-strong); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.sql-file-log { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .sql-file-read { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
-.sql-file-progress { flex: none; height: 12px; border-radius: 0; }
+.sql-file-progress { flex: none; }
 .sql-file-progress.complete > div { background: var(--success); }
 .sql-file-progress.failed > div { background: var(--danger); }
 .mapping { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }

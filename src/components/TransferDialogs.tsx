@@ -353,8 +353,8 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
       className="sql-file-dialog"
       footer={
         <>
-          <button className="btn primary" disabled={!path.trim() || running} onClick={() => void start()}>Start</button>
           <button className="btn" onClick={() => running ? op.cancel() : close()}>{running ? "Stop" : "Close"}</button>
+          <button className="btn primary" disabled={!path.trim() || running} onClick={() => void start()}>Start</button>
         </>
       }
     >
@@ -365,14 +365,15 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
         </Tabs.List>
         <Tabs.Content value="general" className="sql-file-panel">
           <fieldset className="sql-file-fields" disabled={running}>
-            <span>Server:</span><span title={connection?.name}>{connection ? ENGINE_LABEL[connection.engine] : "—"}</span>
-            <span>Database:</span><span className="sql-file-database" title={req.database}>{req.database}</span>
-            <label htmlFor={`${id}-path`}>File:</label>
+            <span className="sql-file-label">Server</span><span className="sql-file-value" title={connection?.name}>{connection ? ENGINE_LABEL[connection.engine] : "—"}</span>
+            <span className="sql-file-label">Database</span><span className="sql-file-value" title={req.database}>{req.database}</span>
+            <span className="sql-file-divider" aria-hidden="true" />
+            <label className="sql-file-label" htmlFor={`${id}-path`}>File</label>
             <div className="sql-file-path">
               <input id={`${id}-path`} className="input" value={path} onChange={(e) => setPath(e.target.value)} aria-label="SQL file" />
-              <button className="btn" onClick={pick} aria-label="Browse SQL file" title="Browse SQL file"><FolderOpen size={14} /></button>
+              <button className="btn" onClick={pick} aria-label="Browse SQL file" title="Browse SQL file"><FolderOpen size={15} /></button>
             </div>
-            <label htmlFor={`${id}-encoding`}>Encoding:</label>
+            <label className="sql-file-label" htmlFor={`${id}-encoding`}>Encoding</label>
             <select id={`${id}-encoding`} className="input" disabled title="SQL files currently use UTF-8, with an optional BOM.">
               <option>65001 (UTF-8)</option>
             </select>
@@ -384,10 +385,10 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
         </Tabs.Content>
         <Tabs.Content value="log" className="sql-file-panel sql-file-results">
           <dl className="sql-file-stats">
-            <dt title="Statements attempted in this execution">Queries:</dt><dd>{formatCount(report ? report.executed + report.failed.length : initial ? 0 : null)}</dd>
-            <dt title="Statements executed successfully">Processed:</dt><dd>{formatCount(report?.executed ?? (initial ? 0 : null))}</dd>
-            <dt>Errors:</dt><dd className={failed ? "error-text" : undefined}>{formatCount(report?.failed.length ?? (initial ? 0 : null))}</dd>
-            <dt>Time:</dt><dd>{time}</dd>
+            <dt title="Statements attempted in this execution">Queries</dt><dd>{formatCount(report ? report.executed + report.failed.length : initial ? 0 : null)}</dd>
+            <dt title="Statements executed successfully">Processed</dt><dd>{formatCount(report?.executed ?? (initial ? 0 : null))}</dd>
+            <dt>Errors</dt><dd className={failed ? "error-text" : undefined}>{formatCount(report?.failed.length ?? (initial ? 0 : null))}</dd>
+            <dt>Time</dt><dd>{time}</dd>
           </dl>
           <div className="sql-file-log" role="log" aria-label="Execution messages" aria-live="polite">
             {!execution && <span className="muted">No execution started.</span>}
