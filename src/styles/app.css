@@ -77,7 +77,7 @@ button:focus-visible { outline: none; }
 /* ---------- Buttons ---------- */
 .btn {
   display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px;
-  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--surface); white-space: nowrap;
 }
 .btn:hover:not(:disabled) { background: var(--surface-2); border-color: #aeb8c3; }
