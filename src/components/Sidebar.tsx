@@ -281,12 +281,12 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const expandedFlag = useWorkspace((s) => !!s.expanded[key]);
   const setExpanded = useWorkspace((s) => s.setExpanded);
+  const copied = useTableClipboard((s) => s.copied);
   const all = props.objects.filter((o) => o.kind === kind);
   const shown = search ? all.filter((o) => o.name.toLowerCase().includes(search)) : all;
   const expanded = expandedFlag || (search !== "" && shown.length > 0);
   if (search && shown.length === 0) return null;
   const Icon = kind === "table" ? TableIcon : ViewIcon;
-  const copied = useTableClipboard((s) => s.copied);
   const groupItems: Item[] =
     kind === "table"
       ? [
