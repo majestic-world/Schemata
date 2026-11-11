@@ -49,6 +49,13 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Toolbar actions use filled, shaded 32 px SVG glyphs from `src/components/icons.tsx`, sharing the `Grad` helper. Settings follows the same style with a metallic gear and blue center; outline-only icons are reserved for compact controls.
 
+## Workspace interactions
+
+- The webview's default context menu is suppressed without stopping event propagation; app-owned Radix context menus remain available.
+- Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
+- Single and grouped tab closures share `requestCloseTabs`. Unsaved SQL or pending grid edits require one confirmation before any targeted tab closes; cancelling leaves the entire group open.
+- Clicking empty space or a header in the object list clears the selected object while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selected object.
+
 ## Persistence
 
 - Connection definitions: JSON in the app-config directory, never containing passwords.

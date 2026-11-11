@@ -120,11 +120,15 @@ export function App() {
       }
     };
     const onRejection = (e: PromiseRejectionEvent) => notifyError("Unexpected error", e.reason);
+    // Custom Radix context menus still handle the event; only the webview's default is suppressed.
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("keydown", onKey);
     window.addEventListener("unhandledrejection", onRejection);
+    window.addEventListener("contextmenu", onContextMenu);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("unhandledrejection", onRejection);
+      window.removeEventListener("contextmenu", onContextMenu);
     };
   }, [qc]);
 

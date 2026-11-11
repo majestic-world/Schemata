@@ -93,7 +93,11 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
         </button>
       </div>
-      <div className="table-scroll object-list" tabIndex={-1}>
+      <div className="table-scroll object-list" tabIndex={-1} onClick={(e) => {
+        if (selection?.object && e.target instanceof Element && !e.target.closest("tbody tr")) {
+          select({ connectionId, database });
+        }
+      }}>
         <table className="list-table">
           <thead>
             <tr>

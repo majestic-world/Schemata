@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { DropdownMenu } from "radix-ui";
+import { ContextMenu, DropdownMenu } from "radix-ui";
 import { X, LayoutGrid, PencilRuler, Trash2, MoreHorizontal, FileCode2, ExternalLink, Plus } from "lucide-react";
+import type { ReactNode } from "react";
 import { TableIcon, ViewIcon } from "./icons";
 import { QueryEditor } from "./QueryEditor";
 import { ObjectList } from "./ObjectList";
@@ -11,17 +12,25 @@ import { useWorkspace } from "../store/workspace";
 import { useConnection } from "../lib/useConnection";
 import { copyCreateStatement, designTable, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 import { openTransfer } from "../store/transfer";
-import { hasPendingEdits } from "../store/gridState";
-import { confirmAction } from "../store/confirm";
+import { requestCloseTabs } from "../lib/tabActions";
 
-/** Closes a tab, asking first when it holds uncommitted grid edits. */
-async function requestClose(id: string) {
-  if (
-    hasPendingEdits(id) &&
-    !(await confirmAction({ title: "Discard changes", message: "This tab has uncommitted changes. Close it and discard them?", confirmLabel: "Discard", danger: true }))
-  )
-    return;
-  useTabs.getState().close(id);
+function TabContextMenu({ id, children }: { id: string; children: ReactNode }) {
+  const tabs = useTabs((s) => s.tabs);
+  const index = tabs.findIndex((tab) => tab.id === id);
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className="menu">
+          <ContextMenu.Item className="menu-item" disabled={id === OBJECTS_TAB} onSelect={() => void requestCloseTabs([id])}>Close Tab</ContextMenu.Item>
+          <ContextMenu.Item className="menu-item" disabled={!tabs.some((tab) => tab.id !== id)} onSelect={() => void requestCloseTabs(tabs.filter((tab) => tab.id !== id).map((tab) => tab.id))}>Close Other Tabs</ContextMenu.Item>
+          <ContextMenu.Item className="menu-item" disabled={index === tabs.length - 1} onSelect={() => void requestCloseTabs(tabs.slice(index + 1).map((tab) => tab.id))}>Close Tabs to the Right</ContextMenu.Item>
+          <ContextMenu.Separator className="menu-sep" />
+          <ContextMenu.Item className="menu-item" disabled={tabs.length === 0} onSelect={() => void requestCloseTabs(tabs.map((tab) => tab.id))}>Close All Tabs</ContextMenu.Item>
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
+  );
 }
 
 function tabLabel(t: Tab) {
@@ -45,32 +54,36 @@ export function Workspace() {
   return (
     <>
       <div className="tabs" role="tablist">
-        <div className={`tab${active === OBJECTS_TAB ? " active" : ""}`} role="tab" onClick={() => activate(OBJECTS_TAB)}>
-          <LayoutGrid size={14} />
-          <span className="title">Objects</span>
-        </div>
+        <TabContextMenu id={OBJECTS_TAB}>
+          <div className={`tab${active === OBJECTS_TAB ? " active" : ""}`} role="tab" tabIndex={0} onClick={() => activate(OBJECTS_TAB)}>
+            <LayoutGrid size={14} />
+            <span className="title">Objects</span>
+          </div>
+        </TabContextMenu>
         {tabs.map((t) => {
           const icon =
             t.kind === "newTable" ? <PencilRuler size={14} className="tab-glyph design" /> : t.kind === "query" ? <FileCode2 size={14} className="tab-glyph query" /> : t.objectKind === "table" ? <TableIcon size={15} /> : <ViewIcon size={15} />;
           return (
-            <div
-              key={t.id}
-              className={`tab${active === t.id ? " active" : ""}`}
-              role="tab"
-              title={tabLabel(t)}
-              onClick={() => {
-                activate(t.id);
-                if (t.kind === "table") useWorkspace.getState().select({ connectionId: t.connectionId, database: t.database, object: { name: t.name, kind: t.objectKind } });
-              }}
-              onAuxClick={(e) => e.button === 1 && void requestClose(t.id)}
-            >
-              {icon}
-              <span className="title">{tabLabel(t)}</span>
-              {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
-              <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestClose(t.id); }}>
-                <X size={16} />
-              </button>
-            </div>
+            <TabContextMenu key={t.id} id={t.id}>
+              <div
+                className={`tab${active === t.id ? " active" : ""}`}
+                role="tab"
+                tabIndex={0}
+                title={tabLabel(t)}
+                onClick={() => {
+                  activate(t.id);
+                  if (t.kind === "table") useWorkspace.getState().select({ connectionId: t.connectionId, database: t.database, object: { name: t.name, kind: t.objectKind } });
+                }}
+                onAuxClick={(e) => e.button === 1 && void requestCloseTabs([t.id])}
+              >
+                {icon}
+                <span className="title">{tabLabel(t)}</span>
+                {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
+                <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestCloseTabs([t.id]); }}>
+                  <X size={16} />
+                </button>
+              </div>
+            </TabContextMenu>
           );
         })}
       </div>
