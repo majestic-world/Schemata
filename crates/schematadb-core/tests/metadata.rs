@@ -26,6 +26,20 @@ async fn lists_tables_then_views(t: TestDb) {
 }
 scenario!(lists_tables_then_views);
 
+async fn refreshes_row_counts_after_inserts(t: TestDb) {
+    // MyISAM reports exact engine statistics, so the assertion does not depend on InnoDB sampling.
+    let engine = if t.engine == Engine::Sqlite { "" } else { " ENGINE=MyISAM" };
+    t.exec(&format!("CREATE TABLE counter (id INTEGER PRIMARY KEY){engine};")).await;
+    let before = t.driver.list_objects(&t.db).await.unwrap();
+    assert_eq!(before.iter().find(|object| object.name == "counter").unwrap().rows, Some(0));
+
+    t.exec("INSERT INTO counter (id) VALUES (1), (2), (3);").await;
+
+    let after = t.driver.list_objects(&t.db).await.unwrap();
+    assert_eq!(after.iter().find(|object| object.name == "counter").unwrap().rows, Some(3));
+}
+scenario!(refreshes_row_counts_after_inserts);
+
 async fn detects_server_flavor(t: TestDb) {
     assert_eq!(t.driver.engine(), t.engine);
     let version = t.driver.server_version();

@@ -10,6 +10,7 @@ use futures::TryStreamExt;
 use sqlx::MySql;
 use sqlx::mysql::MySqlArguments;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
+use sqlx::pool::PoolConnection;
 use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Column, Either, Row, Statement, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
@@ -22,6 +23,7 @@ pub struct MySqlDriver {
     pool: MySqlPool,
     engine: Engine,
     version: String,
+    uncached_statistics: bool,
     /// Server thread id per running execution, used by `KILL QUERY`.
     running: Mutex<HashMap<String, u64>>,
 }
@@ -257,7 +259,18 @@ impl MySqlDriver {
             .map_err(map_err)?;
         let version: String = sqlx::query_scalar("SELECT VERSION()").fetch_one(&pool).await.map_err(map_err)?;
         let engine = if version.to_ascii_lowercase().contains("mariadb") { Engine::MariaDb } else { Engine::MySql };
-        Ok(Self { pool, engine, version, running: Mutex::new(HashMap::new()) })
+        let uncached_statistics = engine == Engine::MySql
+            && version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 8);
+        Ok(Self { pool, engine, version, uncached_statistics, running: Mutex::new(HashMap::new()) })
+    }
+
+    /// Read current engine statistics rather than MySQL 8's day-old INFORMATION_SCHEMA cache.
+    async fn metadata_connection(&self) -> Result<PoolConnection<MySql>> {
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        if self.uncached_statistics {
+            sqlx::query("SET SESSION information_schema_stats_expiry = 0").execute(&mut *conn).await.map_err(map_err)?;
+        }
+        Ok(conn)
     }
 
     async fn run_statement(conn: &mut sqlx::MySqlConnection, sql: &str, row_limit: usize) -> Result<StatementOutcome> {
@@ -325,16 +338,19 @@ impl Driver for MySqlDriver {
     }
 
     async fn list_objects(&self, db: &str) -> Result<Vec<ObjectInfo>> {
-        let rows = sqlx::query(
-            "SELECT TABLE_NAME, TABLE_TYPE, CAST(TABLE_ROWS AS SIGNED), \
-                    DATE_FORMAT(CREATE_TIME, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(UPDATE_TIME, '%Y-%m-%d %H:%i:%s'), TABLE_COMMENT \
-             FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? \
-             ORDER BY TABLE_TYPE LIKE '%VIEW', TABLE_NAME",
-        )
-        .bind(db)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(map_err)?;
+        let rows = {
+            let mut conn = self.metadata_connection().await?;
+            sqlx::query(
+                "SELECT TABLE_NAME, TABLE_TYPE, CAST(TABLE_ROWS AS SIGNED), \
+                        DATE_FORMAT(CREATE_TIME, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(UPDATE_TIME, '%Y-%m-%d %H:%i:%s'), TABLE_COMMENT \
+                 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? \
+                 ORDER BY TABLE_TYPE LIKE '%VIEW', TABLE_NAME",
+            )
+            .bind(db)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_err)?
+        };
         rows.iter()
             .map(|r| {
                 let kind_raw: String = r.try_get(1).map_err(map_err)?;
@@ -628,17 +644,20 @@ DELIMITER ;",
     }
 
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo> {
-        let table = sqlx::query(
-            "SELECT TABLE_TYPE, ENGINE, TABLE_COLLATION, CAST(TABLE_ROWS AS SIGNED), \
-                    DATE_FORMAT(CREATE_TIME, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(UPDATE_TIME, '%Y-%m-%d %H:%i:%s'), TABLE_COMMENT \
-             FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-        )
-        .bind(db)
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_err)?
-        .ok_or_else(|| AppError::validation(format!("Table {name} not found")))?;
+        let table = {
+            let mut conn = self.metadata_connection().await?;
+            sqlx::query(
+                "SELECT TABLE_TYPE, ENGINE, TABLE_COLLATION, CAST(TABLE_ROWS AS SIGNED), \
+                        DATE_FORMAT(CREATE_TIME, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(UPDATE_TIME, '%Y-%m-%d %H:%i:%s'), TABLE_COMMENT \
+                 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            )
+            .bind(db)
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(map_err)?
+            .ok_or_else(|| AppError::validation(format!("Table {name} not found")))?
+        };
         let kind = if text(&table, 0)?.unwrap_or_default().ends_with("VIEW") { ObjectKind::View } else { ObjectKind::Table };
         let collation = text(&table, 2)?;
         let charset = match &collation {
