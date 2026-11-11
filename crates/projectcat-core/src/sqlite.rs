@@ -196,6 +196,49 @@ fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
     result
 }
 
+/// Runs streamed statements one by one. A failed or cancelled script must not leave the session inside its
+/// transaction or without FK enforcement, so both are restored before returning.
+fn run_statements(
+    c: &mut Connection,
+    statements: &mut tokio::sync::mpsc::Receiver<String>,
+    stop_on_error: bool,
+    cancel: &CancellationToken,
+) -> Result<ScriptRunReport> {
+    let mut report = ScriptRunReport::default();
+    let mut index = 0;
+    while let Some(st) = statements.blocking_recv() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let result = (|| -> Result<()> {
+            let mut stmt = c.prepare(&st).map_err(map_err)?;
+            if stmt.column_count() > 0 {
+                let mut rows = stmt.query([]).map_err(map_err)?;
+                while rows.next().map_err(map_err)?.is_some() {}
+            } else {
+                stmt.execute([]).map_err(map_err)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => report.executed += 1,
+            Err(e) => {
+                report.failed.push(crate::transfer::failure(index, &st, e.message));
+                if stop_on_error {
+                    break;
+                }
+            }
+        }
+        index += 1;
+    }
+    if !c.is_autocommit() {
+        c.execute_batch("ROLLBACK").map_err(map_err)?;
+    }
+    c.execute_batch(FK_ON).map_err(map_err)?;
+    // The reader may stop at cancellation without sending another statement: check after the channel closes too.
+    if cancel.is_cancelled() { Err(AppError::cancelled()) } else { Ok(report) }
+}
+
 fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     let schema = quote_ident(db);
     let (kind, create_sql): (String, Option<String>) = c
@@ -485,45 +528,21 @@ impl Driver for SqliteDriver {
         stop_on_error: bool,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
-        if db.is_some_and(|d| d != "main") {
-            return Err(AppError::validation("SQL files run against the main database of a SQLite connection"));
-        }
-        self.with_conn(move |c| {
-            let mut report = ScriptRunReport::default();
-            let mut cancelled = false;
-            let mut index = 0;
-            while let Some(st) = statements.blocking_recv() {
-                if cancel.is_cancelled() {
-                    cancelled = true;
-                    break;
+        let attached = db.filter(|d| *d != "main").map(str::to_owned);
+        self.with_conn(move |c| match attached {
+            None => run_statements(c, &mut statements, stop_on_error, &cancel),
+            // Statements are unqualified, so an attached database is scripted through its own connection.
+            Some(alias) => {
+                let file: String = c
+                    .query_row("SELECT file FROM pragma_database_list WHERE name = ?1", [&alias], |r| r.get(0))
+                    .map_err(|_| AppError::validation(format!("Database {alias} is not attached")))?;
+                if file.is_empty() {
+                    return Err(AppError::validation(format!("Database {alias} has no file to run the script against")));
                 }
-                let result = (|| -> Result<()> {
-                    let mut stmt = c.prepare(&st).map_err(map_err)?;
-                    if stmt.column_count() > 0 {
-                        let mut rows = stmt.query([]).map_err(map_err)?;
-                        while rows.next().map_err(map_err)?.is_some() {}
-                    } else {
-                        stmt.execute([]).map_err(map_err)?;
-                    }
-                    Ok(())
-                })();
-                match result {
-                    Ok(()) => report.executed += 1,
-                    Err(e) => {
-                        report.failed.push(crate::transfer::failure(index, &st, e.message));
-                        if stop_on_error {
-                            break;
-                        }
-                    }
-                }
-                index += 1;
+                let mut other = Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(map_err)?;
+                other.execute_batch(FK_ON).map_err(map_err)?;
+                run_statements(&mut other, &mut statements, stop_on_error, &cancel)
             }
-            // A failed or cancelled script must not leave the session inside its transaction or without FK enforcement.
-            if !c.is_autocommit() {
-                c.execute_batch("ROLLBACK").map_err(map_err)?;
-            }
-            c.execute_batch(FK_ON).map_err(map_err)?;
-            if cancelled { Err(AppError::cancelled()) } else { Ok(report) }
         })
         .await
     }

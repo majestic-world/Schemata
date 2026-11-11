@@ -180,3 +180,17 @@ async fn csv_export_honors_delimiter_and_windows_1252() {
     let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes);
     assert_eq!(text.replace("\r\n", "\n"), "id;name;note\n1;Ana;NULL\n3;Çédille;\n");
 }
+
+#[tokio::test]
+async fn failed_export_keeps_an_existing_file() {
+    let t = TestDb::sqlite().await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("keep.csv");
+    std::fs::write(&file, "precious").unwrap();
+    let source = ExportSource::Query { sql: "SELECT * FROM missing_table".into() };
+    export(t.driver.as_ref(), &t.db, &source, &ExportFormat::Csv(csv_opts()), &file, no_progress(), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "precious");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no partial files are left behind");
+}

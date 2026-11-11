@@ -46,14 +46,19 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const qc = useQueryClient();
   const setRowCount = useTabs((s) => s.setRowCount);
   const [grid, update] = useGridState(tab.id);
-  const { pageSize, offset, sort, filters, drafts, showFilters, pending, failedRow } = grid;
+  const { pageSize, offset, sort, filters, drafts, showFilters, pending, failedRow, snapshot } = grid;
   const setOffset = (offset: number) => update(() => ({ offset }));
   const setPageSize = (pageSize: number) => update(() => ({ pageSize }));
   const setSort = (f: (s: SortSpec | null) => SortSpec | null) => update((g) => ({ sort: f(g.sort) }));
   const setFilters = (filters: Filter[]) => update(() => ({ filters }));
   const setDrafts = (f: DraftFilter[] | ((d: DraftFilter[]) => DraftFilter[])) => update((g) => ({ drafts: typeof f === "function" ? f(g.drafts) : f }));
   const setShowFilters = (f: (v: boolean) => boolean) => update((g) => ({ showFilters: f(g.showFilters) }));
-  const setPending = (f: Pending | ((p: Pending) => Pending)) => update((g) => ({ pending: typeof f === "function" ? f(g.pending) : f }));
+  const setPending = (f: Pending | ((p: Pending) => Pending)) =>
+    update((g) => {
+      const next = typeof f === "function" ? f(g.pending) : f;
+      // Freeze the page the edits refer to; release it once nothing is pending.
+      return { pending: next, snapshot: isDirty(next) ? (g.snapshot ?? page.data ?? null) : null };
+    });
   const setFailedRow = (failedRow: RowRef | null) => update(() => ({ failedRow }));
   const [editing, setEditing] = useState<{ row: number; column: string } | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], columns: [] });
@@ -76,8 +81,9 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   });
   useEffect(() => setRowCount(tab.id, count.data), [count.data, tab.id, setRowCount]);
 
-  const columns = useMemo(() => page.data?.columns ?? [], [page.data]);
-  const pageRows = useMemo(() => page.data?.rows ?? [], [page.data]);
+  const data = snapshot ?? page.data;
+  const columns = useMemo(() => data?.columns ?? [], [data]);
+  const pageRows = useMemo(() => data?.rows ?? [], [data]);
   const saved = pageRows.length;
   const rows = useMemo(
     () => [...pageRows, ...pending.inserts.map(() => columns.map((): CellValue => ({ type: "null" })))],
@@ -149,7 +155,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   };
 
   const commit = async () => {
-    if (!identity || !page.data) return;
+    if (!identity || !data) return;
     const identityColumns = identity.kind === "primaryKey" || identity.kind === "uniqueKey" ? identity.columns : identity.kind === "rowId" ? ["__rowid__"] : [];
     const { changes, rowOf } = buildChangeSet(pending, pageRows, columns, identityColumns);
     setCommitting(true);
@@ -264,7 +270,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           rowNumberOffset={offset}
           sort={sort}
           onSort={toggleSort}
-          resetKey={page.data}
+          resetKey={data}
           onSelectionChange={setSelection}
           emptyText={page.isSuccess ? `No rows${filters.length ? " match the filter" : ""}.` : undefined}
           cellValue={(r, column, orig) => cellValue(pending, refOf(r), column, r < saved ? orig : undefined)}

@@ -392,8 +392,8 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
   const [path, setPath] = useState("");
   const [target, setTarget] = useState(req.database ?? "");
   useEffect(() => {
-    if (sqlite) setTarget("main");
-  }, [sqlite]);
+    if (sqlite && !target) setTarget("main");
+  }, [sqlite, target]);
   const [newName, setNewName] = useState("");
   const createNew = !sqlite && target === "";
   const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
@@ -437,8 +437,7 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
           <label className="field"><span>Restore into</span>
             <select value={target} aria-label="Target database" onChange={(e) => setTarget(e.target.value)}>
               {!sqlite && <option value="">New database…</option>}
-              {/* SQLite dumps are unqualified: they always restore into the connection's main database. */}
-              {databases.data?.filter((d) => !sqlite || d.name === "main").map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+              {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
             </select>
           </label>
           {createNew && <label className="field"><span>New database name</span><input value={newName} aria-label="New database name" onChange={(e) => setNewName(e.target.value)} /></label>}

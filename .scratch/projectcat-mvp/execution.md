@@ -24,3 +24,9 @@
 | 12 | CI e empacotamento | 10, 11 | implemented | `9a18695` |
 
 ## Log
+
+- Tickets 01–12 implementados com commits incrementais (ver tabela).
+- Gates integrados: `cargo test -p projectcat-core` (107 testes em SQLite, MySQL 8.4 e MariaDB 11.4), `cargo clippy --workspace --all-targets` sem avisos, `pnpm typecheck`, `pnpm test` (8 testes Vitest), `pnpm tauri build` (MSI e NSIS), `actionlint`.
+- Revisão rodada 1 (`code-review`, base `22f838e`):
+  - Standards: imports dentro de funções, histórico calculado na camada Tauri, contagens sem flexão, seletor de arquivo SQL duplicado, exportação/backup com falha apagando arquivo existente, erro de histórico mascarando resultado de SQL → corrigidos em `6f6981b`.
+  - Spec: restauração lendo arquivo inteiro na memória, edições pendentes perdidas ao trocar de aba/visão, restore/backup SQLite ignorando o banco anexado, cancelamento SQLite deixando transação aberta → corrigidos em `c5db698` e `da0aa21`; adicionada opção de aspas no export CSV (história 81).

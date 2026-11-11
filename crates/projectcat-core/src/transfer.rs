@@ -2,7 +2,7 @@
 
 use crate::{AppError, ColumnMeta, Driver, Engine, Result, Splitter, Value};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
 pub use tokio_util::sync::CancellationToken;
@@ -113,35 +113,25 @@ impl<W: Write> Write for Encoded<W> {
     }
 }
 
-/// Output written to a temporary file next to the destination and moved into place only on success, so a
-/// failed or cancelled export never destroys an existing file.
+/// Output written to a uniquely named temporary file next to the destination and moved into place only on
+/// success, so a failed or cancelled export never destroys an existing file. Dropping it removes the file.
 struct PendingFile {
-    tmp: std::path::PathBuf,
+    tmp: tempfile::NamedTempFile,
     path: std::path::PathBuf,
-    done: bool,
 }
 
 impl PendingFile {
     fn create(path: &Path) -> Result<(PendingFile, std::io::BufWriter<std::fs::File>)> {
-        let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-        name.push(".projectcat-partial");
-        let tmp = path.with_file_name(name);
-        let file = std::fs::File::create(&tmp)?;
-        Ok((PendingFile { tmp, path: path.to_owned(), done: false }, std::io::BufWriter::new(file)))
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let prefix = format!(".{}.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let tmp = tempfile::Builder::new().prefix(&prefix).suffix(".partial").tempfile_in(dir)?;
+        let file = tmp.reopen()?;
+        Ok((PendingFile { tmp, path: path.to_owned() }, std::io::BufWriter::new(file)))
     }
 
-    fn commit(mut self) -> Result<()> {
-        std::fs::rename(&self.tmp, &self.path)?;
-        self.done = true;
+    fn commit(self) -> Result<()> {
+        self.tmp.persist(&self.path).map_err(|e| AppError::io(e.to_string()))?;
         Ok(())
-    }
-}
-
-impl Drop for PendingFile {
-    fn drop(&mut self) {
-        if !self.done {
-            let _ = std::fs::remove_file(&self.tmp);
-        }
     }
 }
 
@@ -529,7 +519,6 @@ pub async fn run_sql_file(
     let engine = driver.engine();
     let cancel_reader = cancel.clone();
     let reader = tokio::task::spawn_blocking(move || -> Result<()> {
-        use std::io::BufRead;
         let mut input = std::io::BufReader::new(file);
         let mut splitter = Splitter::new(engine);
         let mut line = Vec::new();

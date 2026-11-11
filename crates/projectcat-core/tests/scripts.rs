@@ -168,9 +168,29 @@ async fn sqlite_script_cancellation_rolls_back_its_transaction() {
 }
 
 #[tokio::test]
-async fn sqlite_scripts_only_target_the_main_database() {
+async fn sqlite_scripts_can_target_an_attached_database() {
     let t = TestDb::sqlite().await;
-    let (_tx, rx) = tokio::sync::mpsc::channel(1);
-    let err = t.driver.execute_statements(Some("other"), rx, true, CancellationToken::new()).await.unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Validation);
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.db").to_string_lossy().into_owned();
+    t.driver.attach_database(&other, "other").await.unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send("CREATE TABLE only_here (a INT)".to_owned()).await.unwrap();
+    drop(tx);
+    let report = t.driver.execute_statements(Some("other"), rx, true, CancellationToken::new()).await.unwrap();
+    assert_eq!(report.executed, 1);
+    assert!(t.driver.list_objects("main").await.unwrap().is_empty());
+    assert_eq!(t.driver.list_objects("other").await.unwrap()[0].name, "only_here");
+}
+
+#[tokio::test]
+async fn cancellation_is_reported_when_the_script_stops_early() {
+    let t = TestDb::sqlite().await;
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    tx.send("CREATE TABLE first (a INT)".to_owned()).await.unwrap();
+    cancel.cancel();
+    drop(tx);
+    // The reader stopped without sending more; the consumer must still report cancellation.
+    let err = t.driver.execute_statements(Some("main"), rx, true, cancel).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
 }

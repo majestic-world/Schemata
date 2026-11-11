@@ -489,11 +489,9 @@ impl Driver for MySqlDriver {
             sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
         }
         let mut report = ScriptRunReport::default();
-        let mut cancelled = false;
         let mut index = 0;
         while let Some(st) = statements.recv().await {
             if cancel.is_cancelled() {
-                cancelled = true;
                 break;
             }
             match sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn).await {
@@ -510,7 +508,8 @@ impl Driver for MySqlDriver {
         // Scripts may open a transaction or disable FK checks for their session; the pooled connection must not keep that.
         sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await.map_err(map_err)?;
         sqlx::raw_sql("SET FOREIGN_KEY_CHECKS = 1").execute(&mut *conn).await.map_err(map_err)?;
-        if cancelled { Err(AppError::cancelled()) } else { Ok(report) }
+        // The reader may stop at cancellation without sending another statement: check after the channel closes too.
+        if cancel.is_cancelled() { Err(AppError::cancelled()) } else { Ok(report) }
     }
 
     async fn dump_script(&self, db: &str) -> Result<DumpScript> {

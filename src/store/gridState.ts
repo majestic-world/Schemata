@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Filter, SortSpec } from "../api/types";
+import type { Filter, Page, SortSpec } from "../api/types";
 import { emptyPending, isDirty, type Pending, type RowRef } from "../lib/pendingChanges";
 
 export type DraftFilter = { column: string; op: Filter["op"]; value: string };
@@ -14,6 +14,9 @@ export type GridState = {
   drafts: DraftFilter[];
   showFilters: boolean;
   pending: Pending;
+  /** The page the pending edits refer to. Pending edits address rows by position, so while there are
+   * any the grid keeps showing (and keys commits by) this snapshot instead of refetched data. */
+  snapshot: Page | null;
   failedRow: RowRef | null;
 };
 
@@ -25,6 +28,7 @@ const initial = (): GridState => ({
   drafts: [],
   showFilters: false,
   pending: emptyPending(),
+  snapshot: null,
   failedRow: null,
 });
 
