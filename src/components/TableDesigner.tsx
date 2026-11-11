@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
@@ -30,6 +30,32 @@ function newDesign(engine: Engine): TableDesign {
   const id: ColumnDesign = { ...blankColumn(), name: "id", dataType: engine === "sqlite" ? "INTEGER" : "INT", nullable: false, autoIncrement: true, primaryKey: true };
   return { name: "", columns: [id], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
 }
+
+/**
+ * Keyboard handler for a design table body: ArrowUp/ArrowDown move to the same field of the adjacent row, and
+ * ArrowDown on the last row calls `append` (like Navicat), which declines by returning false. `append` gets the
+ * last row's element because fields that commit on blur may not have reached the design yet.
+ */
+function rowArrowKeys(append: (lastRow: HTMLTableRowElement) => boolean) {
+  return (e: KeyboardEvent<HTMLTableSectionElement>) => {
+    if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+    // Arrows change the value of a select.
+    if (e.target instanceof HTMLSelectElement) return;
+    const cell = (e.target as HTMLElement).closest("td");
+    const row = cell?.parentElement;
+    if (!cell || !(row instanceof HTMLTableRowElement)) return;
+    const body = e.currentTarget;
+    const focusRow = (r: number) => (body.rows[r]?.cells[cell.cellIndex]?.querySelector("input, select") as HTMLElement | null)?.focus();
+    e.preventDefault();
+    const r = row.sectionRowIndex;
+    if (e.key === "ArrowUp") focusRow(r - 1);
+    else if (r < body.rows.length - 1) focusRow(r + 1);
+    else if (append(row)) requestAnimationFrame(() => focusRow(r + 1));
+  };
+}
+
+/** Whether the input labelled `label` in `row` holds text (read from the DOM: it may not be committed yet). */
+const hasText = (row: HTMLTableRowElement, label: string) => !!row.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)?.value.trim();
 
 const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -99,6 +125,12 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     });
   const setIndex = (i: number, p: Partial<IndexDesign>) => patch({ indexes: design.indexes.map((x, j) => (j === i ? { ...x, ...p } : x)) });
   const setFk = (i: number, p: Partial<ForeignKeyDesign>) => patch({ foreignKeys: design.foreignKeys.map((x, j) => (j === i ? { ...x, ...p } : x)) });
+  const addColumn = () => setDesign((d) => (d ? { ...d, columns: [...d.columns, blankColumn()] } : d));
+  const addIndex = () => setDesign((d) => (d ? { ...d, indexes: [...d.indexes, { name: "", columns: [], kind: "normal", method: null, comment: null }] } : d));
+  const addFk = () =>
+    setDesign((d) =>
+      d ? { ...d, foreignKeys: [...d.foreignKeys, { name: `fk_${d.name || "table"}_${d.foreignKeys.length + 1}`, columns: [], refTable: "", refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] } : d,
+    );
 
   const review = async () => {
     setBusy(true);
@@ -191,7 +223,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                   <th style={{ width: 96 }} />
                 </tr>
               </thead>
-              <tbody>
+              <tbody onKeyDown={rowArrowKeys((row) => { if (!hasText(row, "Column name")) return false; addColumn(); return true; })}>
                 {design.columns.map((c, i) => {
                   const t = parseType(c.dataType);
                   const setType = (p: Partial<typeof t>) => {
@@ -223,7 +255,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                 })}
               </tbody>
             </table>
-            <div className="designer-add"><button className="btn sm" onClick={() => patch({ columns: [...design.columns, blankColumn()] })}><Plus size={13} />Add Column</button></div>
+            <div className="designer-add"><button className="btn sm" onClick={addColumn}><Plus size={13} />Add Column</button></div>
             <p className="hint designer-hint">Defaults are SQL expressions: quote text ('pending'), use numbers (0) or functions (CURRENT_TIMESTAMP).</p>
           </>
         )}
@@ -238,7 +270,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                   <th style={{ width: 40 }} />
                 </tr>
               </thead>
-              <tbody>
+              <tbody onKeyDown={rowArrowKeys((row) => { if (!hasText(row, "Columns")) return false; addIndex(); return true; })}>
                 {design.indexes.map((x, i) => (
                   <tr key={i}>
                     <td><input className="cell-input" value={x.name} placeholder={x.columns.length ? `idx_${x.columns.join("_")}` : "idx_<columns>"} aria-label="Index name" onChange={(e) => setIndex(i, { name: e.target.value })} /></td>
@@ -279,7 +311,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
             </table>
             <div className="designer-add">
               {/* An empty name becomes idx_<columns> and an empty method BTREE when the design is applied. */}
-              <button className="btn sm" onClick={() => patch({ indexes: [...design.indexes, { name: "", columns: [], kind: "normal", method: null, comment: null }] })}><Plus size={13} />Add Index</button>
+              <button className="btn sm" onClick={addIndex}><Plus size={13} />Add Index</button>
             </div>
           </>
         )}
@@ -288,7 +320,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
           <>
             <table className="list-table design-table">
               <thead><tr><th>Name</th><th>Columns</th><th>Referenced table</th><th>Referenced columns</th><th>On Update</th><th>On Delete</th><th style={{ width: 40 }} /></tr></thead>
-              <tbody>
+              <tbody onKeyDown={rowArrowKeys((row) => { if (!hasText(row, "Columns")) return false; addFk(); return true; })}>
                 {design.foreignKeys.map((f, i) => (
                   <tr key={i}>
                     <td><input className="cell-input" value={f.name} aria-label="Foreign key name" onChange={(e) => setFk(i, { name: e.target.value })} /></td>
@@ -309,7 +341,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
               </tbody>
             </table>
             <div className="designer-add">
-              <button className="btn sm" onClick={() => patch({ foreignKeys: [...design.foreignKeys, { name: `fk_${design.name || "table"}_${design.foreignKeys.length + 1}`, columns: [], refTable: "", refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] })}>
+              <button className="btn sm" onClick={addFk}>
                 <Plus size={13} />Add Foreign Key
               </button>
             </div>

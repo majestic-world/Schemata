@@ -27,6 +27,11 @@ type Props = {
   /** Double-click or Enter on a cell. */
   onCellActivate?: (row: number, column: string) => void;
   renderEditor?: (row: number, column: string) => ReactNode | null;
+  /**
+   * Appends a new row, starting to edit `column` when given. When set, ArrowDown on the last row calls it, and an
+   * empty grid shows a `(N/A)` placeholder row that turns into a new row on ArrowDown, Enter or double-click.
+   */
+  onAppendRow?: (column?: string) => void;
   onSelectionChange?: (s: GridSelection) => void;
   /** Changes when the underlying data is replaced, clearing the selection and scroll. */
   resetKey?: unknown;
@@ -52,6 +57,8 @@ export function GridView(props: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => meta.map((c, idx) => ({ c, idx })).filter((x) => !x.c.hidden), [meta]);
+  const placeholderRow = rows.length === 0 && !!props.onAppendRow && visible.length > 0;
+  const rowCount = placeholderRow ? 1 : rows.length;
   const columns = useMemo<ColumnDef<CellValue[]>[]>(
     () => visible.map(({ c, idx }) => ({ id: c.name, header: c.name, size: widthFor(c), accessorFn: (row) => row[idx], meta: c })),
     [visible],
@@ -84,10 +91,10 @@ export function GridView(props: Props) {
     if (!onSelectionChange) return;
     if (!rect) return onSelectionChange({ rows: [], columns: [] });
     const rs: number[] = [];
-    for (let r = rect.r0; r <= rect.r1; r++) rs.push(r);
+    for (let r = rect.r0; r <= Math.min(rect.r1, rows.length - 1); r++) rs.push(r);
     onSelectionChange({ rows: rs, columns: visible.slice(rect.c0, rect.c1 + 1).map((v) => v.c.name) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rect?.r0, rect?.r1, rect?.c0, rect?.c1, visible, onSelectionChange]);
+  }, [rect?.r0, rect?.r1, rect?.c0, rect?.c1, visible, onSelectionChange, rows.length]);
 
   const valueAt = (r: number, c: number): CellValue => {
     const col = visible[c];
@@ -112,8 +119,8 @@ export function GridView(props: Props) {
 
   /** Cell a navigation key moves the focus to; null when the key does not navigate. */
   const moveTarget = (e: KeyboardEvent): Pos | null => {
-    if (rows.length === 0 || visible.length === 0) return null;
-    const lastRow = rows.length - 1;
+    if (rowCount === 0 || visible.length === 0) return null;
+    const lastRow = rowCount - 1;
     const lastCol = visible.length - 1;
     const page = Math.max(1, Math.floor(((scrollRef.current?.clientHeight ?? 0) - HEADER_HEIGHT) / ROW_HEIGHT) - 1);
     const mod = e.ctrlKey || e.metaKey;
@@ -157,12 +164,24 @@ export function GridView(props: Props) {
         }
         if (e.key === "Enter" && focus && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
           e.preventDefault();
-          props.onCellActivate?.(focus.r, visible[focus.c].c.name);
+          const name = visible[focus.c].c.name;
+          if (placeholderRow) props.onAppendRow?.(name);
+          else props.onCellActivate?.(focus.r, name);
           return;
         }
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
           e.preventDefault();
           void copy();
+          return;
+        }
+        // Like Navicat, moving down from the last row (or the placeholder row) adds a new row.
+        if (e.key === "ArrowDown" && props.onAppendRow && focus && focus.r === rowCount - 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          props.onAppendRow();
+          const next = { r: rows.length, c: focus.c };
+          setAnchor(next);
+          setFocus(next);
+          scrollIntoView(next);
           return;
         }
         const next = moveTarget(e);
@@ -238,8 +257,28 @@ export function GridView(props: Props) {
             </div>
           );
         })}
+        {placeholderRow && (
+          <div className="grid-row" style={{ height: ROW_HEIGHT }}>
+            <div className="grid-rownum">*</div>
+            {headers.map((h, c) => (
+              <div
+                key={h.id}
+                className={`grid-cell null${focus?.r === 0 && focus.c === c ? " selected" : ""}`}
+                style={{ width: h.getSize() }}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  setAnchor({ r: 0, c });
+                  setFocus({ r: 0, c });
+                }}
+                onDoubleClick={() => props.onAppendRow?.(visible[c].c.name)}
+              >
+                <span className="cell-text">(N/A)</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      {rows.length === 0 && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
+      {rows.length === 0 && !placeholderRow && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
     </div>
   );
 }

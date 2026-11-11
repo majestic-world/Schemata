@@ -22,8 +22,8 @@ function matching(options: string[], text: string): string[] {
 
 /**
  * Free-text input with a compact suggestion list, replacing the browser's oversized `<datalist>` popup.
- * Focusing shows every option; typing narrows them (prefix matches first). Arrows move, Enter picks,
- * Escape closes.
+ * Clicking or Alt+ArrowDown shows every option; typing narrows them (prefix matches first). While the list is
+ * open, arrows move, Enter picks and Escape closes; while it is closed, arrows are left to the surrounding table.
  */
 export function ComboInput({ value, options, onChange, label, className = "cell-input" }: Props) {
   const input = useRef<HTMLInputElement>(null);
@@ -68,7 +68,6 @@ export function ComboInput({ value, options, onChange, label, className = "cell-
         role="combobox"
         aria-expanded={open}
         aria-autocomplete="list"
-        onFocus={() => show(null)}
         onClick={() => !open && show(null)}
         onBlur={() => setOpen(false)}
         onChange={(e) => {
@@ -77,7 +76,10 @@ export function ComboInput({ value, options, onChange, label, className = "cell-
         }}
         onKeyDown={(e) => {
           if (!open) {
-            if (e.key === "ArrowDown") show(null);
+            if (e.key === "ArrowDown" && e.altKey) {
+              e.preventDefault();
+              show(null);
+            }
             return;
           }
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {
