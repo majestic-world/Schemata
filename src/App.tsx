@@ -4,6 +4,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useTabs } from "./store/tabs";
 import { useWorkspace } from "./store/workspace";
 import { isMod } from "./lib/platform";
+import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
 import { notifyError } from "./store/toasts";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
@@ -43,6 +44,19 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (isRefreshShortcut(e)) {
+        // Never reload the webview: refresh only the data of the focused area.
+        e.preventDefault();
+        if (e.repeat) return;
+        if (document.activeElement?.closest(".sidebar")) {
+          void qc.invalidateQueries({ queryKey: ["connections"] });
+          void qc.invalidateQueries({ queryKey: ["databases"] });
+          void qc.invalidateQueries({ queryKey: ["objects"] });
+        } else {
+          runRefreshHandler();
+        }
+        return;
+      }
       if (!isMod(e)) return;
       const key = e.key.toLowerCase();
       if (key === "k") {

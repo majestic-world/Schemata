@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
 import { api } from "../api/client";
 import { useTabs, type TableTab } from "../store/tabs";
@@ -7,6 +7,7 @@ import { useConnection } from "../lib/useConnection";
 import { DataGrid } from "./DataGrid";
 import { formatCount, orDash } from "../lib/format";
 import { notify } from "../store/toasts";
+import { useRefreshShortcut } from "../lib/refreshShortcut";
 
 export function TableTabView({ tab }: { tab: TableTab }) {
   switch (tab.view) {
@@ -44,7 +45,14 @@ export function useTableInfo(tab: TableTab) {
   });
 }
 
+/** F5 in the read-only structure/info views reloads the table metadata. */
+function useTableInfoRefresh(tab: TableTab) {
+  const qc = useQueryClient();
+  useRefreshShortcut(() => void qc.invalidateQueries({ queryKey: ["tableInfo", tab.connectionId, tab.database, tab.name] }));
+}
+
 function StructureView({ tab }: { tab: TableTab }) {
+  useTableInfoRefresh(tab);
   const info = useTableInfo(tab);
   const t = info.data;
   if (!t) return <div className="empty"><p>{info.isError ? (info.error as { message: string }).message : "Loading…"}</p></div>;
@@ -102,6 +110,7 @@ function StructureView({ tab }: { tab: TableTab }) {
 }
 
 function InfoView({ tab }: { tab: TableTab }) {
+  useTableInfoRefresh(tab);
   const info = useTableInfo(tab);
   const t = info.data;
   if (!t) return <div className="empty"><p>{info.isError ? (info.error as { message: string }).message : "Loading…"}</p></div>;

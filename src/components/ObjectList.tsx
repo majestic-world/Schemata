@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import type { ObjectInfo } from "../api/types";
 import { useWorkspace } from "../store/workspace";
 import { formatCount, orDash } from "../lib/format";
+import { useRefreshShortcut } from "../lib/refreshShortcut";
 
 type SortKey = "name" | "rows" | "modified" | "comment";
 
@@ -44,6 +45,15 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
     queryKey: ["objects", connectionId, database],
     queryFn: () => api.listObjects(connectionId!, database!),
     enabled: !!connectionId && !!database,
+  });
+  useRefreshShortcut(() => {
+    if (!connectionId) return;
+    if (!database) {
+      void qc.invalidateQueries({ queryKey: ["databases", connectionId] });
+      return;
+    }
+    void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] });
+    void qc.invalidateQueries({ queryKey: ["tableInfo", connectionId, database] });
   });
 
   const rows = useMemo(() => {

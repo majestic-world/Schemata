@@ -10,6 +10,7 @@ import { confirmAction } from "../store/confirm";
 import { useGridState, type DraftFilter } from "../store/gridState";
 import { openTransfer } from "../store/transfer";
 import { MOD, isMod } from "../lib/platform";
+import { useRefreshShortcut } from "../lib/refreshShortcut";
 import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import {
@@ -113,6 +114,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     void qc.invalidateQueries({ queryKey: ["page", ...base] });
     void qc.invalidateQueries({ queryKey: ["count", ...base] });
   };
+  useRefreshShortcut(() => void refresh());
   const toggleSort = async (column: string) => {
     if (!(await guard())) return;
     reset();
