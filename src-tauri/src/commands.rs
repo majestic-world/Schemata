@@ -91,14 +91,8 @@ pub async fn execute_script(
 ) -> CmdResult<ScriptResult> {
     let driver = sessions.driver(&id).await?;
     let result = driver.execute_script(db.as_deref(), &sql, row_limit, execution_id.as_deref()).await?;
-    let duration = result
-        .outcomes
-        .iter()
-        .map(|o| match o {
-            StatementOutcome::Rows { duration_ms, .. } | StatementOutcome::Affected { duration_ms, .. } => *duration_ms,
-        })
-        .sum();
-    history.record(&id, sql.trim(), result.error.is_none(), duration)?;
+    // History is best-effort: failing to record it must not hide the results of statements that already ran.
+    let _ = history.record_script(&id, &sql, &result);
     Ok(result)
 }
 
@@ -298,9 +292,6 @@ pub async fn export_data(
     let (progress, cancel) = begin(&app, &ops, &operation_id);
     let result = projectcat_core::export(driver.as_ref(), &db, &source, &format, &path, progress, cancel).await;
     end(&ops, &operation_id);
-    if result.is_err() {
-        let _ = std::fs::remove_file(&path);
-    }
     result
 }
 
@@ -364,8 +355,5 @@ pub async fn backup_database(
     let (progress, cancel) = begin(&app, &ops, &operation_id);
     let result = projectcat_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
     end(&ops, &operation_id);
-    if result.is_err() {
-        let _ = std::fs::remove_file(&path);
-    }
     result
 }

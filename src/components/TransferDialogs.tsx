@@ -8,7 +8,7 @@ import { api } from "../api/client";
 import type { AppError, CsvPreview, CsvReadOptions, ExportFormat, OperationProgress, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
 import { Dialog } from "./Dialog";
-import { formatCount } from "../lib/format";
+import { formatCount, plural } from "../lib/format";
 import { assign, autoMap, toMapping, type MappingDraft } from "../lib/importMapping";
 
 type Phase<R> = { state: "form" } | { state: "running"; done: number; total: number | null } | { state: "done"; report: R } | { state: "failed"; error: AppError };
@@ -56,6 +56,11 @@ function Outcome({ ok, title, children }: { ok: boolean; title: string; children
   );
 }
 
+const pickSqlFile = async (): Promise<string | null> => {
+  const p = await openDialog({ multiple: false, directory: false, filters: [{ name: "SQL", extensions: ["sql"] }] });
+  return typeof p === "string" ? p : null;
+};
+
 const ENCODINGS: { value: TextEncoding; label: string }[] = [
   { value: "utf8", label: "UTF-8" },
   { value: "utf8Bom", label: "UTF-8 with BOM" },
@@ -90,6 +95,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
   const [header, setHeader] = useState(true);
   const [encoding, setEncoding] = useState<TextEncoding>("utf8");
   const [nullText, setNullText] = useState("");
+  const [quote, setQuote] = useState('"');
   const [includeCreate, setIncludeCreate] = useState(true);
   const [tableName, setTableName] = useState(req.source.kind === "table" ? req.source.table : "query_result");
   const op = useOperation<{ rows: number }>();
@@ -100,7 +106,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
     if (typeof path !== "string") return;
     const fmt: ExportFormat =
       format === "csv"
-        ? { format: "csv", options: { delimiter: delimiter === "\\t" ? "\t" : delimiter, quote: '"', header, encoding, nullText } }
+        ? { format: "csv", options: { delimiter: delimiter === "\\t" ? "\t" : delimiter, quote, header, encoding, nullText } }
         : format === "json"
           ? { format: "json" }
           : { format: "sql", options: { includeCreate: includeCreate && req.source.kind === "table", tableName } };
@@ -136,6 +142,11 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
                     <option value=",">Comma (,)</option><option value=";">Semicolon (;)</option><option value="\t">Tab</option><option value="|">Pipe (|)</option>
                   </select>
                 </label>
+                <label className="field"><span>Quote</span>
+                  <select value={quote} onChange={(e) => setQuote(e.target.value)}>
+                    <option value={'"'}>Double (")</option><option value="'">Single (')</option>
+                  </select>
+                </label>
                 <label className="field grow"><span>Encoding</span>
                   <select value={encoding} onChange={(e) => setEncoding(e.target.value as TextEncoding)}>{ENCODINGS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
                 </label>
@@ -154,7 +165,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
         </div>
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="rows" />}
-      {op.phase.state === "done" && <Outcome ok title={`Exported ${formatCount(op.phase.report.rows)} rows`} />}
+      {op.phase.state === "done" && <Outcome ok title={`Exported ${plural(op.phase.report.rows, "row")}`} />}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Export cancelled" : "Export failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
     </Dialog>
   );
@@ -268,7 +279,7 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="rows read" />}
       {op.phase.state === "done" && (
-        <Outcome ok={op.phase.report.failedCount === 0} title={`${formatCount(op.phase.report.inserted)} rows imported${op.phase.report.failedCount ? `, ${formatCount(op.phase.report.failedCount)} failed` : ""}`}>
+        <Outcome ok={op.phase.report.failedCount === 0} title={`${plural(op.phase.report.inserted, "row")} imported${op.phase.report.failedCount ? `, ${formatCount(op.phase.report.failedCount)} failed` : ""}`}>
           {op.phase.report.failedCount > 0 && !skipErrors && <span>The import was rolled back.</span>}
           {op.phase.report.failed.map((f) => <span key={f.line}>Line {f.line}: {f.message}</span>)}
         </Outcome>
@@ -285,8 +296,8 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
   const [stopOnError, setStopOnError] = useState(true);
   const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
   const pick = async () => {
-    const p = await openDialog({ multiple: false, directory: false, filters: [{ name: "SQL", extensions: ["sql"] }] });
-    if (typeof p === "string") setPath(p);
+    const p = await pickSqlFile();
+    if (p) setPath(p);
   };
   const start = () =>
     op.run(async (id) => {
@@ -322,7 +333,7 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="statements" />}
       {op.phase.state === "done" && (
-        <Outcome ok={op.phase.report.failed.length === 0} title={`${formatCount(op.phase.report.executed)} statements executed${op.phase.report.failed.length ? `, ${op.phase.report.failed.length} failed` : ""}`}>
+        <Outcome ok={op.phase.report.failed.length === 0} title={`${plural(op.phase.report.executed, "statement")} executed${op.phase.report.failed.length ? `, ${op.phase.report.failed.length} failed` : ""}`}>
           {op.phase.report.failed.slice(0, 20).map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
         </Outcome>
       )}
@@ -366,7 +377,7 @@ function BackupDialog({ req }: { req: Extract<TransferRequest, { kind: "backup" 
         </div>
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="rows" />}
-      {op.phase.state === "done" && <Outcome ok title={`Backed up ${formatCount(op.phase.report.tables)} tables and ${formatCount(op.phase.report.rows)} rows`} />}
+      {op.phase.state === "done" && <Outcome ok title={`Backed up ${plural(op.phase.report.tables, "table")} and ${plural(op.phase.report.rows, "row")}`} />}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Backup cancelled" : "Backup failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
     </Dialog>
   );
@@ -384,8 +395,8 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
   const createNew = !sqlite && target === "";
   const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
   const pick = async () => {
-    const p = await openDialog({ multiple: false, directory: false, filters: [{ name: "SQL", extensions: ["sql"] }] });
-    if (typeof p === "string") setPath(p);
+    const p = await pickSqlFile();
+    if (p) setPath(p);
   };
   const start = () =>
     op.run(async (id) => {
@@ -432,7 +443,7 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="statements" />}
       {op.phase.state === "done" && (
-        <Outcome ok={op.phase.report.failed.length === 0} title={op.phase.report.failed.length ? "Restore stopped at an error" : `Restored (${formatCount(op.phase.report.executed)} statements)`}>
+        <Outcome ok={op.phase.report.failed.length === 0} title={op.phase.report.failed.length ? "Restore stopped at an error" : `Restored (${plural(op.phase.report.executed, "statement")})`}>
           {op.phase.report.failed.map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
         </Outcome>
       )}

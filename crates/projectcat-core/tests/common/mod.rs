@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use projectcat_core::{ConnectParams, Driver, Engine, connect};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{GenericImage, ImageExt, ReuseDirective};
@@ -130,7 +130,6 @@ impl Drop for TestDb {
 }
 
 fn uuid_like() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

@@ -15,7 +15,7 @@ import { useQueryResults } from "../store/queryResults";
 import { useConnection } from "../lib/useConnection";
 import { notify, notifyError } from "../store/toasts";
 import { GridView } from "./GridView";
-import { formatCount } from "../lib/format";
+import { plural } from "../lib/format";
 
 export const ROW_LIMIT = 1000;
 const SQL_FILTERS = [{ name: "SQL script", extensions: ["sql"] }];
@@ -214,7 +214,7 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
         <div className="result-grid">
           <GridView columns={current.columns} rows={current.rows} resetKey={current} emptyText="The query returned no rows." />
           <div className="result-footer">
-            <span>{formatCount(current.rows.length)} row{current.rows.length === 1 ? "" : "s"}{current.hasMore ? " (more available)" : ""} · {current.durationMs} ms</span>
+            <span>{plural(current.rows.length, "row")}{current.hasMore ? " (more available)" : ""} · {current.durationMs} ms</span>
             {current.hasMore && <button className="btn sm" disabled={loading} onClick={() => void loadMore(selected as number)}>Load {ROW_LIMIT} more</button>}
             <div className="grow" />
             <button
@@ -236,7 +236,7 @@ function Results({ tabId, connectionId, database }: { tabId: string; connectionI
               <div>
                 <code>{o.statement.length > 160 ? `${o.statement.slice(0, 160)}…` : o.statement}</code>
                 <span className="muted">
-                  {o.kind === "rows" ? `${formatCount(o.rows.length)}${o.hasMore ? "+" : ""} row(s) returned` : `${formatCount(o.rowsAffected)} row(s) affected`} · {o.durationMs} ms
+                  {o.kind === "rows" ? `${plural(o.rows.length, "row")}${o.hasMore ? "+" : ""} returned` : `${plural(o.rowsAffected, "row")} affected`} · {o.durationMs} ms
                 </span>
               </div>
             </div>

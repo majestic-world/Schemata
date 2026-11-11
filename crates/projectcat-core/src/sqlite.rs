@@ -1,3 +1,4 @@
+use crate::design::sqlite::{FK_OFF, FK_ON};
 use crate::model::derive_identity;
 use crate::transfer::{
     DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem,
@@ -8,6 +9,7 @@ use crate::{
     StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -98,15 +100,14 @@ fn collect<T>(
     stmt.query_map(params, f).map_err(map_err)?.collect::<rusqlite::Result<Vec<T>>>().map_err(map_err)
 }
 
-pub(crate) fn to_sql(v: &Value) -> rusqlite::types::Value {
-    use rusqlite::types::Value as S;
+pub(crate) fn to_sql(v: &Value) -> SqlValue {
     match v {
-        Value::Null => S::Null,
-        Value::Int(i) => S::Integer(*i),
-        Value::UInt(u) => i64::try_from(*u).map(S::Integer).unwrap_or_else(|_| S::Text(u.to_string())),
-        Value::Float(f) => S::Real(*f),
-        Value::Decimal(s) | Value::Text(s) | Value::DateTime(s) | Value::Json(s) => S::Text(s.clone()),
-        Value::Bytes(b) => S::Blob(b.clone()),
+        Value::Null => SqlValue::Null,
+        Value::Int(i) => SqlValue::Integer(*i),
+        Value::UInt(u) => i64::try_from(*u).map(SqlValue::Integer).unwrap_or_else(|_| SqlValue::Text(u.to_string())),
+        Value::Float(f) => SqlValue::Real(*f),
+        Value::Decimal(s) | Value::Text(s) | Value::DateTime(s) | Value::Json(s) => SqlValue::Text(s.clone()),
+        Value::Bytes(b) => SqlValue::Blob(b.clone()),
     }
 }
 
@@ -132,7 +133,7 @@ fn read_page(c: &Connection, db: &str, table: &str, req: &PageRequest) -> Result
     columns.extend(info.columns.iter().map(|col| ColumnMeta { name: col.name.clone(), type_name: col.data_type.clone(), hidden: false }));
     let mut stmt = c.prepare(&sql).map_err(map_err)?;
     let n = columns.len();
-    let params: Vec<rusqlite::types::Value> = binds.iter().map(to_sql).collect();
+    let params: Vec<SqlValue> = binds.iter().map(to_sql).collect();
     let rows = collect(&mut stmt, rusqlite::params_from_iter(params), |r| {
         Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect::<Vec<_>>())
     })?;
@@ -173,7 +174,6 @@ fn dependents(c: &Connection, db: &str, table: &str) -> Result<crate::design::sq
 }
 
 fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
-    use crate::design::sqlite::{FK_OFF, FK_ON};
     let toggles_fk = statements.first().map(String::as_str) == Some(FK_OFF);
     if toggles_fk {
         c.execute_batch(FK_OFF).map_err(map_err)?;
@@ -455,7 +455,7 @@ impl Driver for SqliteDriver {
                 let mut stmt = tx.prepare(&sql).map_err(map_err)?;
                 while let Some(batch) = rows.blocking_recv() {
                     for (line, values) in batch? {
-                        let params: Vec<rusqlite::types::Value> = values.iter().map(to_sql).collect();
+                        let params: Vec<SqlValue> = values.iter().map(to_sql).collect();
                         match stmt.execute(rusqlite::params_from_iter(params)) {
                             Ok(_) => report.inserted += 1,
                             Err(e) => {
@@ -645,7 +645,7 @@ impl Driver for SqliteDriver {
             let statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, "DEFAULT VALUES")?;
             let tx = guard.transaction().map_err(map_err)?;
             for (index, st) in statements.iter().enumerate() {
-                let params: Vec<rusqlite::types::Value> = st.binds.iter().map(to_sql).collect();
+                let params: Vec<SqlValue> = st.binds.iter().map(to_sql).collect();
                 let affected = tx
                     .execute(&st.sql, rusqlite::params_from_iter(params))
                     .map_err(|e| ChangeError { index: Some(index), error: map_err(e) })?;
@@ -664,7 +664,7 @@ impl Driver for SqliteDriver {
         let from = format!("{}.{}", quote_ident(db), quote_ident(table));
         let (sql, binds) = crate::sql::count(&from, filters, quote_ident)?;
         self.with_conn(move |c| {
-            let params: Vec<rusqlite::types::Value> = binds.iter().map(to_sql).collect();
+            let params: Vec<SqlValue> = binds.iter().map(to_sql).collect();
             c.query_row(&sql, rusqlite::params_from_iter(params), |r| r.get::<_, i64>(0)).map(|n| n as u64).map_err(map_err)
         })
         .await

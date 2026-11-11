@@ -113,6 +113,38 @@ impl<W: Write> Write for Encoded<W> {
     }
 }
 
+/// Output written to a temporary file next to the destination and moved into place only on success, so a
+/// failed or cancelled export never destroys an existing file.
+struct PendingFile {
+    tmp: std::path::PathBuf,
+    path: std::path::PathBuf,
+    done: bool,
+}
+
+impl PendingFile {
+    fn create(path: &Path) -> Result<(PendingFile, std::io::BufWriter<std::fs::File>)> {
+        let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        name.push(".projectcat-partial");
+        let tmp = path.with_file_name(name);
+        let file = std::fs::File::create(&tmp)?;
+        Ok((PendingFile { tmp, path: path.to_owned(), done: false }, std::io::BufWriter::new(file)))
+    }
+
+    fn commit(mut self) -> Result<()> {
+        std::fs::rename(&self.tmp, &self.path)?;
+        self.done = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02X}")).collect()
 }
@@ -211,7 +243,7 @@ pub async fn export(
         Some(Err(e)) => return Err(e),
         _ => return Err(AppError::sql("The query did not return a result set")),
     };
-    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let (pending, file) = PendingFile::create(path)?;
     let mut done = 0u64;
     progress(Progress { done, total });
 
@@ -286,13 +318,16 @@ pub async fn export(
         progress(Progress { done, total });
     }
     match sink {
-        Sink::Csv(mut w, _) => w.flush()?,
+        Sink::Csv(w, _) => {
+            drop(w.into_inner().map_err(|e| AppError::io(e.to_string()))?.out.into_inner().map_err(|e| AppError::io(e.to_string()))?)
+        }
         Sink::Json(mut f, _) => {
             f.write_all(b"\n]\n")?;
-            f.flush()?;
+            drop(f.into_inner().map_err(|e| AppError::io(e.to_string()))?);
         }
-        Sink::Sql(mut f, _) => f.flush()?,
+        Sink::Sql(f, _) => drop(f.into_inner().map_err(|e| AppError::io(e.to_string()))?),
     }
+    pending.commit()?;
     Ok(ExportReport { rows: done })
 }
 
@@ -542,7 +577,7 @@ pub async fn dump_database(
             total += driver.count_rows(db, table, &[]).await?;
         }
     }
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let (pending, mut out) = PendingFile::create(path)?;
     writeln!(out, "-- ProjectCat dump of {db} ({})\n", driver.server_version())?;
     for s in &script.prologue {
         writeln!(out, "{s}")?;
@@ -558,7 +593,7 @@ pub async fn dump_database(
         if !options.data {
             continue;
         }
-        let mut stream = driver.stream_query(Some(db), &format!("SELECT * FROM {}", q(table)), BATCH).await?;
+        let mut stream = driver.stream_query(Some(db), &format!("SELECT * FROM {}.{}", q(db), q(table)), BATCH).await?;
         let mut columns = Vec::new();
         loop {
             let item = tokio::select! {
@@ -592,10 +627,11 @@ pub async fn dump_database(
     for s in &script.epilogue {
         writeln!(out, "{s}")?;
     }
-    out.flush()?;
+    drop(out.into_inner().map_err(|e| AppError::io(e.to_string()))?);
     if cancel.is_cancelled() {
         return Err(AppError::cancelled());
     }
+    pending.commit()?;
     Ok(DumpReport { tables: script.tables.len() as u64, rows: done })
 }
 

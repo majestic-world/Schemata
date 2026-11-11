@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, ScriptResult, StatementOutcome};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -55,6 +55,18 @@ impl QueryHistory {
         }
         std::fs::write(&self.path, serde_json::to_vec(&*entries)?)?;
         Ok(())
+    }
+
+    /// Records an executed script with the summed time of its statements.
+    pub fn record_script(&self, connection_id: &str, sql: &str, result: &ScriptResult) -> Result<()> {
+        let duration = result
+            .outcomes
+            .iter()
+            .map(|o| match o {
+                StatementOutcome::Rows { duration_ms, .. } | StatementOutcome::Affected { duration_ms, .. } => *duration_ms,
+            })
+            .sum();
+        self.record(connection_id, sql.trim(), result.error.is_none(), duration)
     }
 
     /// Newest first.

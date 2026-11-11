@@ -13,7 +13,7 @@ use sqlx::MySql;
 use sqlx::mysql::MySqlArguments;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::query::Query;
-use sqlx::{AssertSqlSafe, Column, Either, Row, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, Column, Either, Row, Statement, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -186,6 +186,19 @@ fn default_expression(engine: Engine, raw: Option<String>, data_type: &str, extr
     if is_numeric_type(data_type) { Some(raw) } else { Some(format!("'{}'", raw.replace('\'', "''"))) }
 }
 
+/// Column names of a statement, by preparing it. Used when a result set is empty and has no row to read them
+/// from; `None` when the statement cannot be prepared.
+async fn statement_columns(conn: &mut sqlx::MySqlConnection, sql: &str) -> Option<Vec<ColumnMeta>> {
+    let statement = sqlx::Executor::prepare(conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql))).await.ok()?;
+    Some(
+        statement
+            .columns()
+            .iter()
+            .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
+            .collect(),
+    )
+}
+
 /// Removes `DEFINER=user@host` so a dumped view can be created by whoever restores it.
 fn strip_definer(sql: &str) -> String {
     let Some(start) = sql.find("DEFINER=") else { return sql.to_owned() };
@@ -279,13 +292,7 @@ impl MySqlDriver {
         let duration_ms = started.elapsed().as_millis() as u64;
         if columns.is_none() && returns_rows(sql) {
             // Empty result sets carry no rows to read column names from; prepare the statement instead.
-            columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql))).await.ok().map(|st| {
-                use sqlx::Statement;
-                st.columns()
-                    .iter()
-                    .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
-                    .collect()
-            });
+            columns = statement_columns(conn, sql).await;
         }
         if columns.is_some() || returns_rows(sql) {
             Ok(StatementOutcome::Rows { statement: sql.to_owned(), columns: columns.unwrap_or_default(), rows, has_more, duration_ms })
@@ -386,20 +393,7 @@ impl Driver for MySqlDriver {
                 let mut stream = sqlx::raw_sql(AssertSqlSafe(sql.clone())).fetch(&mut *conn);
                 let Some(first) = stream.try_next().await.map_err(map_err)? else {
                     drop(stream);
-                    let columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql.as_str())))
-                        .await
-                        .map(|st| {
-                            use sqlx::Statement;
-                            st.columns()
-                                .iter()
-                                .map(|c| ColumnMeta {
-                                    name: c.name().to_owned(),
-                                    type_name: c.type_info().name().to_owned(),
-                                    hidden: false,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let columns = statement_columns(&mut conn, &sql).await.unwrap_or_default();
                     let _ = tx.send(Ok(StreamItem::Columns(columns))).await;
                     return Ok(());
                 };

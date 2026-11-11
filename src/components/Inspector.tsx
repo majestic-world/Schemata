@@ -6,7 +6,7 @@ import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
 import { useWorkspace } from "../store/workspace";
 import { useConnections } from "../store/connections";
-import { formatCount, orDash } from "../lib/format";
+import { formatCount, orDash, plural } from "../lib/format";
 
 export function Inspector() {
   const selection = useWorkspace((s) => s.selection);
@@ -82,7 +82,7 @@ function ObjectDetails({ connectionId, database, name }: { connectionId: string;
         <Database size={26} className="tree-icon" />
         <div className="grow">
           <b>{t.name}</b>
-          <span>{isTable ? `${formatCount(t.rows)} rows • ` : ""}{t.columns.length} columns</span>
+          <span>{isTable && t.rows !== null ? `${plural(t.rows, "row")} • ` : ""}{plural(t.columns.length, "column")}</span>
         </div>
         <ChevronRight size={16} className="faint" />
       </button>
