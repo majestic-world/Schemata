@@ -1,5 +1,6 @@
 /* Desktop-native theme: flush panes, fine dividers, compact rows, one teal accent. */
 :root {
+  color-scheme: light;
   --chrome-top: #f9fafb;
   --chrome-bottom: #e8ecf0;
   --bg: #e9edf1;
@@ -27,6 +28,35 @@
   --pending-update: #fff4cf;
   --pending-insert: #e2f5e8;
   --pending-delete: #fbe4e4;
+  --scrollbar: #c7ced6;
+  --scrollbar-hover: #aab4bf;
+  --caption-hover: rgba(0, 0, 0, 0.06);
+  --caption-active: rgba(0, 0, 0, 0.1);
+  --tool-hover: rgba(255, 255, 255, 0.75);
+  --button-hover-border: #aeb8c3;
+  --danger-border: #b3333a;
+  --icon-blue: #1f74d0;
+  --icon-orange: #d97a16;
+  --icon-green: #1f9d55;
+  --status-top: #f6f8fa;
+  --status-bottom: #eaeef2;
+  --header-top: #fbfcfd;
+  --header-bottom: #f1f4f7;
+  --grid-header-bottom: #f0f3f6;
+  --row-hover: #f1f6f9;
+  --grid-row-odd: #f9fbfc;
+  --grid-row-hover: #eef4f8;
+  --grid-header-hover: #e9eef3;
+  --cell-selection: #cfe8e8;
+  --binary: #7a4fb0;
+  --code-bg: #f7f9fa;
+  --editor-active-line: #f1f8f8;
+  --success-soft: #e9f6ee;
+  --success-border: #c4e6d1;
+  --error-border: #f2c7c9;
+  --filter-border: #b9dede;
+  --overlay: rgba(20, 32, 44, 0.28);
+  --danger-fill: #cf3d43;
   --radius-sm: 4px;
   --radius: 6px;
   --radius-lg: 8px;
@@ -36,4 +66,65 @@
   --fs-sm: 11.5px;
   --fs-lg: 15px;
   --row: 24px;
+}
+
+/* Navicat-inspired neutral charcoal panes, gray chrome and blue selection. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --chrome-top: #404040;
+  --chrome-bottom: #383838;
+  --bg: #252525;
+  --surface: #272727;
+  --surface-2: #2d2d2d;
+  --surface-3: #383838;
+  --surface-hover: #3a3a3a;
+  --border: #454545;
+  --border-soft: #353535;
+  --border-strong: #595959;
+  --text: #e3e3e3;
+  --text-muted: #b5b5b5;
+  --text-faint: #929292;
+  --accent: #007acc;
+  --accent-hover: #006bb3;
+  --accent-soft: #203e52;
+  --accent-text: #7cc7f4;
+  --selection: #006eb8;
+  --selection-quiet: #414141;
+  --danger: #ef8589;
+  --danger-soft: #482d30;
+  --danger-border: #a44a50;
+  --warning: #e8be64;
+  --warning-soft: #463c26;
+  --success: #79cb94;
+  --pending-update: #493f24;
+  --pending-insert: #263e2d;
+  --pending-delete: #482c2e;
+  --scrollbar: #595959;
+  --scrollbar-hover: #737373;
+  --caption-hover: #505050;
+  --caption-active: #5b5b5b;
+  --tool-hover: #4b4b4b;
+  --button-hover-border: #767676;
+  --icon-blue: #78b8ef;
+  --icon-orange: #eeb15d;
+  --icon-green: #79cb94;
+  --status-top: #3d3d3d;
+  --status-bottom: #383838;
+  --header-top: #383838;
+  --header-bottom: #303030;
+  --grid-header-bottom: #303030;
+  --row-hover: #333b40;
+  --grid-row-odd: #2b2b2b;
+  --grid-row-hover: #303b43;
+  --grid-header-hover: #404040;
+  --cell-selection: #203e52;
+  --binary: #c6a5e8;
+  --code-bg: #232323;
+  --editor-active-line: #2b343a;
+  --success-soft: #293d30;
+  --success-border: #3d6148;
+  --error-border: #704146;
+  --filter-border: #3c647e;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --danger-fill: #b63d46;
 }

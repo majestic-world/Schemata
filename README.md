@@ -4,6 +4,8 @@ Desktop database client for MySQL, MariaDB and SQLite, inspired by Navicat. Runs
 
 Features: saved connections (passwords in the OS credential store), schema tree, object list and inspector, data grid with editing, table designer with DDL preview, SQL editor, CSV/JSON/SQL export, CSV import, `.sql` file execution, database backup/restore, copying tables (structure and data) between databases with Ctrl+C / Ctrl+V in the tree, and realistic test data generation per column (names, emails, addresses, lorem ipsum, dates, foreign keys…).
 
+Appearance: use **Settings** (the gear immediately after **Export**) to switch between the light theme and a Navicat-inspired dark theme. Changes apply immediately across panes, dialogs, the data grid and SQL editor; the choice is restored on startup.
+
 ## Stack
 
 Tauri 2 shell, Rust backend, React + TypeScript frontend (see [ADR 0001](docs/adr/0001-tauri-rust-react-stack.md)). Core invariants (value model, row identity, DDL planning, cancellation, persistence, testing) are in [docs/architecture.md](docs/architecture.md).
@@ -78,4 +80,4 @@ on a Mac.
 
 ## Limitations
 
-Light theme and English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync. Installers have no distribution signature or notarization.
+English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync. Installers have no distribution signature or notarization.

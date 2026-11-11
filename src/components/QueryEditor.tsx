@@ -13,6 +13,7 @@ import { api, toAppError } from "../api/client";
 import type { Engine, StatementOutcome } from "../api/types";
 import { useTabs, type QueryTab } from "../store/tabs";
 import { useQueryResults } from "../store/queryResults";
+import { useAppearance } from "../store/appearance";
 import { useConnection } from "../lib/useConnection";
 import { notify, notifyError } from "../store/toasts";
 import { GridView } from "./GridView";
@@ -26,6 +27,7 @@ const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
 export function QueryEditor({ tab }: { tab: QueryTab }) {
   const qc = useQueryClient();
+  const theme = useAppearance((s) => s.theme);
   const conn = useConnection(tab.connectionId);
   const update = useTabs((s) => s.updateQuery);
   const run = useQueryResults((s) => s.runs[tab.id]);
@@ -132,6 +134,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
               ref={editor}
               value={tab.sql}
               height="100%"
+              theme={theme}
               extensions={extensions}
               onChange={(sql) => update(tab.id, { sql })}
               basicSetup={{ foldGutter: false, highlightActiveLine: true }}

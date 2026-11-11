@@ -1,5 +1,6 @@
-import { Search, PanelRight } from "lucide-react";
+import { Search, PanelRight, Settings } from "lucide-react";
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { useLayout } from "../store/layout";
 import { useConnections } from "../store/connections";
 import { useWorkspace } from "../store/workspace";
@@ -7,6 +8,7 @@ import { useTabs } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
 import { MOD } from "../lib/platform";
 import { BackupIcon, ConnectionIcon, ExportIcon, ImportIcon, NewQueryIcon, TableIcon, ViewIcon } from "./icons";
+import { SettingsDialog } from "./SettingsDialog";
 
 function ToolButton(props: { icon: ReactNode; label: string; title?: string; disabled?: boolean; onClick: () => void }) {
   return (
@@ -18,6 +20,7 @@ function ToolButton(props: { icon: ReactNode; label: string; title?: string; dis
 }
 
 export function Toolbar() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { inspectorOpen, toggleInspector } = useLayout();
   const showDialog = useConnections((s) => s.showDialog);
   const { search, setSearch, selection } = useWorkspace();
@@ -76,6 +79,7 @@ export function Toolbar() {
         disabled={!db || !object}
         onClick={() => selection && db && object && openTransfer({ kind: "export", connectionId: selection.connectionId, database: db, source: { kind: "table", table: object.name }, label: object.name })}
       />
+      <ToolButton icon={<Settings size={32} strokeWidth={1.6} />} label="Settings" title="Settings" onClick={() => setSettingsOpen(true)} />
       <div className="toolbar-spacer" />
       <label className="search">
         <Search size={14} />
@@ -85,6 +89,7 @@ export function Toolbar() {
       <button className={`icon-btn toggle${inspectorOpen ? " on" : ""}`} title="Show or hide the inspector" aria-pressed={inspectorOpen} onClick={toggleInspector}>
         <PanelRight size={18} />
       </button>
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </header>
   );
 }
