@@ -281,7 +281,7 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .grid-th { position: relative; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-right: 1px solid var(--border-soft); font-weight: 600; white-space: nowrap; overflow: hidden; flex: none; }
 .grid-th.sortable:hover { background: #e9eef3; }
 .th-name { overflow: hidden; text-overflow: ellipsis; }
-.th-type { margin-left: auto; font-weight: 400; font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; }
+.th-type { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; }
 .resizer:hover, .resizer.on { background: var(--accent); }
 .grid-row { position: absolute; left: 0; top: 0; display: flex; }
