@@ -6,6 +6,7 @@ import { copyTable } from "../store/tableClipboard";
 import { useTabs, type TableView } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
 import { useWorkspace, type SelectedObject } from "../store/workspace";
+import { isFavorite, useFavorites } from "../store/favorites";
 import { Menu, type MenuItem } from "./Menu";
 
 /** Shared by the schema tree and object list; actions always use the clicked object. */
@@ -16,9 +17,15 @@ export function ObjectContextMenu({ object, children }: { object: ObjectRef; chi
   const [targets, setTargets] = useState<SelectedObject[]>([object]);
   const multiple = targets.length > 1;
   const open = (view: TableView) => useTabs.getState().openTable({ connectionId, database, name, objectKind: kind }, view);
+  const favorites = useFavorites((s) => s.favorites);
+  const targetFavorites = targets.map((t) => ({ connectionId, database, name: t.name }));
+  const allFavorite = targetFavorites.every((f) => isFavorite(favorites, f));
   const items: MenuItem[] = [
     { label: isTable ? "Open Table" : "Open View", disabled: multiple, onSelect: () => open("data") },
     { label: isTable ? "Design Table" : "Definition", disabled: multiple, onSelect: () => open(isTable ? "structure" : "info") },
+    allFavorite
+      ? { label: "Remove from Favorites", onSelect: () => useFavorites.getState().remove(targetFavorites) }
+      : { label: "Add to Favorites", onSelect: () => useFavorites.getState().add(targetFavorites) },
     "separator",
     ...(isTable
       ? [

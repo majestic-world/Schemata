@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus, Loader2 } from "lucide-react";
+import { ChevronRight, Plus, Loader2, Star } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
 import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind } from "../api/types";
@@ -16,6 +16,10 @@ import { pasteTable, useTableClipboard } from "../store/tableClipboard";
 import { MOD } from "../lib/platform";
 import { Menu, type MenuItem } from "./Menu";
 import { ObjectContextMenu } from "./ObjectContextMenu";
+import { TreeFooter } from "./TreeFooter";
+import { treeNodeKey } from "../lib/treeNodes";
+import { useTreeFilter } from "../store/treeFilter";
+import { isFavorite, useFavorites } from "../store/favorites";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -23,7 +27,18 @@ const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
 export function Sidebar() {
   const showDialog = useConnections((s) => s.showDialog);
   const connections = useQuery({ queryKey: ["connections"], queryFn: api.listConnections });
+  const open = useConnections((s) => s.open);
+  const activeOnly = useTreeFilter((s) => s.activeOnly);
+  const engines = useTreeFilter((s) => s.engines);
+  const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
+  const favorites = useFavorites((s) => s.favorites);
   const list = connections.data ?? [];
+  const shown = list.filter(
+    (c) =>
+      (!activeOnly || c.id in open) &&
+      (engines.length === 0 || engines.includes(c.engine)) &&
+      (!favoritesOnly || favorites.some((f) => f.connectionId === c.id)),
+  );
   return (
     <>
       <div className="panel-header">
@@ -31,16 +46,21 @@ export function Sidebar() {
         <button className="icon-btn" title="New connection" onClick={() => showDialog({ mode: "create" })}><Plus size={16} /></button>
       </div>
       <div className="tree" role="tree" tabIndex={0}>
-        {list.map((c) => <ConnectionNode key={c.id} config={c} />)}
+        {shown.map((c) => <ConnectionNode key={c.id} config={c} />)}
         {connections.isSuccess && list.length === 0 && (
           <div className="empty"><p>No connections yet. Create one to get started.</p></div>
         )}
+        {list.length > 0 && shown.length === 0 && (
+          <div className="empty"><p>{favoritesOnly ? "No favorites match the filter." : "No connections match the filter."}</p></div>
+        )}
       </div>
+      <TreeFooter connections={list} />
     </>
   );
 }
 
 function Row(props: {
+  nodeKey: string;
   depth: number;
   expandable: boolean;
   expanded?: boolean;
@@ -57,6 +77,7 @@ function Row(props: {
     <div
       className={`tree-row${props.selected ? " selected" : ""}`}
       role="treeitem"
+      data-node={props.nodeKey}
       aria-expanded={props.expandable ? !!props.expanded : undefined}
       style={{ paddingLeft: 6 + props.depth * 16 }}
       onClick={() => (props.onClick ? props.onClick() : props.onToggle?.())}
@@ -83,16 +104,24 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
   const qc = useQueryClient();
   const isOpen = useConnections((s) => config.id in s.open);
   const showDialog = useConnections((s) => s.showDialog);
-  const key = `c:${config.id}`;
+  const key = treeNodeKey.connection(config.id);
   const expanded = useWorkspace((s) => !!s.expanded[key]) && isOpen;
   const { setExpanded, select } = useWorkspace();
   const selected = useWorkspace((s) => s.selection?.connectionId === config.id && !s.selection.database);
+  const search = useTreeFilter((s) => s.search.trim().toLowerCase());
+  const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
+  const favorites = useFavorites((s) => s.favorites);
 
   const databases = useQuery({
     queryKey: ["databases", config.id],
     queryFn: () => api.listDatabases(config.id),
     enabled: isOpen && expanded,
   });
+  const shownDatabases = databases.data?.filter(
+    (db) =>
+      (!search || db.name.toLowerCase().includes(search)) &&
+      (!favoritesOnly || favorites.some((f) => f.connectionId === config.id && f.database === db.name)),
+  );
 
   const toggle = async () => {
     if (expanded) return setExpanded(key, false);
@@ -145,6 +174,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
       <Menu items={items}>
         <div>
           <Row
+            nodeKey={key}
             depth={0}
             expandable
             expanded={expanded}
@@ -164,15 +194,15 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
           />
         </div>
       </Menu>
-      {expanded &&
-        databases.data?.map((db) => <DatabaseNode key={db.name} connectionId={config.id} engine={config.engine} database={db.name} />)}
+      {expanded && shownDatabases?.map((db) => <DatabaseNode key={db.name} connectionId={config.id} engine={config.engine} database={db.name} />)}
+      {expanded && search && shownDatabases?.length === 0 && <div className="tree-empty">No databases match “{search}”</div>}
     </>
   );
 }
 
 function DatabaseNode({ connectionId, engine, database }: { connectionId: string; engine: Engine; database: string }) {
   const qc = useQueryClient();
-  const key = `d:${connectionId}/${database}`;
+  const key = treeNodeKey.database(connectionId, database);
   const expanded = useWorkspace((s) => !!s.expanded[key]);
   const { setExpanded, select } = useWorkspace();
   const selected = useWorkspace(
@@ -229,6 +259,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
       <Menu items={items}>
         <div>
           <Row
+            nodeKey={key}
             depth={1}
             expandable
             expanded={expanded}
@@ -254,15 +285,22 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
 
 function GroupNode(props: { connectionId: string; database: string; kind: ObjectKind; objects: ObjectInfo[] }) {
   const { connectionId, database, kind } = props;
-  const key = `g:${connectionId}/${database}/${kind}`;
+  const key = treeNodeKey.group(connectionId, database, kind);
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
+  const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
+  const favorites = useFavorites((s) => s.favorites);
   const expandedFlag = useWorkspace((s) => !!s.expanded[key]);
   const setExpanded = useWorkspace((s) => s.setExpanded);
   const copied = useTableClipboard((s) => s.copied);
   const all = props.objects.filter((o) => o.kind === kind);
-  const shown = search ? all.filter((o) => o.name.toLowerCase().includes(search)) : all;
-  const expanded = expandedFlag || (search !== "" && shown.length > 0);
-  if (search && shown.length === 0) return null;
+  const shown = all.filter(
+    (o) =>
+      (!search || o.name.toLowerCase().includes(search)) &&
+      (!favoritesOnly || isFavorite(favorites, { connectionId, database, name: o.name })),
+  );
+  const filtering = search !== "" || favoritesOnly;
+  const expanded = expandedFlag || (filtering && shown.length > 0);
+  if (filtering && shown.length === 0) return null;
   const Icon = kind === "table" ? TableIcon : ViewIcon;
   const groupItems: MenuItem[] =
     kind === "table"
@@ -276,12 +314,13 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
       <Menu items={groupItems}>
       <div>
       <Row
+        nodeKey={key}
         depth={2}
         expandable
         expanded={expanded}
         icon={<Icon size={16} />}
         label={kind === "table" ? "Tables" : "Views"}
-        trailing={<span className="count">{search ? `${shown.length}/${all.length}` : all.length}</span>}
+        trailing={<span className="count">{filtering ? `${shown.length}/${all.length}` : all.length}</span>}
         onToggle={() => setExpanded(key, !expandedFlag)}
         onClick={() => {
           useWorkspace.getState().select({ connectionId, database });
@@ -304,17 +343,20 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
       s.selection.database === database &&
       s.selection.object?.name === object.name,
   );
+  const favorite = useFavorites((s) => isFavorite(s.favorites, { connectionId, database, name: object.name }));
   const Icon = object.kind === "table" ? TableIcon : ViewIcon;
   const open = () => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, "data");
   return (
     <ObjectContextMenu object={{ connectionId, database, name: object.name, kind: object.kind }}>
       <div>
         <Row
+          nodeKey={treeNodeKey.object(connectionId, database, object.name)}
           depth={3}
           expandable={false}
           selected={selected}
           icon={<Icon size={16} />}
           label={object.name}
+          trailing={favorite && <Star size={11} className="fav-star" aria-label="Favorite" />}
           onClick={() => { select({ connectionId, database, object: { name: object.name, kind: object.kind } }); showObjects(); }}
           onDoubleClick={open}
         />

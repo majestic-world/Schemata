@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Dialog } from "./Dialog";
 import { useConnections } from "../store/connections";
 import { openConnection } from "../lib/connect";
+import { treeNodeKey } from "../lib/treeNodes";
 
 export function PasswordPrompt() {
   const { passwordFor, askPassword } = useConnections();
@@ -17,7 +18,7 @@ export function PasswordPrompt() {
     setBusy(true);
     const config = passwordFor;
     close();
-    if (await openConnection(config, password)) useWorkspace.getState().setExpanded(`c:${config.id}`, true);
+    if (await openConnection(config, password)) useWorkspace.getState().setExpanded(treeNodeKey.connection(config.id), true);
     setBusy(false);
   };
   return (

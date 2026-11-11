@@ -197,6 +197,26 @@ button:focus-visible { outline: none; }
 .engine-icon { flex: none; }
 .color-tag { width: 3px; height: 14px; border-radius: 2px; }
 .tree-row svg { flex: none; }
+.tree-row .fav-star { color: var(--warning); fill: currentColor; }
+.tree:focus-within .tree-row.selected .fav-star { color: #fff; }
+.tree-empty { padding: 3px 0 3px 42px; color: var(--text-faint); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Tree footer: database search plus filter / favorites / locate / collapse-all buttons. */
+.tree-footer { display: flex; flex: none; align-items: center; gap: 2px; height: 32px; padding: 0 6px 0 10px; border-top: 1px solid var(--border-soft); }
+.tree-search { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; color: var(--text-faint); }
+.tree-search:focus-within { color: var(--accent-text); }
+.tree-search input { flex: 1; min-width: 0; height: 24px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: var(--fs-sm); }
+.tree-search input::placeholder { color: var(--text-faint); }
+.tree-search .icon-btn { width: 18px; height: 18px; }
+.tree-footer > .icon-btn { width: 26px; height: 26px; }
+.tree-footer > .icon-btn.on { color: var(--accent-text); background: var(--accent-soft); }
+.tree-filter { display: flex; flex-direction: column; min-width: 190px; padding: 6px 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); z-index: 50; font-size: var(--fs-sm); }
+.tree-filter .check { height: 26px; padding: 0 8px; border-radius: var(--radius-sm); cursor: default; }
+.tree-filter .check:hover { background: var(--surface-hover); }
+.tree-filter .check input { margin: 0; }
+.tree-filter-title { padding: 4px 8px 2px; color: var(--text-muted); font-weight: 600; }
+.tree-filter-clear { align-self: flex-start; height: 24px; margin-left: 4px; padding: 0 4px; border: 0; background: transparent; color: var(--accent-text); font-size: var(--fs-sm); }
+.tree-filter-clear:hover:not(:disabled) { text-decoration: underline; }
+.tree-filter-clear:disabled { color: var(--text-faint); }
 
 /* ---------- Menus ---------- */
 .menu { min-width: 200px; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); z-index: 50; }

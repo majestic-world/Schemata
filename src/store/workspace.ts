@@ -24,6 +24,7 @@ type WorkspaceState = {
   selectObjects: (selection: { connectionId: string; database: string; objects: SelectedObject[] }) => void;
   setSearch: (q: string) => void;
   setExpanded: (key: string, open: boolean) => void;
+  collapseAll: () => void;
 };
 
 export const useWorkspace = create<WorkspaceState>()(
@@ -42,6 +43,7 @@ export const useWorkspace = create<WorkspaceState>()(
       }),
       setSearch: (search) => set({ search }),
       setExpanded: (key, open) => set((s) => ({ expanded: { ...s.expanded, [key]: open } })),
+      collapseAll: () => set({ expanded: {} }),
     }),
     { name: "schematadb.workspace", partialize: (s) => ({ expanded: s.expanded, openAtExit: s.openAtExit }) },
   ),

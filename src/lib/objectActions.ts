@@ -5,6 +5,7 @@ import { confirmAction, promptAction } from "../store/confirm";
 import { closeTabsFor, useTabs } from "../store/tabs";
 import { notify, notifyError } from "../store/toasts";
 import { useWorkspace } from "../store/workspace";
+import { useFavorites } from "../store/favorites";
 import { plural } from "./format";
 
 export type ObjectRef = { connectionId: string; database: string; name: string; kind: ObjectKind };
@@ -33,6 +34,7 @@ export async function dropObjects(scope: Pick<ObjectRef, "connectionId" | "datab
     for (const object of objects) {
       await api.dropObject(scope.connectionId, scope.database, object.name, object.kind);
       closeTabsFor(scope.connectionId, scope.database, object.name);
+      useFavorites.getState().remove([{ ...scope, name: object.name }]);
       deleted++;
     }
     notify(`Deleted ${what}`, objects.map((o) => o.name).join(", "));
@@ -73,6 +75,7 @@ export async function renameTable(o: ObjectRef, qc: QueryClient) {
   try {
     await api.renameTable(o.connectionId, o.database, o.name, to);
     closeTabsFor(o.connectionId, o.database, o.name);
+    useFavorites.getState().rename(o, to);
     useWorkspace.getState().select({ connectionId: o.connectionId, database: o.database, object: { name: to, kind: o.kind } });
     refreshObjects(qc, o);
     notify("Table renamed", `${o.name} → ${to}`);
