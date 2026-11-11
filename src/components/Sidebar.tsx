@@ -309,7 +309,6 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
         onClick={() => {
           useWorkspace.getState().select({ connectionId, database });
           showObjects();
-          setExpanded(key, !expandedFlag);
         }}
       />
       </div>
