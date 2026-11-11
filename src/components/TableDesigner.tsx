@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, TableDesign } from "../api/types";
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
+import { useDesignerPrefs } from "../store/designerPrefs";
 import { MOD, isMod } from "../lib/platform";
 import { Dialog } from "./Dialog";
 import { ComboInput } from "./ComboInput";
@@ -42,6 +43,15 @@ function withName(d: TableDesign, name: string): TableDesign {
       return n ? { ...fk, name: `fk_${name}_${n}` } : fk;
     }),
   };
+}
+
+const TIMESTAMP_COLUMNS = ["created_at", "updated_at"];
+
+/** Appends `created_at` and `updated_at` DATETIME columns, skipping a name the design already has. */
+function withTimestamps(d: TableDesign): TableDesign {
+  const taken = new Set(d.columns.map((c) => c.name.toLowerCase()));
+  const added = TIMESTAMP_COLUMNS.filter((name) => !taken.has(name)).map((name): ColumnDesign => ({ ...blankColumn(), name, dataType: "DATETIME" }));
+  return { ...d, columns: [...d.columns, ...added] };
 }
 
 /** Message of a rejected `planTable` call (an `AppError` from the backend). */
@@ -114,9 +124,12 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     retry: false,
   });
   const reviewName = review && "name" in review ? review.name.trim() : "";
+  const timestamps = useDesignerPrefs((s) => s.timestamps);
+  /** The design a new table is created from: the entered name, plus the timestamp columns when chosen. */
+  const finalDesign = (d: TableDesign) => (timestamps ? withTimestamps(withName(d, reviewName)) : withName(d, reviewName));
   const newPlan = useQuery({
-    queryKey: ["plan", connectionId, database, null, designKey, reviewName],
-    queryFn: () => api.planTable(connectionId, database, null, withName(design!, reviewName)),
+    queryKey: ["plan", connectionId, database, null, designKey, reviewName, timestamps],
+    queryFn: () => api.planTable(connectionId, database, null, finalDesign(design!)),
     enabled: !!design && reviewName !== "",
     retry: false,
     placeholderData: keepPreviousData,
@@ -213,7 +226,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   const canApply = !busy && !!statements && (!!table || (reviewName !== "" && !newPlan.isFetching && !newPlan.isError));
   const apply = async () => {
     if (!canApply || !statements) return;
-    const saved = table ? design : withName(design, reviewName);
+    const saved = table ? design : finalDesign(design);
     setBusy(true);
     try {
       await api.applyDdl(connectionId, database, statements);
@@ -488,6 +501,12 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
                 spellCheck={false}
                 aria-label="Table name"
               />
+            </label>
+          )}
+          {"name" in review && (
+            <label className="check review-timestamps">
+              <input type="checkbox" checked={timestamps} onChange={(e) => useDesignerPrefs.getState().setTimestamps(e.target.checked)} />
+              Add <code>created_at</code> and <code>updated_at</code> (DATETIME)
             </label>
           )}
           <p className="dialog-text">The following SQL will run{statements && statements.length > 1 ? " in order" : ""}:</p>
