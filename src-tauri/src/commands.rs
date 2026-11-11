@@ -12,8 +12,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
+#[cfg(windows)]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 
 type CmdResult<T> = Result<T, AppError>;
+
+/// Single-click navigation waits for the native double-click recognition window.
+#[tauri::command]
+pub fn double_click_interval() -> u32 {
+    #[cfg(windows)]
+    {
+        // SAFETY: reading this process-independent system setting has no pointer or handle requirements.
+        unsafe { GetDoubleClickTime() }
+    }
+    #[cfg(not(windows))]
+    {
+        500
+    }
+}
 
 #[tauri::command]
 pub fn list_connections(sessions: State<'_, Sessions>) -> Vec<ConnectionConfig> {

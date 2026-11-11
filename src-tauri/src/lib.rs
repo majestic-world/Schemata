@@ -82,6 +82,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::double_click_interval,
             commands::list_connections,
             commands::save_connection,
             commands::duplicate_connection,

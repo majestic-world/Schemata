@@ -48,6 +48,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 export const api = {
+  doubleClickInterval: () => call<number>("double_click_interval"),
   listConnections: () => call<ConnectionConfig[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password: string | null) =>
     call<SaveOutcome>("save_connection", { config, password }),

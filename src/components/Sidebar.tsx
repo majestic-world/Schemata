@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Plus, Loader2, Star } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind } from "../api/types";
 import { DatabaseIcon, EngineIcon, TableIcon, ViewIcon } from "./icons";
@@ -20,6 +20,7 @@ import { TreeFooter } from "./TreeFooter";
 import { treeNodeKey } from "../lib/treeNodes";
 import { useTreeFilter } from "../store/treeFilter";
 import { isFavorite, useFavorites } from "../store/favorites";
+import { createTreeClickNavigation } from "../lib/treeClickNavigation";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -32,6 +33,21 @@ export function Sidebar() {
   const engines = useTreeFilter((s) => s.engines);
   const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
   const favorites = useFavorites((s) => s.favorites);
+  const [objectClickNavigation] = useState(() => createTreeClickNavigation(showObjects));
+  useEffect(() => {
+    const cancel = objectClickNavigation.cancel;
+    document.addEventListener("pointerdown", cancel, true);
+    document.addEventListener("keydown", cancel, true);
+    const unsubscribe = useTabs.subscribe((state, previous) => {
+      if (state.active !== previous.active) cancel();
+    });
+    return () => {
+      document.removeEventListener("pointerdown", cancel, true);
+      document.removeEventListener("keydown", cancel, true);
+      unsubscribe();
+      cancel();
+    };
+  }, [objectClickNavigation]);
   const list = connections.data ?? [];
   const shown = list.filter(
     (c) =>
@@ -45,7 +61,16 @@ export function Sidebar() {
         <span className="grow">Connections</span>
         <button className="icon-btn" title="New connection" onClick={() => showDialog({ mode: "create" })}><Plus size={16} /></button>
       </div>
-      <div className="tree" role="tree" tabIndex={0}>
+      <div
+        className="tree"
+        role="tree"
+        tabIndex={0}
+        onClick={(event) => {
+          if (event.detail > 1 || !(event.target instanceof Element) || !event.target.closest("[data-tree-object]")) return;
+          void objectClickNavigation.singleClick(api.doubleClickInterval()).catch((error) => notifyError("Could not open Objects", error));
+        }}
+        onDoubleClickCapture={objectClickNavigation.cancel}
+      >
         {shown.map((c) => <ConnectionNode key={c.id} config={c} />)}
         {connections.isSuccess && list.length === 0 && (
           <div className="empty"><p>No connections yet. Create one to get started.</p></div>
@@ -344,7 +369,7 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
   const open = () => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, "data");
   return (
     <ObjectContextMenu object={{ connectionId, database, name: object.name, kind: object.kind }}>
-      <div>
+      <div data-tree-object>
         <Row
           nodeKey={treeNodeKey.object(connectionId, database, object.name)}
           depth={3}
@@ -353,7 +378,7 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
           icon={<Icon size={16} />}
           label={object.name}
           trailing={favorite && <Star size={11} className="fav-star" aria-label="Favorite" />}
-          onClick={() => { select({ connectionId, database, object: { name: object.name, kind: object.kind } }); showObjects(); }}
+          onClick={() => select({ connectionId, database, object: { name: object.name, kind: object.kind } })}
           onDoubleClick={open}
         />
       </div>
