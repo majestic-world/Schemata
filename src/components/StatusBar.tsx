@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Database, Server, Table2, Rows3, ListTree, Info } from "lucide-react";
+import { ChevronRight, Rows3, ListTree, Info } from "lucide-react";
+import { DatabaseIcon, EngineIcon, TableIcon, ViewIcon } from "./icons";
 import { useTabs, type TableView } from "../store/tabs";
-import { formatCount } from "../lib/format";
+import { plural } from "../lib/format";
 import { api } from "../api/client";
 import { useWorkspace } from "../store/workspace";
 import { useConnections } from "../store/connections";
@@ -19,9 +20,11 @@ export function StatusBar() {
       </span>
       {conn && (
         <nav className="crumbs" aria-label="Breadcrumb">
-          <span><Server size={14} /> {conn.name}</span>
-          {selection?.database && (<><ChevronRight size={13} className="sep" /><span><Database size={14} /> {selection.database}</span></>)}
-          {selection?.object && (<><ChevronRight size={13} className="sep" /><span><Table2 size={14} /> {selection.object.name}</span></>)}
+          <span><EngineIcon engine={conn.engine} size={14} />{conn.name}</span>
+          {selection?.database && (<><ChevronRight size={12} className="sep" /><span><DatabaseIcon size={14} />{selection.database}</span></>)}
+          {selection?.object && (
+            <><ChevronRight size={12} className="sep" /><span>{selection.object.kind === "table" ? <TableIcon size={14} /> : <ViewIcon size={14} />}{selection.object.name}</span></>
+          )}
         </nav>
       )}
       <div className="grow" />
@@ -43,14 +46,14 @@ function TableToggles() {
   const rows = rowCounts[tab.id];
   return (
     <>
-      <div className="segmented" role="group" aria-label="Table view">
+      <div className="view-toggle" role="group" aria-label="Table view">
         {VIEWS.map(({ view, label, icon: Icon }) => (
-          <button key={view} className={tab.view === view ? "on" : ""} onClick={() => setView(tab.id, view)}>
-            <Icon size={14} />{label}
+          <button key={view} className={tab.view === view ? "on" : ""} title={label} aria-label={label} onClick={() => setView(tab.id, view)}>
+            <Icon size={14} />
           </button>
         ))}
       </div>
-      <span className="status-item row-count">{rows === undefined ? "" : `${formatCount(rows)} row${rows === 1 ? "" : "s"}`}</span>
+      <span className="status-item row-count">{rows === undefined ? "" : plural(rows, "row")}</span>
     </>
   );
 }

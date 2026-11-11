@@ -6,8 +6,8 @@ import type { CellValue, ColumnMeta, SortSpec } from "../api/types";
 import { displayCell, toTsv } from "../lib/cells";
 import { notify } from "../store/toasts";
 
-const ROW_HEIGHT = 30;
-const HEADER_HEIGHT = 36;
+const ROW_HEIGHT = 26;
+const HEADER_HEIGHT = 28;
 
 export type GridSelection = { rows: number[]; columns: string[] };
 
@@ -105,7 +105,7 @@ export function GridView(props: Props) {
   };
 
   const headers = table.getHeaderGroups()[0]?.headers ?? [];
-  const totalWidth = 56 + headers.reduce((s, h) => s + h.getSize(), 0);
+  const totalWidth = 50 + headers.reduce((s, h) => s + h.getSize(), 0);
 
   return (
     <div

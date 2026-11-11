@@ -1,10 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ContextMenu } from "radix-ui";
-import { ChevronRight, Plus, Database as DbIcon, Table2, Eye, Loader2 } from "lucide-react";
+import { ChevronRight, Plus, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
 import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind } from "../api/types";
-import { EngineIcon } from "./EngineIcon";
+import { DatabaseIcon, EngineIcon, TableIcon, ViewIcon } from "./icons";
 import { useConnections } from "../store/connections";
 import { useWorkspace } from "../store/workspace";
 import { closeConnection, openConnection } from "../lib/connect";
@@ -28,7 +28,7 @@ export function Sidebar() {
         <span className="grow">Connections</span>
         <button className="icon-btn" title="New connection" onClick={() => showDialog({ mode: "create" })}><Plus size={16} /></button>
       </div>
-      <div className="tree" role="tree">
+      <div className="tree" role="tree" tabIndex={0}>
         {list.map((c) => <ConnectionNode key={c.id} config={c} />)}
         {connections.isSuccess && list.length === 0 && (
           <div className="empty"><p>No connections yet. Create one to get started.</p></div>
@@ -171,7 +171,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
             expanded={expanded}
             loading={databases.isFetching && !databases.data}
             selected={selected}
-            icon={<EngineIcon engine={config.engine} />}
+            icon={<EngineIcon engine={config.engine} size={17} />}
             label={config.name}
             trailing={
               <>
@@ -252,7 +252,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
             expanded={expanded}
             loading={objects.isFetching && !objects.data}
             selected={selected}
-            icon={<DbIcon size={16} className="tree-icon db" />}
+            icon={<DatabaseIcon size={16} />}
             label={database}
             onToggle={toggle}
             onClick={() => { select({ connectionId, database }); showObjects(); }}
@@ -280,7 +280,7 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
   const shown = search ? all.filter((o) => o.name.toLowerCase().includes(search)) : all;
   const expanded = expandedFlag || (search !== "" && shown.length > 0);
   if (search && shown.length === 0) return null;
-  const Icon = kind === "table" ? Table2 : Eye;
+  const Icon = kind === "table" ? TableIcon : ViewIcon;
   const groupItems: Item[] =
     kind === "table" ? [{ label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) }] : [];
   return (
@@ -291,7 +291,7 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
         depth={2}
         expandable
         expanded={expanded}
-        icon={<Icon size={16} className="tree-icon" />}
+        icon={<Icon size={16} />}
         label={kind === "table" ? "Tables" : "Views"}
         trailing={<span className="count">{search ? `${shown.length}/${all.length}` : all.length}</span>}
         onToggle={() => setExpanded(key, !expandedFlag)}
@@ -317,7 +317,7 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
       s.selection.database === database &&
       s.selection.object?.name === object.name,
   );
-  const Icon = object.kind === "table" ? Table2 : Eye;
+  const Icon = object.kind === "table" ? TableIcon : ViewIcon;
   const open = (view: TableView) => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, view);
   const qc = useQueryClient();
   const ref = { connectionId, database, name: object.name, kind: object.kind };
@@ -341,7 +341,7 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
           depth={3}
           expandable={false}
           selected={selected}
-          icon={<Icon size={15} className="tree-icon obj" />}
+          icon={<Icon size={16} />}
           label={object.name}
           onClick={() => { select({ connectionId, database, object: { name: object.name, kind: object.kind } }); showObjects(); }}
           onDoubleClick={() => open("data")}

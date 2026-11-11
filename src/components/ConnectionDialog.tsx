@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { CheckCircle2, AlertCircle, FolderOpen, FilePlus2 } from "lucide-react";
 import { Dialog } from "./Dialog";
+import { EngineIcon } from "./icons";
 import { api } from "../api/client";
 import { ENGINE_LABEL, type AppError, type ConnectParams, type ConnectionConfig, type Engine } from "../api/types";
 import { useConnections } from "../store/connections";
@@ -134,7 +135,7 @@ export function ConnectionDialog() {
           <div className="segmented engine-picker">
             {(Object.keys(ENGINE_LABEL) as Engine[]).map((e) => (
               <button key={e} type="button" className={config.engine === e ? "on" : ""} onClick={() => patch({ engine: e, port: DEFAULT_PORT[e] })}>
-                {ENGINE_LABEL[e]}
+                <EngineIcon engine={e} size={16} />{ENGINE_LABEL[e]}
               </button>
             ))}
           </div>

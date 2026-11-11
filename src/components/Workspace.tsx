@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { DropdownMenu } from "radix-ui";
-import { X, Table2, Eye, LayoutGrid, PencilRuler, Plus, Trash2, MoreHorizontal, FileCode2 } from "lucide-react";
+import { X, LayoutGrid, PencilRuler, Trash2, MoreHorizontal, FileCode2, ExternalLink, Plus } from "lucide-react";
+import { TableIcon, ViewIcon } from "./icons";
 import { QueryEditor } from "./QueryEditor";
 import { ObjectList } from "./ObjectList";
 import { TableTabView } from "./TableTabView";
@@ -49,7 +50,8 @@ export function Workspace() {
           <span className="title">Objects</span>
         </div>
         {tabs.map((t) => {
-          const Icon = t.kind === "newTable" ? PencilRuler : t.kind === "query" ? FileCode2 : t.objectKind === "table" ? Table2 : Eye;
+          const icon =
+            t.kind === "newTable" ? <PencilRuler size={14} className="tab-glyph design" /> : t.kind === "query" ? <FileCode2 size={14} className="tab-glyph query" /> : t.objectKind === "table" ? <TableIcon size={15} /> : <ViewIcon size={15} />;
           return (
             <div
               key={t.id}
@@ -62,7 +64,7 @@ export function Workspace() {
               }}
               onAuxClick={(e) => e.button === 1 && void requestClose(t.id)}
             >
-              <Icon size={14} className="tree-icon obj" />
+              {icon}
               <span className="title">{tabLabel(t)}</span>
               {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
               <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestClose(t.id); }}>
@@ -112,15 +114,15 @@ function ObjectsView() {
       onOpen={(o) => selection?.database && openTable({ connectionId: selection.connectionId, database: selection.database, name: o.name, objectKind: o.kind })}
       actions={
         <>
-          <button className="btn primary" disabled={!ref} onClick={() => ref && openTable({ connectionId: ref.connectionId, database: ref.database, name: ref.name, objectKind: ref.kind })}>
-            {obj?.kind === "view" ? <Eye size={15} /> : <Table2 size={15} />}Open {obj?.kind === "view" ? "View" : "Table"}
+          <button className="obj-btn" disabled={!ref} onClick={() => ref && openTable({ connectionId: ref.connectionId, database: ref.database, name: ref.name, objectKind: ref.kind })}>
+            <ExternalLink size={15} className="ob-open" />Open {obj?.kind === "view" ? "View" : "Table"}
           </button>
-          <button className="btn" disabled={!ref || !isTable} onClick={() => ref && designTable(ref)}><PencilRuler size={15} />Design Table</button>
-          <button className="btn" disabled={!selection?.database} onClick={() => selection?.database && newTable(selection.connectionId, selection.database)}><Plus size={15} />New Table</button>
-          <button className="btn danger" disabled={!ref} onClick={() => ref && void dropObject(ref, qc)}><Trash2 size={15} />Delete {obj?.kind === "view" ? "View" : "Table"}</button>
+          <button className="obj-btn" disabled={!ref || !isTable} onClick={() => ref && designTable(ref)}><PencilRuler size={15} className="ob-design" />Design Table</button>
+          <button className="obj-btn" disabled={!selection?.database} onClick={() => selection?.database && newTable(selection.connectionId, selection.database)}><Plus size={15} className="ob-new" />New Table</button>
+          <button className="obj-btn" disabled={!ref} onClick={() => ref && void dropObject(ref, qc)}><Trash2 size={15} className="ob-delete" />Delete {obj?.kind === "view" ? "View" : "Table"}</button>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <button className="icon-btn" aria-label="More actions" disabled={!ref}><MoreHorizontal size={16} /></button>
+              <button className="obj-btn" aria-label="More actions" disabled={!ref}><MoreHorizontal size={16} /></button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="menu" align="start">

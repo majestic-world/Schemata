@@ -7,6 +7,7 @@ import { keymap } from "@codemirror/view";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, Upload, X } from "lucide-react";
 import { openTransfer } from "../store/transfer";
+import { DatabaseIcon } from "./icons";
 import { MOD } from "../lib/platform";
 import { api, toAppError } from "../api/client";
 import type { Engine, StatementOutcome } from "../api/types";
@@ -108,21 +109,21 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
   return (
     <div className="query-editor">
       <div className="action-bar">
-        <button className="btn primary" disabled={run?.running} onClick={() => void execute(false)} title={`Run (${MOD}+Enter)`}><Play size={15} />Run</button>
-        <button className="btn" disabled={run?.running} onClick={() => void execute(true)} title={`Run selection (${MOD}+Shift+Enter)`}><TextSelect size={15} />Run Selection</button>
-        <button className="btn danger" disabled={!run?.running} onClick={stop}><Square size={14} />Stop</button>
+        <button className="obj-btn run" disabled={run?.running} onClick={() => void execute(false)} title={`Run (${MOD}+Enter)`}><Play size={15} className="ob-new" />Run</button>
+        <button className="obj-btn" disabled={run?.running} onClick={() => void execute(true)} title={`Run selection (${MOD}+Shift+Enter)`}><TextSelect size={15} className="ob-new" />Run Selection</button>
+        <button className="obj-btn" disabled={!run?.running} onClick={stop}><Square size={14} className="ob-delete" />Stop</button>
         <div className="toolbar-sep" />
-        <label className="inline-field">
-          <span>Database</span>
+        <label className="inline-field" title="Database the script runs in">
+          <DatabaseIcon size={16} />
           <select className="input sm" value={tab.database ?? ""} aria-label="Database" onChange={(e) => update(tab.id, { database: e.target.value || null })}>
             {conn?.engine !== "sqlite" && <option value="">(none)</option>}
             {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
           </select>
         </label>
         <div className="grow" />
-        <button className="btn" onClick={openFile}><FolderOpen size={15} />Open</button>
-        <button className="btn" onClick={saveFile} title={`Save (${MOD}+S)`}><Save size={15} />Save</button>
-        <button className={`btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><History size={15} />History</button>
+        <button className="obj-btn" onClick={openFile}><FolderOpen size={15} className="ob-design" />Open</button>
+        <button className="obj-btn" onClick={saveFile} title={`Save (${MOD}+S)`}><Save size={15} className="ob-open" />Save</button>
+        <button className={`obj-btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><History size={15} className="ob-open" />History</button>
       </div>
       <div className="query-main">
         <div className="query-left">

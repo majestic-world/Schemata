@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, RefreshCw, Table2, Database } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw } from "lucide-react";
+import { DatabaseIcon, TableIcon, ViewIcon } from "./icons";
 import { api } from "../api/client";
 import type { ObjectInfo } from "../api/types";
 import { useWorkspace } from "../store/workspace";
@@ -53,7 +54,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   if (!connectionId || !database) {
     return (
       <div className="empty">
-        <Database size={36} strokeWidth={1.5} />
+        <DatabaseIcon size={44} />
         <h3>No database selected</h3>
         <p>Select a database in the sidebar to see its tables and views.</p>
       </div>
@@ -68,7 +69,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
     >
       <span className="th">
         {label}
-        {sort.key === key ? sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} /> : <ChevronsUpDown size={13} className="faint" />}
+        {sort.key === key && (sort.desc ? <ArrowDown size={12} /> : <ArrowUp size={12} />)}
       </span>
     </th>
   );
@@ -95,7 +96,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <tbody>
             {rows.map((o) => {
               const selected = selection?.object?.name === o.name;
-              const Icon = o.kind === "table" ? Table2 : Eye;
+              const Icon = o.kind === "table" ? TableIcon : ViewIcon;
               return (
                 <tr
                   key={o.name}
@@ -104,7 +105,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
                   onDoubleClick={() => onOpen(o)}
                   data-object={o.name}
                 >
-                  <td><span className="cell-name"><Icon size={15} className="tree-icon obj" />{o.name}</span></td>
+                  <td><span className="cell-name"><Icon size={16} />{o.name}</span></td>
                   <td className="num">{formatCount(o.rows)}</td>
                   <td>{orDash(o.modified)}</td>
                   <td className="muted">{orDash(o.comment)}</td>

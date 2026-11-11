@@ -192,45 +192,33 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no primary or unique key"}</span>
         ) : (
           <>
-            <button className="btn" onClick={() => { const r = addRow(pending); setPending(r.pending); setEditing({ row: saved + r.row.index, column: columns.find((c) => !c.hidden)?.name ?? "" }); }}>
-              <Plus size={15} />Add Row
+            <button className="obj-btn" onClick={() => { const r = addRow(pending); setPending(r.pending); setEditing({ row: saved + r.row.index, column: columns.find((c) => !c.hidden)?.name ?? "" }); }}>
+              <Plus size={15} className="ob-new" />Add Row
             </button>
-            <button className="btn" disabled={selection.rows.length === 0} onClick={() => { setPending((p) => deleteRows(p, selection.rows.map(refOf))); setEditing(null); }}>
-              <Trash2 size={15} />Delete
+            <button className="obj-btn" disabled={selection.rows.length === 0} onClick={() => { setPending((p) => deleteRows(p, selection.rows.map(refOf))); setEditing(null); }}>
+              <Trash2 size={15} className="ob-delete" />Delete
             </button>
-            <button className="btn" disabled={selection.rows.length === 0} title="Set selected cells to NULL" onClick={() => selection.rows.forEach((r) => selection.columns.forEach((c) => write(r, c, { type: "null" })))}>
+            <button className="obj-btn" disabled={selection.rows.length === 0} title="Set selected cells to NULL" onClick={() => selection.rows.forEach((r) => selection.columns.forEach((c) => write(r, c, { type: "null" })))}>
               <Ban size={15} />Set NULL
             </button>
             <div className="toolbar-sep" />
-            <button className="btn primary" disabled={!dirty || committing} onClick={commit} title={`Commit (${MOD}+S)`}>
-              <Check size={15} />Commit{dirty ? ` (${changeCount(pending)})` : ""}
+            <button className="obj-btn commit" disabled={!dirty || committing} onClick={commit} title={`Commit (${MOD}+S)`}>
+              <Check size={15} className="ob-new" />Commit{dirty ? ` (${changeCount(pending)})` : ""}
             </button>
-            <button className="btn" disabled={!dirty || committing} onClick={reset}><Undo2 size={15} />Discard</button>
+            <button className="obj-btn" disabled={!dirty || committing} onClick={reset}><Undo2 size={15} className="ob-delete" />Discard</button>
           </>
         )}
-        <button className="btn" title="Export this table" onClick={() => openTransfer({ kind: "export", connectionId: tab.connectionId, database: tab.database, source: { kind: "table", table: tab.name }, label: tab.name })}>
-          <Upload size={15} />Export
+        <button className="obj-btn" title="Export this table" onClick={() => openTransfer({ kind: "export", connectionId: tab.connectionId, database: tab.database, source: { kind: "table", table: tab.name }, label: tab.name })}>
+          <Upload size={15} className="ob-design" />Export
         </button>
         {!readOnly && (
-          <button className="btn" title="Import a CSV file" onClick={() => openTransfer({ kind: "import", connectionId: tab.connectionId, database: tab.database, table: tab.name })}>
-            <Download size={15} />Import
+          <button className="obj-btn" title="Import a CSV file" onClick={() => openTransfer({ kind: "import", connectionId: tab.connectionId, database: tab.database, table: tab.name })}>
+            <Download size={15} className="ob-new" />Import
           </button>
         )}
-        <button className={`btn${showFilters || filters.length ? " active-filter" : ""}`} onClick={() => setShowFilters((v) => !v)}>
-          <FilterIcon size={15} />Filter{filters.length ? ` (${filters.length})` : ""}
+        <button className={`obj-btn${showFilters || filters.length ? " active-filter" : ""}`} onClick={() => setShowFilters((v) => !v)}>
+          <FilterIcon size={15} className="ob-open" />Filter{filters.length ? ` (${filters.length})` : ""}
         </button>
-        <div className="grow" />
-        <div className="pager">
-          <button className="icon-btn" title="First page" aria-label="First page" disabled={offset === 0} onClick={() => go(0)}><ChevronsLeft size={16} /></button>
-          <button className="icon-btn" title="Previous page" aria-label="Previous page" disabled={offset === 0} onClick={() => go(offset - pageSize)}><ChevronLeft size={16} /></button>
-          <span className="pager-text">{formatCount(saved ? offset + 1 : 0)}–{formatCount(offset + saved)} of {total === undefined ? "…" : formatCount(total)}</span>
-          <button className="icon-btn" title="Next page" aria-label="Next page" disabled={total === undefined || offset + pageSize >= total} onClick={() => go(offset + pageSize)}><ChevronRight size={16} /></button>
-          <button className="icon-btn" title="Last page" aria-label="Last page" disabled={total === undefined || offset >= lastOffset} onClick={() => go(lastOffset)}><ChevronsRight size={16} /></button>
-          <select className="input sm" value={pageSize} aria-label="Rows per page" onChange={async (e) => { const n = Number(e.target.value); if (!(await guard())) return; reset(); setPageSize(n); setOffset(0); }}>
-            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
-          </select>
-        </div>
-        <button className="icon-btn" title="Refresh" aria-label="Refresh" onClick={refresh}><RefreshCw size={15} className={page.isFetching ? "spin" : undefined} /></button>
       </div>
       {showFilters && (
         <div className="filter-bar">
@@ -295,6 +283,21 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           }
         />
       )}
+      <div className="grid-footer">
+        <span className="muted">{readOnly ? "Read-only" : dirty ? `${changeCount(pending)} pending` : ""}</span>
+        <div className="grow" />
+        <div className="pager">
+          <button className="icon-btn" title="First page" aria-label="First page" disabled={offset === 0} onClick={() => go(0)}><ChevronsLeft size={16} /></button>
+          <button className="icon-btn" title="Previous page" aria-label="Previous page" disabled={offset === 0} onClick={() => go(offset - pageSize)}><ChevronLeft size={16} /></button>
+          <span className="pager-text">{formatCount(saved ? offset + 1 : 0)}–{formatCount(offset + saved)} of {total === undefined ? "…" : formatCount(total)}</span>
+          <button className="icon-btn" title="Next page" aria-label="Next page" disabled={total === undefined || offset + pageSize >= total} onClick={() => go(offset + pageSize)}><ChevronRight size={16} /></button>
+          <button className="icon-btn" title="Last page" aria-label="Last page" disabled={total === undefined || offset >= lastOffset} onClick={() => go(lastOffset)}><ChevronsRight size={16} /></button>
+          <select className="input sm" value={pageSize} aria-label="Rows per page" onChange={async (e) => { const n = Number(e.target.value); if (!(await guard())) return; reset(); setPageSize(n); setOffset(0); }}>
+            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
+          </select>
+        </div>
+        <button className="icon-btn" title="Refresh" aria-label="Refresh" onClick={refresh}><RefreshCw size={15} className={page.isFetching ? "spin" : undefined} /></button>
+      </div>
     </div>
   );
 }
