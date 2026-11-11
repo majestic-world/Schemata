@@ -171,7 +171,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
             expanded={expanded}
             loading={databases.isFetching && !databases.data}
             selected={selected}
-            icon={<EngineIcon engine={config.engine} size={17} />}
+            icon={<EngineIcon engine={config.engine} size={18} />}
             label={config.name}
             trailing={
               <>

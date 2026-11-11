@@ -1,7 +1,7 @@
 /** Full-color icon set in the spirit of classic desktop database tools: toolbar glyphs at 32 px, object
  * glyphs at 16 px. Gradients use per-icon ids so several instances can share a page. */
 import type { Engine } from "../api/types";
-import { MARIADB_LOGO, MYSQL_LOGO, SQLITE_LOGO, type Logo } from "./engineLogos";
+import { MARIADB_LOGO, MYSQL_LOGO, SQLITE_PARTS, type Logo } from "./engineLogos";
 
 type P = { size?: number };
 
@@ -117,29 +117,45 @@ function Tray({ arrow, color }: { arrow: "in" | "out"; color: string }) {
 export const ImportIcon = () => <Tray arrow="in" color="#22a35a" />;
 export const ExportIcon = () => <Tray arrow="out" color="#e9822b" />;
 
-const ENGINE: Record<Engine, { from: string; to: string; logo: Logo }> = {
+/** Engines shown as a white mark on a colored tile. SQLite uses its own colored logo instead. */
+const TILED: Record<Exclude<Engine, "sqlite">, { from: string; to: string; logo: Logo }> = {
   mySql: { from: "#1a8fb4", to: "#00618a", logo: MYSQL_LOGO },
   mariaDb: { from: "#d0a57c", to: "#a9784f", logo: MARIADB_LOGO },
-  sqlite: { from: "#4ea8ea", to: "#0f6bb8", logo: SQLITE_LOGO },
 };
 
-/** Connection glyph: a rounded tile in the engine's colors carrying the engine's official logo. */
-export function EngineIcon({ engine, size = 18 }: { engine: Engine; size?: number }) {
-  const e = ENGINE[engine];
-  const id = `ic-eng-${engine}-${size}`;
+function SqliteLogo({ size }: { size: number }) {
+  const g = SQLITE_PARTS.gradient;
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden className="engine-icon">
+    <svg width={size} height={size} viewBox="4 0 124 124" aria-hidden className="engine-icon" shapeRendering="geometricPrecision">
+      <defs>
+        <linearGradient id="ic-sqlite" x1={g.x1} x2={g.x2} y1={g.y1} y2={g.y2} gradientTransform={g.transform} gradientUnits="userSpaceOnUse">
+          {g.stops.map(([color, offset]) => <stop key={offset} stopColor={color} offset={offset} />)}
+        </linearGradient>
+      </defs>
+      {SQLITE_PARTS.paths.map((p) => <path key={p.d.slice(0, 12)} d={p.d} fill={p.fill === "gradient" ? "url(#ic-sqlite)" : p.fill} />)}
+    </svg>
+  );
+}
+
+/** Connection glyph: a tile in the engine's colors carrying the engine's official mark. Drawn on a 16-unit
+ * grid so that at the common 16 px size every edge lands on a whole pixel; the mark fills most of the tile
+ * (Navicat-style) so it stays legible at that size. */
+export function EngineIcon({ engine, size = 16 }: { engine: Engine; size?: number }) {
+  if (engine === "sqlite") return <SqliteLogo size={size} />;
+  const e = TILED[engine];
+  const id = `ic-eng-${engine}`;
+  const box = 14.5;
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="engine-icon" shapeRendering="geometricPrecision">
       <defs><Grad id={id} from={e.from} to={e.to} /></defs>
-      <rect x="1" y="1" width="30" height="30" rx="7" fill={`url(#${id})`} />
-      <rect x="1.5" y="1.5" width="29" height="29" rx="6.5" fill="none" stroke="#fff" strokeOpacity=".25" />
-      {/* The mark fills a 22-unit box centered in the tile. */}
+      <rect width="16" height="16" rx="3.5" fill={`url(#${id})`} />
       <path
         d={e.logo.path}
         fill="#fff"
         stroke={e.logo.stroke ? "#fff" : undefined}
         strokeWidth={e.logo.stroke}
         strokeLinejoin="round"
-        transform={`translate(5 5) scale(${22 / e.logo.grid})`}
+        transform={`translate(${(16 - box) / 2} ${(16 - box) / 2}) scale(${box / e.logo.grid})`}
       />
     </svg>
   );
