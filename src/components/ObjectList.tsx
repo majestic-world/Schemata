@@ -1,0 +1,119 @@
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, RefreshCw, Table2, Database } from "lucide-react";
+import { api } from "../api/client";
+import type { ObjectInfo } from "../api/types";
+import { useWorkspace } from "../store/workspace";
+import { formatCount, orDash } from "../lib/format";
+
+type SortKey = "name" | "rows" | "modified" | "comment";
+
+/** Tables always precede views; `key` orders within each kind. */
+function compare(a: ObjectInfo, b: ObjectInfo, key: SortKey, desc: boolean): number {
+  if (a.kind !== b.kind) return a.kind === "table" ? -1 : 1;
+  return (desc ? -1 : 1) * compareBy(a, b, key);
+}
+
+function compareBy(a: ObjectInfo, b: ObjectInfo, key: SortKey): number {
+  switch (key) {
+    case "rows":
+      return (a.rows ?? -1) - (b.rows ?? -1);
+    case "modified":
+      return (a.modified ?? "").localeCompare(b.modified ?? "");
+    case "comment":
+      return (a.comment ?? "").localeCompare(b.comment ?? "");
+    case "name":
+      return a.name.localeCompare(b.name);
+    default: {
+      const never: never = key;
+      return never;
+    }
+  }
+}
+
+export function ObjectList({ actions }: { actions?: React.ReactNode }) {
+  const qc = useQueryClient();
+  const selection = useWorkspace((s) => s.selection);
+  const select = useWorkspace((s) => s.select);
+  const search = useWorkspace((s) => s.search.trim().toLowerCase());
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
+  const connectionId = selection?.connectionId;
+  const database = selection?.database;
+  const objects = useQuery({
+    queryKey: ["objects", connectionId, database],
+    queryFn: () => api.listObjects(connectionId!, database!),
+    enabled: !!connectionId && !!database,
+  });
+
+  const rows = useMemo(() => {
+    const list = (objects.data ?? []).filter((o) => !search || o.name.toLowerCase().includes(search));
+    return [...list].sort((a, b) => compare(a, b, sort.key, sort.desc));
+  }, [objects.data, sort, search]);
+
+  if (!connectionId || !database) {
+    return (
+      <div className="empty">
+        <Database size={36} strokeWidth={1.5} />
+        <h3>No database selected</h3>
+        <p>Select a database in the sidebar to see its tables and views.</p>
+      </div>
+    );
+  }
+
+  const header = (key: SortKey, label: string, align?: "right") => (
+    <th
+      className={align === "right" ? "num" : undefined}
+      onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : false }))}
+      aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : "none"}
+    >
+      <span className="th">
+        {label}
+        {sort.key === key ? sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} /> : <ChevronsUpDown size={13} className="faint" />}
+      </span>
+    </th>
+  );
+
+  return (
+    <>
+      <div className="action-bar">
+        {actions}
+        <div className="grow" />
+        <button className="icon-btn" title="Refresh" onClick={() => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] })}>
+          <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
+        </button>
+      </div>
+      <div className="table-scroll">
+        <table className="list-table">
+          <thead>
+            <tr>
+              {header("name", "Name")}
+              {header("rows", "Rows", "right")}
+              {header("modified", "Modified Date")}
+              {header("comment", "Comment")}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((o) => {
+              const selected = selection?.object?.name === o.name;
+              const Icon = o.kind === "table" ? Table2 : Eye;
+              return (
+                <tr
+                  key={o.name}
+                  className={selected ? "selected" : undefined}
+                  onClick={() => select({ connectionId, database, object: { name: o.name, kind: o.kind } })}
+                  data-object={o.name}
+                >
+                  <td><span className="cell-name"><Icon size={15} className="tree-icon obj" />{o.name}</span></td>
+                  <td className="num">{formatCount(o.rows)}</td>
+                  <td>{orDash(o.modified)}</td>
+                  <td className="muted">{orDash(o.comment)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {objects.isSuccess && rows.length === 0 && <div className="empty"><p>{search ? "No objects match the search." : "This database has no tables or views."}</p></div>}
+      </div>
+    </>
+  );
+}

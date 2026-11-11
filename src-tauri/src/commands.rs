@@ -1,7 +1,8 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use projectcat_core::{
-    AppError, ConnectParams, ConnectionConfig, DatabaseInfo, ObjectInfo, SaveOutcome, ScriptResult, Sessions, connect,
+    AppError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, ObjectInfo, SaveOutcome,
+    ScriptResult, Sessions, TableInfo, connect,
 };
 use tauri::State;
 
@@ -80,4 +81,29 @@ pub async fn execute_script(
 #[tauri::command]
 pub async fn cancel_execution(sessions: State<'_, Sessions>, id: String, execution_id: String) -> CmdResult<()> {
     sessions.driver(&id).await?.cancel(&execution_id).await
+}
+
+#[tauri::command]
+pub async fn table_info(sessions: State<'_, Sessions>, id: String, db: String, name: String) -> CmdResult<TableInfo> {
+    sessions.with_driver(&id, |d| { let (db, name) = (db.clone(), name.clone()); async move { d.table_info(&db, &name).await } }).await
+}
+
+#[tauri::command]
+pub async fn create_database(sessions: State<'_, Sessions>, id: String, spec: CreateDatabase) -> CmdResult<()> {
+    sessions.driver(&id).await?.create_database(&spec).await
+}
+
+#[tauri::command]
+pub async fn drop_database(sessions: State<'_, Sessions>, id: String, name: String) -> CmdResult<()> {
+    sessions.driver(&id).await?.drop_database(&name).await
+}
+
+#[tauri::command]
+pub async fn list_charsets(sessions: State<'_, Sessions>, id: String) -> CmdResult<Vec<CharsetInfo>> {
+    sessions.with_driver(&id, |d| async move { d.list_charsets().await }).await
+}
+
+#[tauri::command]
+pub async fn attach_database(sessions: State<'_, Sessions>, id: String, path: String, alias: String) -> CmdResult<()> {
+    sessions.driver(&id).await?.attach_database(&path, &alias).await
 }

@@ -68,3 +68,113 @@ pub struct ScriptResult {
     pub outcomes: Vec<StatementOutcome>,
     pub error: Option<StatementError>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnInfo {
+    pub name: String,
+    /// Full type as declared, e.g. `varchar(100)` or `decimal(12,4) unsigned`.
+    pub data_type: String,
+    pub nullable: bool,
+    /// Default as a SQL expression (string literals quoted), `None` when there is no default.
+    pub default: Option<String>,
+    pub auto_increment: bool,
+    pub primary_key: bool,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+    /// True for the primary key index (never returned by `table_info`, which reports it on columns).
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+/// How rows of a table are addressed for updates and deletes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RowIdentity {
+    PrimaryKey { columns: Vec<String> },
+    UniqueKey { columns: Vec<String> },
+    /// SQLite implicit rowid.
+    RowId,
+    /// No reliable identity: the data is read-only.
+    None,
+}
+
+impl RowIdentity {
+    pub fn columns(&self) -> Vec<String> {
+        match self {
+            RowIdentity::PrimaryKey { columns } | RowIdentity::UniqueKey { columns } => columns.clone(),
+            RowIdentity::RowId => vec![ROWID_COLUMN.to_owned()],
+            RowIdentity::None => Vec::new(),
+        }
+    }
+}
+
+/// Alias under which SQLite rowids are fetched and addressed.
+pub const ROWID_COLUMN: &str = "__rowid__";
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableInfo {
+    pub name: String,
+    pub kind: ObjectKind,
+    pub columns: Vec<ColumnInfo>,
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub engine: Option<String>,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
+    pub rows: Option<i64>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub comment: Option<String>,
+    /// `CREATE TABLE` / `CREATE VIEW` statement.
+    pub create_sql: String,
+    pub row_identity: RowIdentity,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDatabase {
+    pub name: String,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharsetInfo {
+    pub name: String,
+    pub default_collation: String,
+    pub collations: Vec<String>,
+}
+
+/// Picks the row identity from a primary key, else a unique key over non-null columns.
+pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has_rowid: bool) -> RowIdentity {
+    let pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect();
+    if !pk.is_empty() {
+        return RowIdentity::PrimaryKey { columns: pk };
+    }
+    let not_null = |name: &String| columns.iter().any(|c| &c.name == name && !c.nullable);
+    if let Some(idx) = indexes.iter().find(|i| i.unique && !i.columns.is_empty() && i.columns.iter().all(not_null)) {
+        return RowIdentity::UniqueKey { columns: idx.columns.clone() };
+    }
+    if has_rowid { RowIdentity::RowId } else { RowIdentity::None }
+}

@@ -3,13 +3,14 @@ import { ContextMenu } from "radix-ui";
 import { ChevronRight, Plus, Database as DbIcon, Table2, Eye, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
-import type { ConnectionConfig, ObjectInfo, ObjectKind } from "../api/types";
+import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind } from "../api/types";
 import { EngineIcon } from "./EngineIcon";
 import { useConnections } from "../store/connections";
 import { useWorkspace } from "../store/workspace";
 import { closeConnection, openConnection } from "../lib/connect";
 import { confirmAction } from "../store/confirm";
-import { notifyError } from "../store/toasts";
+import { notify, notifyError } from "../store/toasts";
+import { useDialogs } from "../store/dialogs";
 
 export function Sidebar() {
   const showDialog = useConnections((s) => s.showDialog);
@@ -136,6 +137,9 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
       ? { label: "Close Connection", onSelect: () => void closeConnection(config.id, qc).then(() => setExpanded(key, false)) }
       : { label: "Open Connection", onSelect: () => void toggle() },
     { label: "Refresh", disabled: !isOpen, onSelect: () => void qc.invalidateQueries({ queryKey: ["databases", config.id] }) },
+    config.engine === "sqlite"
+      ? { label: "Attach Database…", disabled: !isOpen, onSelect: () => useDialogs.getState().set({ attachDatabaseFor: config.id }) }
+      : { label: "New Database…", disabled: !isOpen, onSelect: () => useDialogs.getState().set({ createDatabaseFor: config.id }) },
     "separator",
     { label: "Edit Connection…", onSelect: () => showDialog({ mode: "edit", config }) },
     {
@@ -174,12 +178,12 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
         </div>
       </Menu>
       {expanded &&
-        databases.data?.map((db) => <DatabaseNode key={db.name} connectionId={config.id} database={db.name} />)}
+        databases.data?.map((db) => <DatabaseNode key={db.name} connectionId={config.id} engine={config.engine} database={db.name} />)}
     </>
   );
 }
 
-function DatabaseNode({ connectionId, database }: { connectionId: string; database: string }) {
+function DatabaseNode({ connectionId, engine, database }: { connectionId: string; engine: Engine; database: string }) {
   const qc = useQueryClient();
   const key = `d:${connectionId}/${database}`;
   const expanded = useWorkspace((s) => !!s.expanded[key]);
@@ -193,8 +197,37 @@ function DatabaseNode({ connectionId, database }: { connectionId: string; databa
     enabled: expanded,
   });
   const toggle = () => setExpanded(key, !expanded);
+  const drop = async () => {
+    const sqlite = engine === "sqlite";
+    const ok = await confirmAction(
+      sqlite
+        ? { title: "Detach database", message: `Detach "${database}" from this connection? The file is not deleted.`, confirmLabel: "Detach" }
+        : {
+            title: "Drop database",
+            message: `Drop "${database}" and everything in it? This cannot be undone.`,
+            confirmLabel: "Drop Database",
+            danger: true,
+            requireText: database,
+          },
+    );
+    if (!ok) return;
+    try {
+      await api.dropDatabase(connectionId, database);
+      const ws = useWorkspace.getState();
+      if (ws.selection?.connectionId === connectionId && ws.selection.database === database) ws.select({ connectionId });
+      ws.setExpanded(key, false);
+      await qc.invalidateQueries({ queryKey: ["databases", connectionId] });
+      notify(sqlite ? "Database detached" : "Database dropped", database);
+    } catch (e) {
+      notifyError(`Could not drop ${database}`, e);
+    }
+  };
   const items: Item[] = [
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
+    "separator",
+    engine === "sqlite"
+      ? { label: "Detach Database", disabled: database === "main", onSelect: () => void drop() }
+      : { label: "Drop Database…", danger: true, onSelect: () => void drop() },
   ];
   return (
     <>

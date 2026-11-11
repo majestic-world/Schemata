@@ -1,6 +1,8 @@
+use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ColumnMeta, DatabaseInfo, Driver, Engine, ErrorKind, ObjectInfo, ObjectKind, Result,
-    ScriptResult, StatementError, StatementOutcome, Value, split_statements,
+    AppError, CellValue, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind,
+    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Result, RowIdentity, ScriptResult, StatementError,
+    StatementOutcome, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
@@ -84,6 +86,108 @@ impl SqliteDriver {
         .await
         .map_err(|e| AppError::io(e.to_string()))?
     }
+}
+
+fn collect<T>(stmt: &mut rusqlite::Statement<'_>, params: impl rusqlite::Params, f: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> Result<Vec<T>> {
+    stmt.query_map(params, f).map_err(map_err)?.collect::<rusqlite::Result<Vec<T>>>().map_err(map_err)
+}
+
+fn read_table_info(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
+    let schema = quote_ident(db);
+    let (kind, create_sql): (String, Option<String>) = c
+        .query_row(
+            &format!("SELECT type, sql FROM {schema}.sqlite_schema WHERE name = ?1 AND type IN ('table', 'view')"),
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::validation(format!("Table {name} not found")),
+            e => map_err(e),
+        })?;
+    let create_sql = create_sql.unwrap_or_default();
+    let kind = if kind == "view" { ObjectKind::View } else { ObjectKind::Table };
+    let upper_sql = create_sql.to_ascii_uppercase();
+
+    let mut stmt = c
+        .prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1, ?2) ORDER BY cid")
+        .map_err(map_err)?;
+    let raw = collect(&mut stmt, [name, db], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
+    })?;
+    let pk_count = raw.iter().filter(|c| c.4 > 0).count();
+    let columns: Vec<ColumnInfo> = raw
+        .into_iter()
+        .map(|(name, data_type, notnull, default, pk)| ColumnInfo {
+            auto_increment: pk > 0 && pk_count == 1 && data_type.eq_ignore_ascii_case("INTEGER") && upper_sql.contains("AUTOINCREMENT"),
+            nullable: !notnull && pk == 0,
+            primary_key: pk > 0,
+            name,
+            data_type,
+            default,
+            comment: None,
+        })
+        .collect();
+
+    let mut stmt = c
+        .prepare("SELECT name, \"unique\" FROM pragma_index_list(?1, ?2) WHERE origin <> 'pk' ORDER BY name")
+        .map_err(map_err)?;
+    let index_rows = collect(&mut stmt, [name, db], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+    let mut indexes = Vec::new();
+    for (index, unique) in index_rows {
+        let mut stmt = c.prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno").map_err(map_err)?;
+        let cols = collect(&mut stmt, [index.as_str(), db], |r| r.get::<_, Option<String>>(0))?;
+        indexes.push(IndexInfo { name: index, columns: cols.into_iter().flatten().collect(), unique, primary: false });
+    }
+
+    let mut stmt = c
+        .prepare("SELECT id, \"table\", \"from\", \"to\", on_update, on_delete FROM pragma_foreign_key_list(?1, ?2) ORDER BY id, seq")
+        .map_err(map_err)?;
+    let fk_rows = collect(&mut stmt, [name, db], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
+    })?;
+    let mut foreign_keys: Vec<(i64, ForeignKeyInfo)> = Vec::new();
+    for (id, table, from, to, on_update, on_delete) in fk_rows {
+        if foreign_keys.last().is_none_or(|(last, _)| *last != id) {
+            foreign_keys.push((id, ForeignKeyInfo {
+                name: format!("fk_{name}_{id}"),
+                columns: Vec::new(),
+                ref_table: table,
+                ref_columns: Vec::new(),
+                on_update,
+                on_delete,
+            }));
+        }
+        let fk = &mut foreign_keys.last_mut().unwrap().1;
+        fk.columns.push(from);
+        fk.ref_columns.extend(to);
+    }
+
+    let rows = match kind {
+        ObjectKind::Table => Some(
+            c.query_row(&format!("SELECT count(*) FROM {schema}.{}", quote_ident(name)), [], |r| r.get(0)).map_err(map_err)?,
+        ),
+        ObjectKind::View => None,
+    };
+    let row_identity = match kind {
+        ObjectKind::Table => derive_identity(&columns, &indexes, !upper_sql.contains("WITHOUT ROWID")),
+        ObjectKind::View => RowIdentity::None,
+    };
+    Ok(TableInfo {
+        name: name.to_owned(),
+        kind,
+        columns,
+        indexes,
+        foreign_keys: foreign_keys.into_iter().map(|(_, fk)| fk).collect(),
+        engine: None,
+        charset: None,
+        collation: None,
+        rows,
+        created: None,
+        modified: None,
+        comment: None,
+        create_sql,
+        row_identity,
+    })
 }
 
 fn run_statement(conn: &Connection, sql: &str, row_limit: usize) -> Result<StatementOutcome> {
@@ -202,5 +306,28 @@ impl Driver for SqliteDriver {
     async fn cancel(&self, _execution_id: &str) -> Result<()> {
         self.interrupt.interrupt();
         Ok(())
+    }
+
+    async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo> {
+        let (db, name) = (db.to_owned(), name.to_owned());
+        self.with_conn(move |c| read_table_info(c, &db, &name)).await
+    }
+
+    async fn create_database(&self, _spec: &CreateDatabase) -> Result<()> {
+        Err(AppError::validation("SQLite databases are files: attach a database file instead"))
+    }
+
+    async fn drop_database(&self, name: &str) -> Result<()> {
+        if name == "main" {
+            return Err(AppError::validation("The main database of a SQLite connection cannot be detached"));
+        }
+        let sql = format!("DETACH DATABASE {}", quote_ident(name));
+        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
+    }
+
+    async fn attach_database(&self, path: &str, alias: &str) -> Result<()> {
+        let sql = format!("ATTACH DATABASE ?1 AS {}", quote_ident(alias));
+        let path = path.to_owned();
+        self.with_conn(move |c| c.execute(&sql, [path]).map(|_| ()).map_err(map_err)).await
     }
 }

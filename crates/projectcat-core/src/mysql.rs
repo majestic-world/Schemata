@@ -1,6 +1,8 @@
+use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ColumnMeta, ConnectParams, DatabaseInfo, Driver, Engine, ErrorKind, ObjectInfo, ObjectKind,
-    Result, ScriptResult, StatementError, StatementOutcome, Value, split_statements,
+    AppError, CellValue, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
+    Engine, ErrorKind, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Result, RowIdentity, ScriptResult,
+    StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -100,6 +102,49 @@ pub(crate) fn column_meta(row: &MySqlRow) -> Vec<ColumnMeta> {
         .iter()
         .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
         .collect()
+}
+
+/// Nullable text of a column, decoded leniently (information_schema types vary across servers).
+fn text(row: &MySqlRow, i: usize) -> Result<Option<String>> {
+    Ok(read_value(row, i)?.as_text())
+}
+
+fn int(row: &MySqlRow, i: usize) -> Result<Option<i64>> {
+    Ok(match read_value(row, i)? {
+        Value::Int(v) => Some(v),
+        Value::UInt(v) => Some(v as i64),
+        other => other.as_text().and_then(|t| t.parse().ok()),
+    })
+}
+
+/// Charset and collation names are interpolated into DDL, so only plain identifiers are accepted.
+fn plain_name(value: &str) -> Result<&str> {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Ok(value)
+    } else {
+        Err(AppError::validation(format!("Invalid name: {value}")))
+    }
+}
+
+fn is_numeric_type(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "float" | "double" | "real" | "bit" | "year" | "bool" | "boolean"
+    )
+}
+
+/// Turns `information_schema.COLUMNS.COLUMN_DEFAULT` into a SQL expression. MariaDB already reports
+/// expressions; MySQL reports literals unquoted and flags expressions with `DEFAULT_GENERATED`.
+fn default_expression(engine: Engine, raw: Option<String>, data_type: &str, extra: &str) -> Option<String> {
+    let raw = raw?;
+    if engine == Engine::MariaDb {
+        return (!raw.eq_ignore_ascii_case("NULL")).then_some(raw);
+    }
+    if extra.to_ascii_uppercase().contains("DEFAULT_GENERATED") {
+        let upper = raw.to_ascii_uppercase();
+        return Some(if upper.starts_with("CURRENT_TIMESTAMP") || upper.starts_with("NOW") { raw } else { format!("({raw})") });
+    }
+    if is_numeric_type(data_type) { Some(raw) } else { Some(format!("'{}'", raw.replace('\'', "''"))) }
 }
 
 /// Statements whose results are row sets even when empty.
@@ -262,5 +307,183 @@ impl Driver for MySqlDriver {
             sqlx::raw_sql(AssertSqlSafe(format!("KILL QUERY {thread}"))).execute(&self.pool).await.map_err(map_err)?;
         }
         Ok(())
+    }
+
+    async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo> {
+        let table = sqlx::query(
+            "SELECT TABLE_TYPE, ENGINE, TABLE_COLLATION, CAST(TABLE_ROWS AS SIGNED), \
+                    DATE_FORMAT(CREATE_TIME, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(UPDATE_TIME, '%Y-%m-%d %H:%i:%s'), TABLE_COMMENT \
+             FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        )
+        .bind(db)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?
+        .ok_or_else(|| AppError::validation(format!("Table {name} not found")))?;
+        let kind = if text(&table, 0)?.unwrap_or_default().ends_with("VIEW") { ObjectKind::View } else { ObjectKind::Table };
+        let collation = text(&table, 2)?;
+        let charset = match &collation {
+            Some(col) => sqlx::query("SELECT CHARACTER_SET_NAME FROM information_schema.COLLATIONS WHERE COLLATION_NAME = ?")
+                .bind(col)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(map_err)?
+                .map(|r| text(&r, 0))
+                .transpose()?
+                .flatten(),
+            None => None,
+        };
+
+        let index_rows = sqlx::query(
+            "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX",
+        )
+        .bind(db)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let mut all_indexes: Vec<IndexInfo> = Vec::new();
+        for r in &index_rows {
+            let index = text(r, 0)?.unwrap_or_default();
+            let column = text(r, 2)?;
+            if all_indexes.last().is_none_or(|i| i.name != index) {
+                all_indexes.push(IndexInfo { primary: index == "PRIMARY", unique: int(r, 1)? == Some(0), name: index, columns: Vec::new() });
+            }
+            all_indexes.last_mut().unwrap().columns.extend(column);
+        }
+        let pk_columns: Vec<String> = all_indexes.iter().find(|i| i.primary).map(|i| i.columns.clone()).unwrap_or_default();
+        let indexes: Vec<IndexInfo> = all_indexes.into_iter().filter(|i| !i.primary).collect();
+
+        let column_rows = sqlx::query(
+            "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, COLUMN_COMMENT, DATA_TYPE \
+             FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(db)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let columns = column_rows
+            .iter()
+            .map(|r| {
+                let name = text(r, 0)?.unwrap_or_default();
+                let extra = text(r, 4)?.unwrap_or_default();
+                let data_type = text(r, 6)?.unwrap_or_default().to_ascii_lowercase();
+                Ok(ColumnInfo {
+                    primary_key: pk_columns.contains(&name),
+                    data_type: text(r, 1)?.unwrap_or_default(),
+                    nullable: text(r, 2)?.as_deref() == Some("YES"),
+                    default: default_expression(self.engine, text(r, 3)?, &data_type, &extra),
+                    auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
+                    comment: text(r, 5)?.filter(|c| !c.is_empty()),
+                    name,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let fk_rows = sqlx::query(
+            "SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE \
+             FROM information_schema.KEY_COLUMN_USAGE k \
+             JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
+               ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
+             WHERE k.TABLE_SCHEMA = ? AND k.TABLE_NAME = ? AND k.REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION",
+        )
+        .bind(db)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+        for r in &fk_rows {
+            let fk_name = text(r, 0)?.unwrap_or_default();
+            if foreign_keys.last().is_none_or(|f| f.name != fk_name) {
+                foreign_keys.push(ForeignKeyInfo {
+                    name: fk_name,
+                    columns: Vec::new(),
+                    ref_table: text(r, 2)?.unwrap_or_default(),
+                    ref_columns: Vec::new(),
+                    on_update: text(r, 4)?.unwrap_or_default(),
+                    on_delete: text(r, 5)?.unwrap_or_default(),
+                });
+            }
+            let fk = foreign_keys.last_mut().unwrap();
+            fk.columns.extend(text(r, 1)?);
+            fk.ref_columns.extend(text(r, 3)?);
+        }
+
+        let create = sqlx::raw_sql(AssertSqlSafe(format!("SHOW CREATE TABLE {}.{}", quote_ident(db), quote_ident(name))))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(map_err)?;
+        let create_sql = text(&create, 1)?.unwrap_or_default();
+        let row_identity = match kind {
+            ObjectKind::Table => derive_identity(&columns, &indexes, false),
+            ObjectKind::View => RowIdentity::None,
+        };
+        Ok(TableInfo {
+            name: name.to_owned(),
+            kind,
+            rows: if kind == ObjectKind::Table { int(&table, 3)? } else { None },
+            engine: text(&table, 1)?,
+            charset,
+            collation,
+            created: text(&table, 4)?,
+            modified: text(&table, 5)?,
+            comment: if kind == ObjectKind::Table { text(&table, 6)?.filter(|c| !c.is_empty()) } else { None },
+            columns,
+            indexes,
+            foreign_keys,
+            create_sql,
+            row_identity,
+        })
+    }
+
+    async fn create_database(&self, spec: &CreateDatabase) -> Result<()> {
+        let mut sql = format!("CREATE DATABASE {}", quote_ident(&spec.name));
+        if let Some(cs) = spec.charset.as_deref().filter(|s| !s.is_empty()) {
+            sql += &format!(" CHARACTER SET {}", plain_name(cs)?);
+        }
+        if let Some(co) = spec.collation.as_deref().filter(|s| !s.is_empty()) {
+            sql += &format!(" COLLATE {}", plain_name(co)?);
+        }
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn drop_database(&self, name: &str) -> Result<()> {
+        sqlx::raw_sql(AssertSqlSafe(format!("DROP DATABASE {}", quote_ident(name)))).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn list_charsets(&self) -> Result<Vec<CharsetInfo>> {
+        let rows = sqlx::query(
+            "SELECT CHARACTER_SET_NAME, COLLATION_NAME, IS_DEFAULT FROM information_schema.COLLATIONS \
+             WHERE CHARACTER_SET_NAME IS NOT NULL ORDER BY CHARACTER_SET_NAME, COLLATION_NAME",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let mut out: Vec<CharsetInfo> = Vec::new();
+        for r in &rows {
+            let (Some(cs), Some(col)) = (text(r, 0)?, text(r, 1)?) else { continue };
+            let is_default = text(r, 2)?.is_some_and(|d| d.eq_ignore_ascii_case("yes"));
+            if out.last().is_none_or(|c| c.name != cs) {
+                out.push(CharsetInfo { name: cs, default_collation: String::new(), collations: Vec::new() });
+            }
+            let entry = out.last_mut().unwrap();
+            if is_default {
+                entry.default_collation = col.clone();
+            }
+            entry.collations.push(col);
+        }
+        for c in &mut out {
+            if c.default_collation.is_empty() {
+                c.default_collation = c.collations[0].clone();
+            }
+        }
+        Ok(out)
     }
 }

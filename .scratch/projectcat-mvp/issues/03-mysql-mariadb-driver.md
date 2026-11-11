@@ -6,11 +6,15 @@
 
 **Bloqueado por:** 02
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] Conectar, testar e navegar MySQL e MariaDB pela UI
-- [ ] Suíte de cenários roda nos 3 engines
-- [ ] Conexão perdida é restabelecida na próxima ação
+- [x] Conectar, testar e navegar MySQL e MariaDB pela UI
+- [x] Suíte de cenários roda nos 3 engines
+- [x] Conexão perdida é restabelecida na próxima ação
 
 ## Evidências de implementação
+
+- Commit `90a9ae7`
+- `cargo test --test metadata --test reconnect`: 8 passed (SQLite, MySQL 8.4, MariaDB 11.4 via testcontainers; reconexão após KILL de todas as conexões da sessão)
+- UI via CDP: conexão MySQL testada (MySQL 8.4.13) e salva com senha no keyring; MariaDB sem salvar senha → teste mostra 'Access denied…'; abrir pede senha e expande a árvore

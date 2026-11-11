@@ -26,6 +26,11 @@ pub fn run() {
             commands::list_objects,
             commands::execute_script,
             commands::cancel_execution,
+            commands::table_info,
+            commands::create_database,
+            commands::drop_database,
+            commands::list_charsets,
+            commands::attach_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");

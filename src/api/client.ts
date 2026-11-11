@@ -7,6 +7,9 @@ import type {
   ObjectInfo,
   SaveOutcome,
   ScriptResult,
+  TableInfo,
+  CreateDatabase,
+  CharsetInfo,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -41,4 +44,9 @@ export const api = {
   executeScript: (id: string, db: string | null, sql: string, rowLimit: number, executionId: string | null) =>
     call<ScriptResult>("execute_script", { id, db, sql, rowLimit, executionId }),
   cancelExecution: (id: string, executionId: string) => call<void>("cancel_execution", { id, executionId }),
+  tableInfo: (id: string, db: string, name: string) => call<TableInfo>("table_info", { id, db, name }),
+  createDatabase: (id: string, spec: CreateDatabase) => call<void>("create_database", { id, spec }),
+  dropDatabase: (id: string, name: string) => call<void>("drop_database", { id, name }),
+  listCharsets: (id: string) => call<CharsetInfo[]>("list_charsets", { id }),
+  attachDatabase: (id: string, path: string, alias: string) => call<void>("attach_database", { id, path, alias }),
 };

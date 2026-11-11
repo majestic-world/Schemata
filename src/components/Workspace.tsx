@@ -1,4 +1,4 @@
-import { Database } from "lucide-react";
+import { ObjectList } from "./ObjectList";
 
 export function Workspace() {
   return (
@@ -7,11 +7,7 @@ export function Workspace() {
         <div className="tab active"><span className="title">Objects</span></div>
       </div>
       <div className="tab-body">
-        <div className="empty">
-          <Database size={36} strokeWidth={1.5} />
-          <h3>Nothing open</h3>
-          <p>Select a database in the sidebar to see its objects.</p>
-        </div>
+        <ObjectList />
       </div>
     </>
   );

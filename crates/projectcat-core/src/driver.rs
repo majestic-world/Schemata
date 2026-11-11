@@ -1,4 +1,4 @@
-use crate::{AppError, DatabaseInfo, Engine, ObjectInfo, Result, ScriptResult};
+use crate::{AppError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, ObjectInfo, Result, ScriptResult, TableInfo};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -46,6 +46,18 @@ pub trait Driver: Send + Sync {
     async fn execute_script(&self, db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult>;
     /// Cancels the statement currently running under `execution_id`, if any.
     async fn cancel(&self, execution_id: &str) -> Result<()>;
+    async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo>;
+    async fn create_database(&self, spec: &CreateDatabase) -> Result<()>;
+    /// Drops a database (detaches it on SQLite).
+    async fn drop_database(&self, name: &str) -> Result<()>;
+    /// Character sets and their collations; empty when the engine has none to choose from.
+    async fn list_charsets(&self) -> Result<Vec<CharsetInfo>> {
+        Ok(Vec::new())
+    }
+    /// SQLite only: attaches another database file under `alias`.
+    async fn attach_database(&self, _path: &str, _alias: &str) -> Result<()> {
+        Err(AppError::validation("Attaching database files is only supported on SQLite"))
+    }
 }
 
 pub async fn connect(params: &ConnectParams) -> Result<Arc<dyn Driver>> {

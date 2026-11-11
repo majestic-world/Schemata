@@ -61,3 +61,45 @@ export type StatementOutcome =
 
 export type StatementError = { index: number; statement: string; error: AppError };
 export type ScriptResult = { outcomes: StatementOutcome[]; error: StatementError | null };
+
+export type ColumnInfo = {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  default: string | null;
+  autoIncrement: boolean;
+  primaryKey: boolean;
+  comment: string | null;
+};
+export type IndexInfo = { name: string; columns: string[]; unique: boolean; primary: boolean };
+export type ForeignKeyInfo = {
+  name: string;
+  columns: string[];
+  refTable: string;
+  refColumns: string[];
+  onUpdate: string;
+  onDelete: string;
+};
+export type RowIdentity =
+  | { kind: "primaryKey"; columns: string[] }
+  | { kind: "uniqueKey"; columns: string[] }
+  | { kind: "rowId" }
+  | { kind: "none" };
+export type TableInfo = {
+  name: string;
+  kind: ObjectKind;
+  columns: ColumnInfo[];
+  indexes: IndexInfo[];
+  foreignKeys: ForeignKeyInfo[];
+  engine: string | null;
+  charset: string | null;
+  collation: string | null;
+  rows: number | null;
+  created: string | null;
+  modified: string | null;
+  comment: string | null;
+  createSql: string;
+  rowIdentity: RowIdentity;
+};
+export type CreateDatabase = { name: string; charset: string | null; collation: string | null };
+export type CharsetInfo = { name: string; defaultCollation: string; collations: string[] };

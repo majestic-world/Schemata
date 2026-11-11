@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | 01 | Scaffold do app e casca visual | Nenhum | implemented | `5e869d8` |
 | 02 | Conexões SQLite, store, credenciais e árvore | 01 | implemented | `7f1354c` |
-| 03 | Driver MySQL/MariaDB e suíte multi-engine | 02 | ready-for-agent | |
+| 03 | Driver MySQL/MariaDB e suíte multi-engine | 02 | implemented | `90a9ae7` |
 | 04 | Lista de objetos, inspector e bancos | 03 | ready-for-agent | |
 | 05 | Grid de dados: leitura paginada | 04 | ready-for-agent | |
 | 06 | Grid de dados: edição com change set | 05 | ready-for-agent | |

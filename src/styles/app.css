@@ -152,3 +152,36 @@ input, textarea, [contenteditable] { user-select: text; }
 .toast.success > svg { color: var(--success); }
 .toast-text { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; user-select: text; }
 .toast-text span { color: var(--text-muted); }
+
+/* Action bar & list table */
+.action-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.table-scroll { flex: 1; overflow: auto; min-height: 0; }
+.list-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.list-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); text-align: left; font-weight: 600; color: var(--text); padding: 0 14px; height: 36px; border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap; }
+.list-table th + th, .list-table td + td { border-left: 1px solid var(--border); }
+.list-table .th { display: inline-flex; align-items: center; gap: 6px; }
+.list-table td { padding: 0 14px; height: 36px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
+.list-table tbody tr:hover { background: var(--surface-hover); }
+.list-table tbody tr.selected { background: var(--accent); color: #fff; }
+.list-table tbody tr.selected .tree-icon, .list-table tbody tr.selected .muted { color: #fff; }
+.list-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.list-table th.num .th { flex-direction: row-reverse; }
+.cell-name { display: inline-flex; align-items: center; gap: 10px; }
+.muted { color: var(--text-muted); }
+.faint { color: var(--text-faint); }
+
+/* Inspector */
+.inspector-card { flex: 1; display: flex; }
+.inspector-stack { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; flex: 1; }
+.inspector-head { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.inspector-icon { width: 44px; height: 44px; border-radius: 10px; background: #2f7fc1; color: #fff; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.inspector-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.inspector-title b { font-size: var(--fs-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill { align-self: flex-start; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+.inspector-section .kv dd { color: var(--text); }
+.inspector-summary { display: flex; align-items: center; gap: 12px; padding: 14px; }
+.inspector-summary div { display: flex; flex-direction: column; gap: 2px; }
+.inspector-summary span { color: var(--text-muted); font-size: var(--fs-sm); }
+.code-block { margin: 0 14px 14px; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 320px; overflow: auto; }
+.status-item { display: inline-flex; align-items: center; gap: 6px; }
+.crumbs span { display: inline-flex; align-items: center; gap: 5px; }
