@@ -1,9 +1,13 @@
 import { Moon, Sun } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { getVersion } from "@tauri-apps/api/app";
+import appIcon from "../assets/app-icon.svg";
 import { useAppearance } from "../store/appearance";
 import { Dialog } from "./Dialog";
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { theme, setTheme } = useAppearance();
+  const version = useQuery({ queryKey: ["app-version"], queryFn: getVersion, enabled: open, staleTime: Infinity });
 
   return (
     <Dialog open={open} onClose={onClose} title="Settings" width={460} footer={<button className="btn" onClick={onClose}>Close</button>}>
@@ -21,6 +25,15 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           <span><strong>Dark</strong><span className="hint">Neutral grays with blue accents</span></span>
         </label>
       </fieldset>
+      <section className="settings-about" aria-labelledby="settings-about-title">
+        <img src={appIcon} width={32} height={32} alt="" />
+        <div>
+          <h2 id="settings-about-title">About SchemataDb</h2>
+          <p className={version.isError ? "error-text" : "muted"} aria-live="polite">
+            {version.isError ? "Could not load app version." : version.data ? `Version ${version.data}` : "Loading version…"}
+          </p>
+        </div>
+      </section>
     </Dialog>
   );
 }

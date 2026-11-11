@@ -25,7 +25,9 @@ function run(command, args, options = {}) {
 
 async function main() {
   const config = JSON.parse(await readFile(join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
-  const { productName: product, version, identifier } = config;
+  const { productName: product, identifier } = config;
+  const metadata = JSON.parse(await readFile(join(root, 'target/cargo-metadata.json'), 'utf8'));
+  const { version } = metadata.packages.find(({ name }) => name === 'schematadb');
   const binary = 'schematadb';
   const minimum = '11.0';
   const output = '/out';

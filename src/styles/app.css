@@ -470,3 +470,7 @@ select.cell-input { padding: 0 4px; }
 .theme-option input { margin: 0; accent-color: var(--accent); }
 .theme-option > svg { color: var(--text-muted); flex: none; }
 .theme-option > span { display: flex; flex-direction: column; gap: 3px; }
+.settings-about { display: flex; align-items: center; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+.settings-about img { flex: none; }
+.settings-about h2 { margin: 0; font-size: var(--fs); font-weight: 600; }
+.settings-about p { margin: 4px 0 0; user-select: text; }

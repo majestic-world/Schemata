@@ -74,6 +74,7 @@ RUN --mount=type=cache,id=schematadb-mac-registry,target=/root/.cargo/registry \
     cargo build --release --locked --package schematadb \
       --target aarch64-apple-darwin --features tauri/custom-protocol \
     && mkdir -p /artifacts \
+    && cargo metadata --locked --no-deps --format-version 1 > /artifacts/cargo-metadata.json \
     && cp target/aarch64-apple-darwin/release/schematadb /artifacts/
 
 FROM frontend AS mac-package
@@ -103,6 +104,7 @@ COPY scripts/package-macos.mjs ./scripts/package-macos.mjs
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 COPY src-tauri/icons/icon.icns ./src-tauri/icons/icon.icns
 COPY --from=mac-builder /artifacts/schematadb ./target/aarch64-apple-darwin/release/schematadb
+COPY --from=mac-builder /artifacts/cargo-metadata.json ./target/cargo-metadata.json
 RUN file target/aarch64-apple-darwin/release/schematadb \
     && node scripts/package-macos.mjs
 

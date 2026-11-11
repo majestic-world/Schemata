@@ -14,6 +14,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Metadata
 
 - Object-list row counts are estimates from `information_schema` on MySQL/MariaDB and exact counts on SQLite.
+- The application version is defined only in the root `Cargo.toml` (`workspace.package.version`), inherited by `src-tauri/Cargo.toml`. Tauri's config omits `version` to inherit it from Cargo; Settings reads it with `getVersion()`. The cross-platform macOS packager reads Cargo metadata exported by its build stage instead of maintaining a separate version.
 
 ## Row editing
 
