@@ -6,7 +6,7 @@ Features: saved connections (passwords in the OS credential store), schema tree,
 
 ## Stack
 
-Tauri 2 shell, Rust backend, React + TypeScript frontend (see [ADR 0001](docs/adr/0001-tauri-rust-react-stack.md)).
+Tauri 2 shell, Rust backend, React + TypeScript frontend (see [ADR 0001](docs/adr/0001-tauri-rust-react-stack.md)). Core invariants (value model, row identity, DDL planning, cancellation, persistence, testing) are in [docs/architecture.md](docs/architecture.md).
 
 | Path | Contents |
 |---|---|
@@ -33,3 +33,7 @@ pnpm tauri build                # installers in target/release/bundle
 The core tests start reusable containers named `schematadb-test-mysql` and `schematadb-test-mariadb`; remove them with `docker rm -f` when no longer needed.
 
 CI (`.github/workflows/ci.yml`) runs the core and frontend tests on Linux and builds installers on Windows, Ubuntu and macOS. Version tags (`v*`) also create a draft release.
+
+## Limitations
+
+Light theme and English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync, and installers are not code-signed.
