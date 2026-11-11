@@ -143,15 +143,16 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const total = count.data;
   const lastOffset = total !== undefined ? Math.max(0, Math.floor((total - 1) / pageSize) * pageSize) : offset;
 
+  /** Opens the cell editor; `quiet` (a plain click) skips the explanation when the cell cannot be edited. */
   const startEdit = useCallback(
-    (row: number, column: string) => {
+    (row: number, column: string, quiet = false) => {
       if (readOnly) {
-        notifyError("This data is read-only", { message: "The table has no primary or unique key, so rows cannot be addressed safely." });
+        if (!quiet) notifyError("This data is read-only", { message: "The table has no primary or unique key, so rows cannot be addressed safely." });
         return;
       }
       const v = original(row, column);
       if (v.type === "bytes" && row < saved) {
-        notifyError("Binary values cannot be edited here", { message: "Set the cell to NULL or use the SQL editor." });
+        if (!quiet) notifyError("Binary values cannot be edited here", { message: "Set the cell to NULL or use the SQL editor." });
         return;
       }
       setEditing({ row, column });
@@ -295,6 +296,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
           cellPlaceholder={(r, column) => (isUnset(pending, refOf(r), column) ? "(Default)" : undefined)}
           onCellActivate={startEdit}
+          onCellEdit={(r, column) => startEdit(r, column, true)}
           onAppendRow={readOnly || lastRowUntouched ? undefined : appendRow}
           renderEditor={(r, column) =>
             editing?.row === r && editing.column === column ? (
@@ -342,7 +344,8 @@ function CellEditor({ initial, onDone }: { initial: CellValue; onDone: (v: CellV
       onChange={(e) => setText(e.target.value)}
       onBlur={() => finish(true)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") finish(true);
+        // Tab also saves; the grid then moves the editor to the neighbouring cell.
+        if (e.key === "Enter" || e.key === "Tab") finish(true);
         if (e.key === "Escape") onDone(null);
       }}
     />

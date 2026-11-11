@@ -26,6 +26,8 @@ type Props = {
   cellPlaceholder?: (row: number, column: string) => string | undefined;
   /** Double-click or Enter on a cell. */
   onCellActivate?: (row: number, column: string) => void;
+  /** Plain click on a cell, or Tab onto it: open its editor if the cell is editable, silently skip otherwise. */
+  onCellEdit?: (row: number, column: string) => void;
   renderEditor?: (row: number, column: string) => ReactNode | null;
   /**
    * Appends a new row, starting to edit `column` when given. When set, ArrowDown on the last row calls it, and an
@@ -157,6 +159,20 @@ export function GridView(props: Props) {
       ref={scrollRef}
       tabIndex={0}
       onKeyDown={(e) => {
+        // Tab moves to the next cell of the row, wrapping to the first (Shift+Tab: backwards), and opens it for
+        // editing; an open editor saves first. Cells that cannot be edited (binary) are only selected.
+        if (e.key === "Tab" && focus && visible.length > 0 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          const n = visible.length;
+          const next = { r: focus.r, c: (focus.c + (e.shiftKey ? n - 1 : 1)) % n };
+          setAnchor(next);
+          setFocus(next);
+          scrollIntoView(next);
+          props.onCellEdit?.(next.r, visible[next.c].c.name);
+          // A cell that cannot be edited opens no editor; keep the keyboard in the grid.
+          requestAnimationFrame(() => !scrollRef.current?.contains(document.activeElement) && scrollRef.current?.focus({ preventScroll: true }));
+          return;
+        }
         if (e.target instanceof HTMLInputElement) {
           // Closing the cell editor removes the focused input; give focus back so navigation continues.
           if (e.key === "Enter" || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
@@ -234,7 +250,7 @@ export function GridView(props: Props) {
                 return (
                   <div
                     key={h.id}
-                    className={`grid-cell ${d.tone}${selected ? " selected" : ""} ${props.cellClass?.(r, name) ?? ""}`}
+                    className={`grid-cell ${d.tone}${selected ? " selected" : ""}${editor ? " editing" : ""} ${props.cellClass?.(r, name) ?? ""}`}
                     style={{ width: h.getSize() }}
                     title={d.text.length > 40 ? d.text : undefined}
                     data-cell={`${r}:${name}`}
@@ -248,6 +264,9 @@ export function GridView(props: Props) {
                       dragging.current = true;
                     }}
                     onMouseEnter={() => dragging.current && setFocus({ r, c })}
+                    onClick={(e) => {
+                      if (!editor && !e.shiftKey && !e.ctrlKey && !e.metaKey) props.onCellEdit?.(r, name);
+                    }}
                     onDoubleClick={() => props.onCellActivate?.(r, name)}
                   >
                     {editor ?? <span className="cell-text">{d.text}</span>}
