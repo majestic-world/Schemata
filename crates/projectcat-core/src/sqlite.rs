@@ -1,6 +1,6 @@
 use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ChangeError, RowChange, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
+    AppError, CellValue, ChangeError, RowChange, TableDesign, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
     ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
@@ -131,6 +131,65 @@ fn read_page(c: &Connection, db: &str, table: &str, req: &PageRequest) -> Result
         Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect::<Vec<_>>())
     })?;
     Ok(Page { columns, rows })
+}
+
+/// Qualifies `CREATE TRIGGER name` / `CREATE VIEW name` with a schema (stored SQL is unqualified).
+fn qualify_create(sql: &str, db: &str) -> String {
+    if db == "main" {
+        return sql.to_owned();
+    }
+    let upper = sql.to_ascii_uppercase();
+    let Some(kw) = ["TRIGGER", "VIEW"].iter().filter_map(|k| upper.find(k).map(|p| p + k.len())).min() else {
+        return sql.to_owned();
+    };
+    let mut pos = kw + sql[kw..].len() - sql[kw..].trim_start().len();
+    if upper[pos..].starts_with("IF NOT EXISTS") {
+        pos += "IF NOT EXISTS".len();
+        pos += sql[pos..].len() - sql[pos..].trim_start().len();
+    }
+    format!("{}{}.{}", &sql[..pos], quote_ident(db), &sql[pos..])
+}
+
+fn dependents(c: &Connection, db: &str, table: &str) -> Result<crate::design::sqlite::Dependents> {
+    let schema = quote_ident(db);
+    let mut stmt = c
+        .prepare(&format!("SELECT sql FROM {schema}.sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 AND sql IS NOT NULL"))
+        .map_err(map_err)?;
+    let triggers = collect(&mut stmt, [table], |r| r.get::<_, String>(0))?.into_iter().map(|s| qualify_create(&s, db)).collect();
+    let mut stmt = c.prepare(&format!("SELECT name, sql FROM {schema}.sqlite_schema WHERE type = 'view'")).map_err(map_err)?;
+    let needle = table.to_ascii_lowercase();
+    let views = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .into_iter()
+        .filter(|(_, sql)| sql.to_ascii_lowercase().contains(&needle))
+        .map(|(n, sql)| (n, qualify_create(&sql, db)))
+        .collect();
+    Ok(crate::design::sqlite::Dependents { triggers, views })
+}
+
+fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
+    use crate::design::sqlite::{FK_OFF, FK_ON};
+    let toggles_fk = statements.first().map(String::as_str) == Some(FK_OFF);
+    if toggles_fk {
+        c.execute_batch(FK_OFF).map_err(map_err)?;
+    }
+    let result = (|| {
+        let tx = c.transaction().map_err(map_err)?;
+        for st in statements.iter().filter(|s| s.as_str() != FK_OFF && s.as_str() != FK_ON) {
+            if st.starts_with("PRAGMA") && st.ends_with("foreign_key_check") {
+                let mut check = tx.prepare(st).map_err(map_err)?;
+                if check.query([]).map_err(map_err)?.next().map_err(map_err)?.is_some() {
+                    return Err(AppError::sql("The change would violate foreign key constraints"));
+                }
+            } else {
+                tx.execute_batch(st).map_err(map_err)?;
+            }
+        }
+        tx.commit().map_err(map_err)
+    })();
+    if toggles_fk {
+        c.execute_batch(FK_ON).map_err(map_err)?;
+    }
+    result
 }
 
 fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
@@ -386,6 +445,39 @@ impl Driver for SqliteDriver {
             c.query_row(&sql, rusqlite::params_from_iter(params), |r| r.get::<_, i64>(0)).map(|n| n as u64).map_err(map_err)
         })
         .await
+    }
+
+    async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
+        let Some(original) = original else {
+            return crate::design::sqlite::create(db, design);
+        };
+        let (db, original, design) = (db.to_owned(), original.clone(), design.clone());
+        self.with_conn(move |c| {
+            let deps = dependents(c, &db, &original.name)?;
+            crate::design::sqlite::alter(&db, &original, &design, deps)
+        })
+        .await
+    }
+
+    async fn apply_ddl(&self, _db: &str, statements: &[String]) -> Result<()> {
+        let statements = statements.to_vec();
+        self.with_conn(move |c| run_ddl(c, &statements)).await
+    }
+
+    async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()> {
+        let what = if kind == ObjectKind::View { "VIEW" } else { "TABLE" };
+        let sql = format!("DROP {what} {}.{}", quote_ident(db), quote_ident(name));
+        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
+    }
+
+    async fn truncate_table(&self, db: &str, name: &str) -> Result<()> {
+        let sql = format!("DELETE FROM {}.{}", quote_ident(db), quote_ident(name));
+        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
+    }
+
+    async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()> {
+        let sql = format!("ALTER TABLE {}.{} RENAME TO {}", quote_ident(db), quote_ident(from), quote_ident(to));
+        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
     }
 
     async fn create_database(&self, _spec: &CreateDatabase) -> Result<()> {

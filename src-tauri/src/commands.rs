@@ -1,7 +1,7 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use projectcat_core::{
-    AppError, ChangeError, RowChange, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
+    AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
     PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
 };
 use tauri::State;
@@ -126,4 +126,34 @@ pub async fn count_rows(sessions: State<'_, Sessions>, id: String, db: String, t
 pub async fn apply_changes(sessions: State<'_, Sessions>, id: String, db: String, table: String, changes: Vec<RowChange>) -> Result<u64, ChangeError> {
     let driver = sessions.driver(&id).await?;
     driver.apply_changes(&db, &table, &changes).await
+}
+
+#[tauri::command]
+pub async fn table_design(sessions: State<'_, Sessions>, id: String, db: String, table: String) -> CmdResult<TableDesign> {
+    sessions.with_driver(&id, |d| { let (db, table) = (db.clone(), table.clone()); async move { d.table_design(&db, &table).await } }).await
+}
+
+#[tauri::command]
+pub async fn plan_table(sessions: State<'_, Sessions>, id: String, db: String, original: Option<TableDesign>, design: TableDesign) -> CmdResult<Vec<String>> {
+    sessions.driver(&id).await?.plan_table(&db, original.as_ref(), &design).await
+}
+
+#[tauri::command]
+pub async fn apply_ddl(sessions: State<'_, Sessions>, id: String, db: String, statements: Vec<String>) -> CmdResult<()> {
+    sessions.driver(&id).await?.apply_ddl(&db, &statements).await
+}
+
+#[tauri::command]
+pub async fn drop_object(sessions: State<'_, Sessions>, id: String, db: String, name: String, kind: ObjectKind) -> CmdResult<()> {
+    sessions.driver(&id).await?.drop_object(&db, &name, kind).await
+}
+
+#[tauri::command]
+pub async fn truncate_table(sessions: State<'_, Sessions>, id: String, db: String, name: String) -> CmdResult<()> {
+    sessions.driver(&id).await?.truncate_table(&db, &name).await
+}
+
+#[tauri::command]
+pub async fn rename_table(sessions: State<'_, Sessions>, id: String, db: String, from: String, to: String) -> CmdResult<()> {
+    sessions.driver(&id).await?.rename_table(&db, &from, &to).await
 }

@@ -1,5 +1,5 @@
 use crate::{
-    AppError, ChangeError, RowChange, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
+    AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
     TableInfo,
 };
 use async_trait::async_trait;
@@ -53,6 +53,17 @@ pub trait Driver: Send + Sync {
     /// One page of a table or view. On SQLite tables addressed by rowid, a hidden rowid column comes first.
     async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page>;
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64>;
+    async fn table_design(&self, db: &str, table: &str) -> Result<TableDesign> {
+        Ok(TableDesign::from_info(&self.table_info(db, table).await?))
+    }
+    /// DDL that creates `design` (no `original`) or alters `original` into it. Empty when nothing changes.
+    async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>>;
+    /// Runs DDL produced by [`Driver::plan_table`]; a failure leaves the table as it was.
+    async fn apply_ddl(&self, db: &str, statements: &[String]) -> Result<()>;
+    async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()>;
+    /// Deletes every row, keeping the structure.
+    async fn truncate_table(&self, db: &str, name: &str) -> Result<()>;
+    async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()>;
     /// Applies grid changes in one transaction; returns the number of applied changes.
     async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError>;
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()>;

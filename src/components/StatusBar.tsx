@@ -39,7 +39,7 @@ const VIEWS: { view: TableView; label: string; icon: typeof Rows3 }[] = [
 function TableToggles() {
   const { tabs, active, setView, rowCounts } = useTabs();
   const tab = tabs.find((t) => t.id === active);
-  if (!tab) return null;
+  if (!tab || tab.kind !== "table") return null;
   const rows = rowCounts[tab.id];
   return (
     <>

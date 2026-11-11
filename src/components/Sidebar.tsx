@@ -11,6 +11,7 @@ import { closeConnection, openConnection } from "../lib/connect";
 import { confirmAction } from "../store/confirm";
 import { notify, notifyError } from "../store/toasts";
 import { useDialogs } from "../store/dialogs";
+import { copyCreateStatement, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 import { OBJECTS_TAB, useTabs, type TableView } from "../store/tabs";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
@@ -272,8 +273,12 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
   const expanded = expandedFlag || (search !== "" && shown.length > 0);
   if (search && shown.length === 0) return null;
   const Icon = kind === "table" ? Table2 : Eye;
+  const groupItems: Item[] =
+    kind === "table" ? [{ label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) }] : [];
   return (
     <>
+      <Menu items={groupItems}>
+      <div>
       <Row
         depth={2}
         expandable
@@ -288,6 +293,8 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
           setExpanded(key, !expandedFlag);
         }}
       />
+      </div>
+      </Menu>
       {expanded &&
         shown.map((o) => <ObjectNode key={o.name} connectionId={connectionId} database={database} object={o} />)}
     </>
@@ -304,9 +311,18 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
   );
   const Icon = object.kind === "table" ? Table2 : Eye;
   const open = (view: TableView) => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, view);
+  const qc = useQueryClient();
+  const ref = { connectionId, database, name: object.name, kind: object.kind };
+  const isTable = object.kind === "table";
   const items: Item[] = [
-    { label: object.kind === "table" ? "Open Table" : "Open View", onSelect: () => open("data") },
-    { label: object.kind === "table" ? "Structure" : "Definition", onSelect: () => open(object.kind === "table" ? "structure" : "info") },
+    { label: isTable ? "Open Table" : "Open View", onSelect: () => open("data") },
+    { label: isTable ? "Design Table" : "Definition", onSelect: () => open(isTable ? "structure" : "info") },
+    "separator",
+    ...(isTable ? [{ label: "Rename…", onSelect: () => void renameTable(ref, qc) }] : []),
+    { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(ref) },
+    "separator",
+    ...(isTable ? [{ label: "Empty Table…", danger: true, onSelect: () => void truncateTable(ref, qc) }] : []),
+    { label: isTable ? "Delete Table…" : "Delete View…", danger: true, onSelect: () => void dropObject(ref, qc) },
   ];
   return (
     <Menu items={items}>

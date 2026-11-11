@@ -34,6 +34,12 @@ pub fn run() {
             commands::fetch_page,
             commands::count_rows,
             commands::apply_changes,
+            commands::table_design,
+            commands::plan_table,
+            commands::apply_ddl,
+            commands::drop_object,
+            commands::truncate_table,
+            commands::rename_table,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");

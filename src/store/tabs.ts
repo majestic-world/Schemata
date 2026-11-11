@@ -13,7 +13,10 @@ export type TableTab = {
   view: TableView;
 };
 
-export type Tab = TableTab;
+/** Designer for a table that does not exist yet. */
+export type NewTableTab = { kind: "newTable"; id: string; connectionId: string; database: string };
+
+export type Tab = TableTab | NewTableTab;
 
 export const OBJECTS_TAB = "objects";
 
@@ -23,6 +26,9 @@ type TabsState = {
   /** Total row count per table tab, shown in the status bar. */
   rowCounts: Record<string, number | undefined>;
   openTable: (t: Omit<TableTab, "kind" | "id" | "view">, view?: TableView) => void;
+  newTable: (connectionId: string, database: string) => void;
+  /** Replaces a tab in place (e.g. a new-table designer by the created table). */
+  replace: (id: string, t: Omit<TableTab, "kind" | "id" | "view">, view: TableView) => void;
   close: (id: string) => void;
   activate: (id: string) => void;
   setView: (id: string, view: TableView) => void;
@@ -44,6 +50,17 @@ export const useTabs = create<TabsState>((set) => ({
         : [...s.tabs, { ...t, kind: "table" as const, id, view }];
       return { tabs, active: id };
     }),
+  newTable: (connectionId, database) =>
+    set((s) => {
+      const id = `new:${crypto.randomUUID()}`;
+      return { tabs: [...s.tabs, { kind: "newTable", id, connectionId, database }], active: id };
+    }),
+  replace: (id, t, view) =>
+    set((s) => {
+      const nid = tableTabId(t.connectionId, t.database, t.name);
+      const tab: TableTab = { ...t, kind: "table", id: nid, view };
+      return { tabs: s.tabs.filter((x) => x.id !== nid).map((x) => (x.id === id ? tab : x)), active: nid };
+    }),
   close: (id) =>
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
@@ -54,7 +71,7 @@ export const useTabs = create<TabsState>((set) => ({
       return { tabs, active, rowCounts };
     }),
   activate: (active) => set({ active }),
-  setView: (id, view) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, view } : t)) })),
+  setView: (id, view) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id && t.kind === "table" ? { ...t, view } : t)) })),
   setRowCount: (id, n) => set((s) => ({ rowCounts: { ...s.rowCounts, [id]: n } })),
 }));
 
@@ -62,6 +79,6 @@ export const useTabs = create<TabsState>((set) => ({
 export function closeTabsFor(connectionId: string, database?: string, name?: string) {
   const { tabs, close } = useTabs.getState();
   tabs
-    .filter((t) => t.connectionId === connectionId && (!database || t.database === database) && (!name || t.name === name))
+    .filter((t) => t.connectionId === connectionId && (!database || t.database === database) && (!name || (t.kind === "table" && t.name === name)))
     .forEach((t) => close(t.id));
 }

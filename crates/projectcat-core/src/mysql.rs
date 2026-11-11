@@ -1,6 +1,6 @@
 use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ChangeError, RowChange, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
+    AppError, CellValue, ChangeError, RowChange, TableDesign, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
     Engine, ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
@@ -535,6 +535,40 @@ impl Driver for MySqlDriver {
         }
         let row = q.fetch_one(&self.pool).await.map_err(map_err)?;
         Ok(int(&row, 0)?.unwrap_or(0) as u64)
+    }
+
+    async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
+        match original {
+            None => crate::design::mysql::create(db, design),
+            Some(original) => crate::design::mysql::alter(db, original, design),
+        }
+    }
+
+    async fn apply_ddl(&self, _db: &str, statements: &[String]) -> Result<()> {
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        for st in statements {
+            sqlx::raw_sql(AssertSqlSafe(st.clone())).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        Ok(())
+    }
+
+    async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()> {
+        let what = if kind == ObjectKind::View { "VIEW" } else { "TABLE" };
+        let sql = format!("DROP {what} {}.{}", quote_ident(db), quote_ident(name));
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn truncate_table(&self, db: &str, name: &str) -> Result<()> {
+        let sql = format!("TRUNCATE TABLE {}.{}", quote_ident(db), quote_ident(name));
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
+    }
+
+    async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()> {
+        let sql = format!("RENAME TABLE {0}.{1} TO {0}.{2}", quote_ident(db), quote_ident(from), quote_ident(to));
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
     }
 
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()> {

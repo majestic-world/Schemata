@@ -1,5 +1,6 @@
 //! ProjectCat core: database drivers and services, independent of the UI shell.
 
+mod design;
 mod driver;
 mod error;
 mod model;
@@ -12,6 +13,7 @@ mod sqlite;
 mod store;
 mod value;
 
+pub use design::{ColumnDesign, ForeignKeyDesign, IndexDesign, TableDesign, TableOptions};
 pub use driver::{ConnectParams, Driver, connect};
 pub use error::{AppError, ErrorKind, Result};
 pub use model::*;

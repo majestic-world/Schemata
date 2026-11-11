@@ -116,3 +116,31 @@ export type RowChange =
   | { kind: "insert"; values: ColumnValue[] }
   | { kind: "delete"; key: CellValue[] };
 export type ChangeError = { index: number | null; error: AppError };
+
+export type ColumnDesign = {
+  originalName: string | null;
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  default: string | null;
+  autoIncrement: boolean;
+  primaryKey: boolean;
+  comment: string | null;
+};
+export type IndexDesign = { name: string; columns: string[]; unique: boolean };
+export type ForeignKeyDesign = {
+  name: string;
+  columns: string[];
+  refTable: string;
+  refColumns: string[];
+  onUpdate: string;
+  onDelete: string;
+};
+export type TableOptions = { engine: string | null; charset: string | null; collation: string | null; comment: string | null };
+export type TableDesign = {
+  name: string;
+  columns: ColumnDesign[];
+  indexes: IndexDesign[];
+  foreignKeys: ForeignKeyDesign[];
+  options: TableOptions;
+};

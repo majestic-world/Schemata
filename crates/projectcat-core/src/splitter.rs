@@ -71,8 +71,8 @@ pub fn split_statements(sql: &str, engine: Engine) -> Vec<String> {
             continue;
         }
 
-        // Statement terminator.
-        if starts_with(&chars, i, &delimiter) && trigger_depth <= 0 {
+        // Statement terminator. The pending word (e.g. a trigger's END) must be counted first.
+        if starts_with(&chars, i, &delimiter) {
             finish_word(&mut word, &mut words, &mut trigger_depth);
             if trigger_depth <= 0 {
                 push_statement(&mut out, &mut buf, &mut has_code);

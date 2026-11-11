@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
 import { api } from "../api/client";
-import type { TableTab } from "../store/tabs";
+import { useTabs, type TableTab } from "../store/tabs";
+import { TableDesigner } from "./TableDesigner";
+import { useConnection } from "../lib/useConnection";
 import { DataGrid } from "./DataGrid";
 import { formatCount, orDash } from "../lib/format";
 import { notify } from "../store/toasts";
@@ -11,7 +13,7 @@ export function TableTabView({ tab }: { tab: TableTab }) {
     case "data":
       return <DataGrid tab={tab} />;
     case "structure":
-      return <StructureView tab={tab} />;
+      return tab.objectKind === "table" ? <DesignerView tab={tab} /> : <StructureView tab={tab} />;
     case "info":
       return <InfoView tab={tab} />;
     default: {
@@ -19,6 +21,20 @@ export function TableTabView({ tab }: { tab: TableTab }) {
       return never;
     }
   }
+}
+
+function DesignerView({ tab }: { tab: TableTab }) {
+  const conn = useConnection(tab.connectionId);
+  if (!conn) return null;
+  return (
+    <TableDesigner
+      connectionId={tab.connectionId}
+      database={tab.database}
+      engine={conn.engine}
+      table={tab.name}
+      onSaved={(name) => name !== tab.name && useTabs.getState().replace(tab.id, { connectionId: tab.connectionId, database: tab.database, name, objectKind: "table" }, "structure")}
+    />
+  );
 }
 
 export function useTableInfo(tab: TableTab) {

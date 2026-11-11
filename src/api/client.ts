@@ -15,6 +15,8 @@ import type {
   PageRequest,
   RowChange,
   ChangeError,
+  ObjectKind,
+  TableDesign,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -56,6 +58,13 @@ export const api = {
   attachDatabase: (id: string, path: string, alias: string) => call<void>("attach_database", { id, path, alias }),
   fetchPage: (id: string, db: string, table: string, req: PageRequest) => call<Page>("fetch_page", { id, db, table, req }),
   countRows: (id: string, db: string, table: string, filters: Filter[]) => call<number>("count_rows", { id, db, table, filters }),
+  tableDesign: (id: string, db: string, table: string) => call<TableDesign>("table_design", { id, db, table }),
+  planTable: (id: string, db: string, original: TableDesign | null, design: TableDesign) =>
+    call<string[]>("plan_table", { id, db, original, design }),
+  applyDdl: (id: string, db: string, statements: string[]) => call<void>("apply_ddl", { id, db, statements }),
+  dropObject: (id: string, db: string, name: string, kind: ObjectKind) => call<void>("drop_object", { id, db, name, kind }),
+  truncateTable: (id: string, db: string, name: string) => call<void>("truncate_table", { id, db, name }),
+  renameTable: (id: string, db: string, from: string, to: string) => call<void>("rename_table", { id, db, from, to }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {
     try {
