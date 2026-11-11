@@ -152,9 +152,7 @@ export function EngineIcon({ engine, size = 16 }: { engine: Engine; size?: numbe
       <path
         d={e.logo.path}
         fill="#fff"
-        stroke={e.logo.stroke ? "#fff" : undefined}
-        strokeWidth={e.logo.stroke}
-        strokeLinejoin="round"
+        fillRule="evenodd"
         transform={`translate(${(16 - box) / 2} ${(16 - box) / 2}) scale(${box / e.logo.grid})`}
       />
     </svg>
