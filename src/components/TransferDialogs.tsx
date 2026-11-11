@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Tabs } from "radix-ui";
+import { Select, Tabs } from "radix-ui";
 import { useConnection } from "../lib/useConnection";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { AlertCircle, CheckCircle2, FolderOpen } from "lucide-react";
+import { AlertCircle, Check, CheckCircle2, ChevronDown, FolderOpen } from "lucide-react";
 import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
 import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
@@ -631,6 +631,36 @@ const GENERATOR_LABEL: Record<GeneratorKind, string> = {
   foreignKey: "Existing referenced value",
 };
 
+/** Generator picker: a styled list (the native one cannot be themed), grouped like GENERATOR_GROUPS. */
+function GeneratorSelect({ value, column, onChange }: { value: GeneratorKind; column: string; onChange: (kind: GeneratorKind) => void }) {
+  return (
+    <Select.Root value={value} onValueChange={(v) => onChange(v as GeneratorKind)}>
+      <Select.Trigger className="gen-select" aria-label={`Generator for ${column}`}>
+        <Select.Value />
+        <Select.Icon className="gen-select-icon"><ChevronDown size={14} /></Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="select-content" position="popper" sideOffset={3} collisionPadding={8}>
+          <Select.Viewport className="select-viewport">
+            {GENERATOR_GROUPS.map((g, i) => (
+              <Select.Group key={g.label}>
+                {i > 0 && <Select.Separator className="menu-sep" />}
+                <Select.Label className="select-label">{g.label}</Select.Label>
+                {g.kinds.map((k) => (
+                  <Select.Item key={k} value={k} className="select-item">
+                    <Select.ItemIndicator className="select-item-check"><Check size={12} /></Select.ItemIndicator>
+                    <Select.ItemText>{GENERATOR_LABEL[k]}</Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.Group>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
 /** Fills a table with realistic test data (Navicat's Data Generation): a generator per column, previewed first. */
 function GenerateDialog({ req }: { req: Extract<TransferRequest, { kind: "generate" }> }) {
   const close = () => useTransfer.getState().open(null);
@@ -700,13 +730,7 @@ function GenerateDialog({ req }: { req: Extract<TransferRequest, { kind: "genera
                       <td>{c.column}</td>
                       <td className="muted">{typeOf(c.column)}</td>
                       <td>
-                        <select className="input" aria-label={`Generator for ${c.column}`} value={c.kind} onChange={(e) => setColumns(columns.map((x, j) => (j === i ? { ...x, kind: e.target.value as GeneratorKind } : x)))}>
-                          {GENERATOR_GROUPS.map((g) => (
-                            <optgroup key={g.label} label={g.label}>
-                              {g.kinds.map((k) => <option key={k} value={k}>{GENERATOR_LABEL[k]}</option>)}
-                            </optgroup>
-                          ))}
-                        </select>
+                        <GeneratorSelect value={c.kind} column={c.column} onChange={(kind) => setColumns(columns.map((x, j) => (j === i ? { ...x, kind } : x)))} />
                       </td>
                     </tr>
                   ))}

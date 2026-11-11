@@ -517,7 +517,30 @@ select.cell-input { padding: 0 4px; }
 .gen-options { display: flex; align-items: flex-end; gap: 18px; }
 .gen-options .field { width: 140px; }
 .gen-columns { max-height: 260px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
-.gen-columns select.input { width: 100%; }
+/* Generator pickers: underline-only selects so stacked rows read as a list, not a pile of boxes. */
+.gen-columns td { height: 32px; }
+.gen-columns th { cursor: default; }
+.gen-select {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 26px; padding: 0 2px;
+  border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text);
+  text-align: left; outline: none; cursor: pointer;
+}
+.gen-select:hover { border-bottom-color: var(--border-strong); }
+.gen-select:focus-visible, .gen-select[data-state="open"] { border-bottom-color: var(--accent); box-shadow: 0 1px 0 var(--accent); }
+.gen-select-icon { display: inline-flex; color: var(--text-muted); }
+/* Radix Select popup: themed border, rounded corners and a slim scrollbar (Radix hides it by default). */
+.select-content {
+  z-index: 60; min-width: var(--radix-select-trigger-width); max-height: min(320px, var(--radix-select-content-available-height));
+  overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.select-viewport { padding: 4px; }
+.select-viewport[data-radix-select-viewport] { scrollbar-width: thin; }
+.select-viewport[data-radix-select-viewport]::-webkit-scrollbar { display: block; width: 8px; }
+.select-label { padding: 6px 8px 2px; color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.select-item { position: relative; display: flex; align-items: center; height: 24px; padding: 0 10px 0 24px; border-radius: var(--radius-sm); font-size: var(--fs-sm); outline: none; cursor: default; user-select: none; }
+.select-item[data-highlighted] { background: var(--selection); color: #fff; }
+.select-item-check { position: absolute; left: 7px; display: inline-flex; }
 .gen-preview-head { display: flex; align-items: center; justify-content: space-between; }
 .gen-preview { max-height: 190px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
 .gen-preview td { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
