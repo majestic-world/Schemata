@@ -62,23 +62,40 @@ async fn vanished_row_is_reported(t: TestDb) {
 }
 scenario!(vanished_row_is_reported);
 
-async fn tables_without_identity_are_read_only(t: TestDb) {
-    t.exec("CREATE TABLE loose (a INT, b VARCHAR(5)); INSERT INTO loose VALUES (1, 'x');").await;
-    let page = t.driver.fetch_page(&t.db, "loose", &PageRequest { offset: 0, limit: 10, sort: None, filters: vec![] }).await.unwrap();
+async fn tables_without_key_are_edited_by_value(t: TestDb) {
+    t.exec("CREATE TABLE loose (a INT, b VARCHAR(5)); INSERT INTO loose VALUES (1, 'x'), (1, 'x'), (2, NULL);").await;
+    let all = PageRequest { offset: 0, limit: 10, sort: None, filters: vec![] };
+    let page = t.driver.fetch_page(&t.db, "loose", &all).await.unwrap();
     if t.engine == Engine::Sqlite {
         // rowid identity: the hidden first column is the key.
         let rowid = page.rows[0][0].clone();
         let changes = vec![RowChange::Update { key: vec![rowid], values: vec![set("b", text("y"))] }];
         t.driver.apply_changes(&t.db, "loose", &changes).await.unwrap();
-        let page = t.driver.fetch_page(&t.db, "loose", &PageRequest { offset: 0, limit: 10, sort: None, filters: vec![] }).await.unwrap();
+        let page = t.driver.fetch_page(&t.db, "loose", &all).await.unwrap();
         assert_eq!(page.rows[0][2], text("y"));
-    } else {
-        let changes = vec![RowChange::Update { key: vec![int(1)], values: vec![set("b", text("y"))] }];
-        let err = t.driver.apply_changes(&t.db, "loose", &changes).await.unwrap_err();
-        assert_eq!(err.error.kind, ErrorKind::Validation);
+        return;
     }
+    // Like Navicat: the key is every column's value; NULL matches NULL and only one of identical rows changes.
+    let changes = vec![
+        RowChange::Update { key: vec![int(1), text("x")], values: vec![set("b", text("y"))] },
+        RowChange::Update { key: vec![int(2), CellValue::Null], values: vec![set("b", text("z"))] },
+    ];
+    t.driver.apply_changes(&t.db, "loose", &changes).await.unwrap();
+    let mut values: Vec<Vec<CellValue>> = t.driver.fetch_page(&t.db, "loose", &all).await.unwrap().rows;
+    values.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(values, vec![vec![int(1), text("x")], vec![int(1), text("y")], vec![int(2), text("z")]]);
+
+    t.driver.apply_changes(&t.db, "loose", &[RowChange::Delete { key: vec![int(1), text("x")] }]).await.unwrap();
+    assert_eq!(t.driver.count_rows(&t.db, "loose", &[]).await.unwrap(), 2);
+    let err = t.driver.apply_changes(&t.db, "loose", &[RowChange::Delete { key: vec![int(1), text("x")] }]).await.unwrap_err();
+    assert_eq!(err.index, Some(0), "a row matched by value that no longer exists is reported");
+
+    // Columns that cannot be matched exactly (here FLOAT and BLOB) leave nothing to match by: read-only.
+    t.exec("CREATE TABLE opaque (f FLOAT, data BLOB)").await;
+    let err = t.driver.apply_changes(&t.db, "opaque", &[RowChange::Delete { key: vec![] }]).await.unwrap_err();
+    assert_eq!(err.error.kind, ErrorKind::Validation);
 }
-scenario!(tables_without_identity_are_read_only);
+scenario!(tables_without_key_are_edited_by_value);
 
 async fn written_values_round_trip(t: TestDb) {
     let sqlite = t.engine == Engine::Sqlite;

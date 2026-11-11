@@ -832,7 +832,8 @@ DELIMITER ;",
     async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
         let info = self.table_info(db, table).await?;
         let table_ref = format!("{}.{}", quote_ident(db), quote_ident(table));
-        let statements = crate::sql::change_statements(changes, &table_ref, &info.row_identity, quote_ident, "() VALUES ()")?;
+        let dialect = crate::sql::ChangeDialect { empty_insert: "() VALUES ()", null_safe_eq: "<=>", single_row: "LIMIT 1" };
+        let statements = crate::sql::change_statements(changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
         let mut tx = self.pool.begin().await.map_err(map_err)?;
         for (index, st) in statements.iter().enumerate() {
             let at = |e: sqlx::Error| ChangeError { index: Some(index), error: map_err(e) };

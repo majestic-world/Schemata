@@ -67,13 +67,23 @@ pub(crate) struct ChangeStatement {
     pub key_binds: Vec<Value>,
 }
 
-/// Renders a change set against `table_ref`; `empty_insert` is the dialect's "insert defaults" tail.
+/// SQL spelling of the parts of a change set that differ between engines.
+pub(crate) struct ChangeDialect {
+    /// Tail of an insert of only default values.
+    pub empty_insert: &'static str,
+    /// Equality that also matches NULL to NULL (`<=>`, `IS`).
+    pub null_safe_eq: &'static str,
+    /// Tail limiting an UPDATE/DELETE to one row, or empty when the engine has none.
+    pub single_row: &'static str,
+}
+
+/// Renders a change set against `table_ref`.
 pub(crate) fn change_statements(
     changes: &[RowChange],
     table_ref: &str,
     identity: &RowIdentity,
     quote: fn(&str) -> String,
-    empty_insert: &str,
+    dialect: &ChangeDialect,
 ) -> Result<Vec<ChangeStatement>, ChangeError> {
     let key_columns: Vec<String> =
         identity.columns().into_iter().map(|c| if c == ROWID_COLUMN { "rowid".to_owned() } else { quote(&c) }).collect();
@@ -81,7 +91,11 @@ pub(crate) fn change_statements(
     if needs_key && key_columns.is_empty() {
         return Err(AppError::validation("This table has no primary or unique key, so its rows cannot be edited").into());
     }
-    let where_key = key_columns.iter().map(|c| format!("{c} = ?")).collect::<Vec<_>>().join(" AND ");
+    // Without a key, rows are matched by value: NULL must match NULL, and duplicates must not all change.
+    let by_value = matches!(identity, RowIdentity::AllColumns { .. });
+    let eq = if by_value { dialect.null_safe_eq } else { "=" };
+    let limit = if by_value && !dialect.single_row.is_empty() { format!(" {}", dialect.single_row) } else { String::new() };
+    let where_key = key_columns.iter().map(|c| format!("{c} {eq} ?")).collect::<Vec<_>>().join(" AND ");
     changes
         .iter()
         .enumerate()
@@ -103,7 +117,7 @@ pub(crate) fn change_statements(
                     let key_binds = key_values(key)?;
                     binds.extend(key_binds.iter().cloned());
                     ChangeStatement {
-                        sql: format!("UPDATE {table_ref} SET {sets} WHERE {where_key}"),
+                        sql: format!("UPDATE {table_ref} SET {sets} WHERE {where_key}{limit}"),
                         binds,
                         keyed: true,
                         exists_sql: Some(format!("SELECT 1 FROM {table_ref} WHERE {where_key}")),
@@ -113,7 +127,7 @@ pub(crate) fn change_statements(
                 RowChange::Delete { key } => {
                     let key_binds = key_values(key)?;
                     ChangeStatement {
-                        sql: format!("DELETE FROM {table_ref} WHERE {where_key}"),
+                        sql: format!("DELETE FROM {table_ref} WHERE {where_key}{limit}"),
                         binds: key_binds,
                         keyed: true,
                         exists_sql: None,
@@ -122,7 +136,7 @@ pub(crate) fn change_statements(
                 }
                 RowChange::Insert { values } => {
                     let sql = if values.is_empty() {
-                        format!("INSERT INTO {table_ref} {empty_insert}")
+                        format!("INSERT INTO {table_ref} {}", dialect.empty_insert)
                     } else {
                         let cols = values.iter().map(|v| quote(&v.column)).collect::<Vec<_>>().join(", ");
                         let marks = vec!["?"; values.len()].join(", ");

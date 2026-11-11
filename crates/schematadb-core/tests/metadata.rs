@@ -119,7 +119,7 @@ async fn row_identity_falls_back_to_unique_key(t: TestDb) {
     let coded = t.driver.table_info(&t.db, "coded").await.unwrap();
     assert_eq!(coded.row_identity, RowIdentity::UniqueKey { columns: vec!["code".into()] });
     let loose = t.driver.table_info(&t.db, "loose").await.unwrap();
-    let expected = if t.engine == Engine::Sqlite { RowIdentity::RowId } else { RowIdentity::None };
+    let expected = if t.engine == Engine::Sqlite { RowIdentity::RowId } else { RowIdentity::AllColumns { columns: vec!["a".into(), "b".into()] } };
     assert_eq!(loose.row_identity, expected);
 }
 scenario!(row_identity_falls_back_to_unique_key);

@@ -667,7 +667,10 @@ impl Driver for SqliteDriver {
             let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
             let info = read_structure(&guard, &db, &table)?;
             let table_ref = format!("{}.{}", quote_ident(&db), quote_ident(&table));
-            let statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, "DEFAULT VALUES")?;
+            // A table without a key always has a rowid (WITHOUT ROWID requires a primary key), so SQLite never
+            // matches rows by value; the dialect still spells it correctly.
+            let dialect = crate::sql::ChangeDialect { empty_insert: "DEFAULT VALUES", null_safe_eq: "IS", single_row: "" };
+            let statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
             let tx = guard.transaction().map_err(map_err)?;
             for (index, st) in statements.iter().enumerate() {
                 let params: Vec<SqlValue> = st.binds.iter().map(to_sql).collect();

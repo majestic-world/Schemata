@@ -139,14 +139,21 @@ pub enum RowIdentity {
     },
     /// SQLite implicit rowid.
     RowId,
-    /// No reliable identity: the data is read-only.
+    /// No key (Navicat-style): a row is matched by the values of every comparable column, and each update or delete
+    /// touches at most one row, so only one of several identical rows changes.
+    AllColumns {
+        columns: Vec<String>,
+    },
+    /// No usable identity (views, or tables without comparable columns): the data is read-only.
     None,
 }
 
 impl RowIdentity {
     pub fn columns(&self) -> Vec<String> {
         match self {
-            RowIdentity::PrimaryKey { columns } | RowIdentity::UniqueKey { columns } => columns.clone(),
+            RowIdentity::PrimaryKey { columns } | RowIdentity::UniqueKey { columns } | RowIdentity::AllColumns { columns } => {
+                columns.clone()
+            }
             RowIdentity::RowId => vec![ROWID_COLUMN.to_owned()],
             RowIdentity::None => Vec::new(),
         }
@@ -192,7 +199,8 @@ pub struct CharsetInfo {
     pub collations: Vec<String>,
 }
 
-/// Picks the row identity from a primary key, else a unique key over non-null columns.
+/// Picks the row identity from a primary key, else a unique key over non-null columns, else the SQLite rowid,
+/// else every column whose value can be matched exactly.
 pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has_rowid: bool) -> RowIdentity {
     let pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect();
     if !pk.is_empty() {
@@ -202,7 +210,19 @@ pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has
     if let Some(idx) = indexes.iter().find(|i| i.kind == IndexKind::Unique && !i.columns.is_empty() && i.columns.iter().all(not_null)) {
         return RowIdentity::UniqueKey { columns: idx.columns.clone() };
     }
-    if has_rowid { RowIdentity::RowId } else { RowIdentity::None }
+    if has_rowid {
+        return RowIdentity::RowId;
+    }
+    let comparable: Vec<String> = columns.iter().filter(|c| matchable(&c.data_type)).map(|c| c.name.clone()).collect();
+    if comparable.is_empty() { RowIdentity::None } else { RowIdentity::AllColumns { columns: comparable } }
+}
+
+/// Whether a column's grid value can find its row by equality: binary cells arrive as previews, FLOAT is stored
+/// approximately, and JSON/spatial values do not compare equal to their text.
+fn matchable(data_type: &str) -> bool {
+    let t = data_type.to_ascii_lowercase();
+    const UNMATCHABLE: [&str; 9] = ["blob", "binary", "json", "float", "geometry", "point", "linestring", "polygon", "bit"];
+    !UNMATCHABLE.iter().any(|u| t.contains(u))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

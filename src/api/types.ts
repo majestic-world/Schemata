@@ -86,6 +86,8 @@ export type RowIdentity =
   | { kind: "primaryKey"; columns: string[] }
   | { kind: "uniqueKey"; columns: string[] }
   | { kind: "rowId" }
+  /** No key: rows are matched by these columns' values, one row per change (like Navicat). */
+  | { kind: "allColumns"; columns: string[] }
   | { kind: "none" };
 export type TableInfo = {
   name: string;

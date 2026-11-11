@@ -152,7 +152,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const startEdit = useCallback(
     (row: number, column: string, quiet = false) => {
       if (readOnly) {
-        if (!quiet) notifyError("This data is read-only", { message: "The table has no primary or unique key, so rows cannot be addressed safely." });
+        if (!quiet) notifyError("This data is read-only", { message: info.data?.kind === "view" ? "Views are not editable." : "The table has no key and no column whose value can identify a row." });
         return;
       }
       const v = original(row, column);
@@ -181,7 +181,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
 
   const commit = async () => {
     if (!identity || !data) return;
-    const identityColumns = identity.kind === "primaryKey" || identity.kind === "uniqueKey" ? identity.columns : identity.kind === "rowId" ? ["__rowid__"] : [];
+    const identityColumns = identity.kind === "rowId" ? ["__rowid__"] : identity.kind === "none" ? [] : identity.columns;
     const { changes, rowOf } = buildChangeSet(pending, pageRows, columns, identityColumns);
     setCommitting(true);
     try {
@@ -220,7 +220,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     >
       <div className="action-bar grid-toolbar">
         {readOnly ? (
-          info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no primary or unique key"}</span>
+          info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no key or matchable column"}</span>
         ) : (
           <>
             <button className="obj-btn" onClick={() => appendRow(columns.find((c) => !c.hidden)?.name ?? "")}>
@@ -326,7 +326,9 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         />
       )}
       <div className="grid-footer">
-        <span className="muted">{readOnly ? "Read-only" : dirty ? `${changeCount(pending)} pending` : ""}</span>
+        <span className="muted" title={identity?.kind === "allColumns" ? "This table has no primary or unique key: edits find each row by its column values and change only one row." : undefined}>
+          {readOnly ? "Read-only" : dirty ? `${changeCount(pending)} pending` : identity?.kind === "allColumns" ? "No key: rows are matched by value" : ""}
+        </span>
         <div className="grow" />
         <div className="pager">
           <button className="icon-btn" title="First page" aria-label="First page" disabled={offset === 0} onClick={() => go(0)}><ChevronsLeft size={16} /></button>
