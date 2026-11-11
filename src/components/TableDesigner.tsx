@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
 import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, TableDesign } from "../api/types";
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
+import { isMod } from "../lib/platform";
 import { Dialog } from "./Dialog";
 
 type Section = "columns" | "indexes" | "foreignKeys" | "options" | "ddl";
@@ -62,6 +63,8 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
     retry: false,
   });
   const dirty = useMemo(() => (table ? JSON.stringify(original.data) !== designKey : true), [table, original.data, designKey]);
+  /** Latest `review`, for the Ctrl+S handler that runs it after pending field edits land. */
+  const reviewRef = useRef<() => Promise<void>>(async () => {});
 
   if (!design) return <div className="empty"><p>{original.isError ? (original.error as { message: string }).message : "Loading…"}</p></div>;
 
@@ -122,6 +125,7 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
       setBusy(false);
     }
   };
+  reviewRef.current = review;
 
   const columnNames = design.columns.map((c) => c.name).filter(Boolean);
   const engines = engine === "mariaDb" ? MARIADB_ENGINES : MYSQL_ENGINES;
@@ -135,7 +139,21 @@ export function TableDesigner({ connectionId, database, engine, table, onSaved }
   ];
 
   return (
-    <div className="designer">
+    <div
+      className="designer"
+      onKeyDown={(e) => {
+        if (!isMod(e) || e.key.toLowerCase() !== "s") return;
+        e.preventDefault();
+        // Same as the Save button: review the SQL first; in the review, Ctrl+S applies it.
+        if (preview) {
+          if (!busy) void apply();
+          return;
+        }
+        // Blur first so a field that commits on blur (column name, index columns) lands in the design.
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        requestAnimationFrame(() => reviewRef.current());
+      }}
+    >
       <div className="action-bar">
         <label className="inline-field">
           <span>Table name</span>
