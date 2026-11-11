@@ -1,4 +1,4 @@
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, ProgressFn, RowStream, ScriptRunReport};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, RowStream, ScriptRunReport};
 use crate::{
     AppError, ChangeError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, ObjectKind, Page, PageRequest, Result,
     RowChange, ScriptResult, TableDesign, TableInfo,
@@ -65,13 +65,14 @@ pub trait Driver: Send + Sync {
         rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
         skip_errors: bool,
     ) -> Result<ImportReport>;
-    /// Runs statements one by one on a single session.
+    /// Runs statements from `statements` one by one on a single session, outside a transaction. On SQLite
+    /// only the main database is accepted (statements are unqualified). Cancellation (checked between
+    /// statements) rolls back an open transaction and returns `Cancelled`.
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        statements: Vec<String>,
+        statements: tokio::sync::mpsc::Receiver<String>,
         stop_on_error: bool,
-        progress: ProgressFn,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport>;
     /// Schema parts of a database dump (see [`crate::dump_database`]).

@@ -1,6 +1,6 @@
 //! Export, import and SQL-file execution. Rows stream in batches; nothing holds a whole table in memory.
 
-use crate::{AppError, ColumnMeta, Driver, Engine, Result, Value, split_statements};
+use crate::{AppError, ColumnMeta, Driver, Engine, Result, Splitter, Value};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
@@ -514,6 +514,7 @@ pub(crate) fn failure(index: usize, statement: &str, message: String) -> Stateme
 }
 
 /// Runs every statement of a `.sql` file on one session, outside a transaction (dumps manage their own).
+/// The file is read and split incrementally; progress is reported in bytes read.
 pub async fn run_sql_file(
     driver: &dyn Driver,
     db: &str,
@@ -522,10 +523,46 @@ pub async fn run_sql_file(
     progress: ProgressFn,
     cancel: CancellationToken,
 ) -> Result<ScriptRunReport> {
-    let bytes = tokio::fs::read(path).await?;
-    let text = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
-    let statements = split_statements(&text, driver.engine());
-    driver.execute_statements(Some(db), statements, stop_on_error, progress, cancel).await
+    let file = std::fs::File::open(path)?;
+    let total = file.metadata()?.len();
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let engine = driver.engine();
+    let cancel_reader = cancel.clone();
+    let reader = tokio::task::spawn_blocking(move || -> Result<()> {
+        use std::io::BufRead;
+        let mut input = std::io::BufReader::new(file);
+        let mut splitter = Splitter::new(engine);
+        let mut line = Vec::new();
+        let mut read = 0u64;
+        let mut first = true;
+        loop {
+            line.clear();
+            let n = input.read_until(b'\n', &mut line)?;
+            if n == 0 || cancel_reader.is_cancelled() {
+                break;
+            }
+            read += n as u64;
+            let bytes = if first { line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line) } else { &line };
+            first = false;
+            for statement in splitter.feed(&String::from_utf8_lossy(bytes)) {
+                if tx.blocking_send(statement).is_err() {
+                    return Ok(());
+                }
+            }
+            progress(Progress { done: read, total: Some(total) });
+        }
+        if !cancel_reader.is_cancelled() {
+            for statement in splitter.finish() {
+                if tx.blocking_send(statement).is_err() {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    });
+    let report = driver.execute_statements(Some(db), rx, stop_on_error, cancel).await;
+    reader.await.map_err(|e| AppError::io(e.to_string()))??;
+    report
 }
 
 // ---------------------------------------------------------------- backup

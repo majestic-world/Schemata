@@ -1,8 +1,6 @@
 use crate::design::sqlite::{FK_OFF, FK_ON};
 use crate::model::derive_identity;
-use crate::transfer::{
-    DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem,
-};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use crate::{
     AppError, CellValue, ChangeError, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
     ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity, ScriptResult,
@@ -482,21 +480,25 @@ impl Driver for SqliteDriver {
 
     async fn execute_statements(
         &self,
-        _db: Option<&str>,
-        statements: Vec<String>,
+        db: Option<&str>,
+        mut statements: tokio::sync::mpsc::Receiver<String>,
         stop_on_error: bool,
-        progress: ProgressFn,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
-        let total = Some(statements.len() as u64);
+        if db.is_some_and(|d| d != "main") {
+            return Err(AppError::validation("SQL files run against the main database of a SQLite connection"));
+        }
         self.with_conn(move |c| {
             let mut report = ScriptRunReport::default();
-            for (index, st) in statements.iter().enumerate() {
+            let mut cancelled = false;
+            let mut index = 0;
+            while let Some(st) = statements.blocking_recv() {
                 if cancel.is_cancelled() {
-                    return Err(AppError::cancelled());
+                    cancelled = true;
+                    break;
                 }
                 let result = (|| -> Result<()> {
-                    let mut stmt = c.prepare(st).map_err(map_err)?;
+                    let mut stmt = c.prepare(&st).map_err(map_err)?;
                     if stmt.column_count() > 0 {
                         let mut rows = stmt.query([]).map_err(map_err)?;
                         while rows.next().map_err(map_err)?.is_some() {}
@@ -508,23 +510,20 @@ impl Driver for SqliteDriver {
                 match result {
                     Ok(()) => report.executed += 1,
                     Err(e) => {
-                        report.failed.push(crate::transfer::failure(index, st, e.message));
+                        report.failed.push(crate::transfer::failure(index, &st, e.message));
                         if stop_on_error {
                             break;
                         }
                     }
                 }
-                if index % 25 == 0 {
-                    progress(Progress { done: index as u64 + 1, total });
-                }
+                index += 1;
             }
-            // A failed dump must not leave the session inside its transaction or without FK enforcement.
+            // A failed or cancelled script must not leave the session inside its transaction or without FK enforcement.
             if !c.is_autocommit() {
                 c.execute_batch("ROLLBACK").map_err(map_err)?;
             }
-            c.execute_batch("PRAGMA foreign_keys = ON").map_err(map_err)?;
-            progress(Progress { done: statements.len() as u64, total });
-            Ok(report)
+            c.execute_batch(FK_ON).map_err(map_err)?;
+            if cancelled { Err(AppError::cancelled()) } else { Ok(report) }
         })
         .await
     }

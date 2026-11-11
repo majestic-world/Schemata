@@ -1,7 +1,5 @@
 use crate::model::derive_identity;
-use crate::transfer::{
-    DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem,
-};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use crate::{
     AppError, CellValue, ChangeError, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver, Engine,
     ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowChange, RowIdentity, ScriptResult,
@@ -482,38 +480,37 @@ impl Driver for MySqlDriver {
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        statements: Vec<String>,
+        mut statements: tokio::sync::mpsc::Receiver<String>,
         stop_on_error: bool,
-        progress: ProgressFn,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
         if let Some(db) = db {
             sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
         }
-        let total = Some(statements.len() as u64);
         let mut report = ScriptRunReport::default();
-        for (index, st) in statements.iter().enumerate() {
+        let mut cancelled = false;
+        let mut index = 0;
+        while let Some(st) = statements.recv().await {
             if cancel.is_cancelled() {
-                return Err(AppError::cancelled());
+                cancelled = true;
+                break;
             }
             match sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn).await {
                 Ok(_) => report.executed += 1,
                 Err(e) => {
-                    report.failed.push(crate::transfer::failure(index, st, map_err(e).message));
+                    report.failed.push(crate::transfer::failure(index, &st, map_err(e).message));
                     if stop_on_error {
                         break;
                     }
                 }
             }
-            if index % 25 == 0 {
-                progress(Progress { done: index as u64 + 1, total });
-            }
+            index += 1;
         }
-        // Dumps disable FK checks for their session; the pooled connection must not keep that.
+        // Scripts may open a transaction or disable FK checks for their session; the pooled connection must not keep that.
+        sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await.map_err(map_err)?;
         sqlx::raw_sql("SET FOREIGN_KEY_CHECKS = 1").execute(&mut *conn).await.map_err(map_err)?;
-        progress(Progress { done: statements.len() as u64, total });
-        Ok(report)
+        if cancelled { Err(AppError::cancelled()) } else { Ok(report) }
     }
 
     async fn dump_script(&self, db: &str) -> Result<DumpScript> {

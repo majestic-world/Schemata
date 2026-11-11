@@ -22,7 +22,7 @@ pub use history::{HistoryEntry, QueryHistory};
 pub use model::*;
 pub use secrets::{KeyringSecrets, MemorySecrets, SecretStore};
 pub use sessions::{Sessions, params_for};
-pub use splitter::split_statements;
+pub use splitter::{Splitter, split_statements};
 pub use store::{ConnectionConfig, ConnectionStore, SaveOutcome};
 pub use transfer::{
     BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, DumpScript,

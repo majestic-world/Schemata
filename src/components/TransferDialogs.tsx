@@ -331,7 +331,7 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
           <label className="check"><input type="checkbox" checked={stopOnError} onChange={(e) => setStopOnError(e.target.checked)} />Stop at the first error</label>
         </div>
       )}
-      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="statements" />}
+      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="bytes read" />}
       {op.phase.state === "done" && (
         <Outcome ok={op.phase.report.failed.length === 0} title={`${plural(op.phase.report.executed, "statement")} executed${op.phase.report.failed.length ? `, ${op.phase.report.failed.length} failed` : ""}`}>
           {op.phase.report.failed.slice(0, 20).map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
@@ -390,7 +390,10 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
   const sqlite = conn?.engine === "sqlite";
   const databases = useQuery({ queryKey: ["databases", req.connectionId], queryFn: () => api.listDatabases(req.connectionId) });
   const [path, setPath] = useState("");
-  const [target, setTarget] = useState(req.database ?? (sqlite ? "main" : ""));
+  const [target, setTarget] = useState(req.database ?? "");
+  useEffect(() => {
+    if (sqlite) setTarget("main");
+  }, [sqlite]);
   const [newName, setNewName] = useState("");
   const createNew = !sqlite && target === "";
   const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
@@ -434,14 +437,15 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
           <label className="field"><span>Restore into</span>
             <select value={target} aria-label="Target database" onChange={(e) => setTarget(e.target.value)}>
               {!sqlite && <option value="">New database…</option>}
-              {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+              {/* SQLite dumps are unqualified: they always restore into the connection's main database. */}
+              {databases.data?.filter((d) => !sqlite || d.name === "main").map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
             </select>
           </label>
           {createNew && <label className="field"><span>New database name</span><input value={newName} aria-label="New database name" onChange={(e) => setNewName(e.target.value)} /></label>}
           {!createNew && <p className="hint">Tables in the backup replace tables with the same name in the target.</p>}
         </div>
       )}
-      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="statements" />}
+      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="bytes read" />}
       {op.phase.state === "done" && (
         <Outcome ok={op.phase.report.failed.length === 0} title={op.phase.report.failed.length ? "Restore stopped at an error" : `Restored (${plural(op.phase.report.executed, "statement")})`}>
           {op.phase.report.failed.map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}

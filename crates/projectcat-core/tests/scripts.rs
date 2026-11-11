@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{CellValue, Engine, ErrorKind, QueryHistory, StatementOutcome, split_statements};
+use projectcat_core::{CancellationToken, CellValue, Engine, ErrorKind, QueryHistory, Splitter, StatementOutcome, split_statements};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -126,4 +126,51 @@ fn history_persists_per_connection_newest_first() {
     let c1: Vec<_> = h.list("c1").into_iter().map(|e| (e.sql, e.ok)).collect();
     assert_eq!(c1, vec![("SELECT broken".to_string(), false), ("SELECT 1".to_string(), true)]);
     assert_eq!(h.list("c2").len(), 1);
+}
+
+#[test]
+fn incremental_splitting_matches_whole_script() {
+    let sql = "INSERT INTO t VALUES ('multi\nline; text');\n/* block\n comment; */ SELECT 1;\nDELIMITER //\nCREATE PROCEDURE p() BEGIN\n  SELECT 2;\nEND//\nDELIMITER ;\nSELECT 3";
+    let mut splitter = Splitter::new(Engine::MySql);
+    let mut streamed = Vec::new();
+    for line in sql.split_inclusive('\n') {
+        streamed.extend(splitter.feed(line));
+    }
+    streamed.extend(splitter.finish());
+    assert_eq!(streamed, split_statements(sql, Engine::MySql));
+    assert_eq!(streamed.len(), 4);
+    assert_eq!(streamed[0], "INSERT INTO t VALUES ('multi\nline; text')");
+}
+
+#[tokio::test]
+async fn sqlite_script_cancellation_rolls_back_its_transaction() {
+    let t = TestDb::sqlite().await;
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let cancel = CancellationToken::new();
+    for st in ["PRAGMA foreign_keys = OFF", "BEGIN TRANSACTION", "CREATE TABLE half (a INT)"] {
+        tx.send(st.to_owned()).await.unwrap();
+    }
+    let driver = t.driver.clone();
+    let token = cancel.clone();
+    let run = tokio::spawn(async move { driver.execute_statements(Some("main"), rx, true, token).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cancel.cancel();
+    tx.send("CREATE TABLE never (a INT)".into()).await.unwrap();
+    drop(tx);
+    let err = run.await.unwrap().unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    // The half-applied transaction was rolled back and the session is usable, with FK enforcement back on.
+    assert!(t.driver.list_objects("main").await.unwrap().is_empty());
+    let r = t.driver.execute_script(Some("main"), "BEGIN; PRAGMA foreign_keys; COMMIT;", 10, None).await.unwrap();
+    assert!(r.error.is_none(), "{:?}", r.error);
+    let StatementOutcome::Rows { rows, .. } = &r.outcomes[1] else { panic!() };
+    assert_eq!(rows[0][0], CellValue::Int(1));
+}
+
+#[tokio::test]
+async fn sqlite_scripts_only_target_the_main_database() {
+    let t = TestDb::sqlite().await;
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    let err = t.driver.execute_statements(Some("other"), rx, true, CancellationToken::new()).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Validation);
 }

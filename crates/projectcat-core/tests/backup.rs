@@ -111,3 +111,32 @@ async fn structure_only_dump_has_no_rows(t: TestDb) {
     }
 }
 scenario!(structure_only_dump_has_no_rows);
+
+#[tokio::test]
+async fn sqlite_backup_of_attached_database_reads_its_own_rows() {
+    let t = TestDb::sqlite().await;
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.db").to_string_lossy().into_owned();
+    t.driver.attach_database(&other, "other").await.unwrap();
+    t.exec("CREATE TABLE main.item (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO main.item VALUES (1, 'main');").await;
+    t.exec("CREATE TABLE other.item (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO other.item VALUES (1, 'other'), (2, 'other');").await;
+
+    let file = dir.path().join("other.sql");
+    let report = dump_database(
+        t.driver.as_ref(),
+        "other",
+        &file,
+        &DumpOptions { structure: true, data: true },
+        no_progress(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.rows, 2);
+    let (target, db) = empty_target(&t, &dir).await;
+    run_sql_file(target.as_ref(), &db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        rows(target.as_ref(), &db, "item", "id").await,
+        vec![vec![CellValue::Int(1), CellValue::Text("other".into())], vec![CellValue::Int(2), CellValue::Text("other".into())],]
+    );
+}
