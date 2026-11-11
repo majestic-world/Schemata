@@ -1,5 +1,5 @@
 use crate::{
-    AppError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
+    AppError, ChangeError, RowChange, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
     TableInfo,
 };
 use async_trait::async_trait;
@@ -53,6 +53,8 @@ pub trait Driver: Send + Sync {
     /// One page of a table or view. On SQLite tables addressed by rowid, a hidden rowid column comes first.
     async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page>;
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64>;
+    /// Applies grid changes in one transaction; returns the number of applied changes.
+    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError>;
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()>;
     /// Drops a database (detaches it on SQLite).
     async fn drop_database(&self, name: &str) -> Result<()>;

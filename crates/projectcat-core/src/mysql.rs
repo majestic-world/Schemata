@@ -1,6 +1,6 @@
 use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
+    AppError, CellValue, ChangeError, RowChange, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
     Engine, ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
@@ -491,6 +491,39 @@ impl Driver for MySqlDriver {
             .map(|r| (0..columns.len()).map(|i| read_value(r, i).map(|v| v.to_cell())).collect::<Result<Vec<_>>>())
             .collect::<Result<Vec<_>>>()?;
         Ok(Page { columns, rows })
+    }
+
+    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
+        let info = self.table_info(db, table).await?;
+        let table_ref = format!("{}.{}", quote_ident(db), quote_ident(table));
+        let statements = crate::sql::change_statements(changes, &table_ref, &info.row_identity, quote_ident, "() VALUES ()")?;
+        let mut tx = self.pool.begin().await.map_err(map_err)?;
+        for (index, st) in statements.iter().enumerate() {
+            let at = |e: sqlx::Error| ChangeError { index: Some(index), error: map_err(e) };
+            let mut q = sqlx::query(AssertSqlSafe(st.sql.clone()));
+            for v in st.binds.iter().cloned() {
+                q = bind(q, v);
+            }
+            let affected = q.execute(&mut *tx).await.map_err(at)?.rows_affected();
+            if st.keyed && affected == 0 {
+                // MySQL counts changed rows: a no-op update reports 0 although the row exists.
+                let exists = match &st.exists_sql {
+                    Some(sql) => {
+                        let mut q = sqlx::query(AssertSqlSafe(sql.clone()));
+                        for v in st.key_binds.iter().cloned() {
+                            q = bind(q, v);
+                        }
+                        q.fetch_optional(&mut *tx).await.map_err(at)?.is_some()
+                    }
+                    None => false,
+                };
+                if !exists {
+                    return Err(crate::sql::vanished(index));
+                }
+            }
+        }
+        tx.commit().await.map_err(map_err)?;
+        Ok(statements.len() as u64)
     }
 
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64> {

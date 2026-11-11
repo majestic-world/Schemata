@@ -13,6 +13,8 @@ import type {
   Filter,
   Page,
   PageRequest,
+  RowChange,
+  ChangeError,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -54,4 +56,13 @@ export const api = {
   attachDatabase: (id: string, path: string, alias: string) => call<void>("attach_database", { id, path, alias }),
   fetchPage: (id: string, db: string, table: string, req: PageRequest) => call<Page>("fetch_page", { id, db, table, req }),
   countRows: (id: string, db: string, table: string, filters: Filter[]) => call<number>("count_rows", { id, db, table, filters }),
+  /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
+  applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {
+    try {
+      return await invoke<number>("apply_changes", { id, db, table, changes });
+    } catch (e) {
+      const err = e as Partial<ChangeError>;
+      throw err && typeof err === "object" && "error" in err ? (err as ChangeError) : ({ index: null, error: toAppError(e) } satisfies ChangeError);
+    }
+  },
 };

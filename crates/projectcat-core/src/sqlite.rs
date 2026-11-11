@@ -1,6 +1,6 @@
 use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
+    AppError, CellValue, ChangeError, RowChange, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
     ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
@@ -351,6 +351,31 @@ impl Driver for SqliteDriver {
     async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page> {
         let (db, table, req) = (db.to_owned(), table.to_owned(), req.clone());
         self.with_conn(move |c| read_page(c, &db, &table, &req)).await
+    }
+
+    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
+        let (db, table, changes) = (db.to_owned(), table.to_owned(), changes.to_vec());
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let info = read_structure(&guard, &db, &table)?;
+            let table_ref = format!("{}.{}", quote_ident(&db), quote_ident(&table));
+            let statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, "DEFAULT VALUES")?;
+            let tx = guard.transaction().map_err(map_err)?;
+            for (index, st) in statements.iter().enumerate() {
+                let params: Vec<rusqlite::types::Value> = st.binds.iter().map(to_sql).collect();
+                let affected = tx
+                    .execute(&st.sql, rusqlite::params_from_iter(params))
+                    .map_err(|e| ChangeError { index: Some(index), error: map_err(e) })?;
+                if st.keyed && affected == 0 {
+                    return Err(crate::sql::vanished(index));
+                }
+            }
+            tx.commit().map_err(map_err)?;
+            Ok(statements.len() as u64)
+        })
+        .await
+        .map_err(|e| ChangeError::from(AppError::io(e.to_string())))?
     }
 
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64> {

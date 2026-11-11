@@ -1,0 +1,187 @@
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import type { CellValue, ColumnMeta, SortSpec } from "../api/types";
+import { displayCell, toTsv } from "../lib/cells";
+import { notify } from "../store/toasts";
+
+const ROW_HEIGHT = 30;
+const HEADER_HEIGHT = 36;
+
+export type GridSelection = { rows: number[]; columns: string[] };
+
+type Props = {
+  columns: ColumnMeta[];
+  rows: CellValue[][];
+  /** Rows at or beyond this index are new (unsaved) rows and are numbered `*`. */
+  savedRowCount?: number;
+  rowNumberOffset?: number;
+  sort?: SortSpec | null;
+  onSort?: (column: string) => void;
+  cellValue?: (row: number, column: string, original: CellValue) => CellValue;
+  rowClass?: (row: number) => string | undefined;
+  cellClass?: (row: number, column: string) => string | undefined;
+  onCellDoubleClick?: (row: number, column: string) => void;
+  renderEditor?: (row: number, column: string) => ReactNode | null;
+  onSelectionChange?: (s: GridSelection) => void;
+  /** Changes when the underlying data is replaced, clearing the selection and scroll. */
+  resetKey?: unknown;
+  emptyText?: string;
+};
+
+type Pos = { r: number; c: number };
+
+function widthFor(c: ColumnMeta): number {
+  const t = c.typeName.toLowerCase();
+  if (/bigint/.test(t)) return 200;
+  if (/int|bit|bool|year/.test(t)) return 110;
+  if (/date|time/.test(t)) return 180;
+  if (/decimal|numeric|float|double|real/.test(t)) return 140;
+  return Math.min(320, Math.max(140, c.name.length * 9 + 40));
+}
+
+export function GridView(props: Props) {
+  const { columns: meta, rows, savedRowCount = rows.length, rowNumberOffset = 0 } = props;
+  const [anchor, setAnchor] = useState<Pos | null>(null);
+  const [focus, setFocus] = useState<Pos | null>(null);
+  const dragging = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const visible = useMemo(() => meta.map((c, idx) => ({ c, idx })).filter((x) => !x.c.hidden), [meta]);
+  const columns = useMemo<ColumnDef<CellValue[]>[]>(
+    () => visible.map(({ c, idx }) => ({ id: c.name, header: c.name, size: widthFor(c), accessorFn: (row) => row[idx], meta: c })),
+    [visible],
+  );
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), columnResizeMode: "onChange", defaultColumn: { minSize: 60, maxSize: 900 } });
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+    scrollMargin: HEADER_HEIGHT,
+  });
+
+  useEffect(() => {
+    setAnchor(null);
+    setFocus(null);
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [props.resetKey]);
+  useEffect(() => {
+    const up = () => (dragging.current = false);
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, []);
+
+  const rect = anchor && focus
+    ? { r0: Math.min(anchor.r, focus.r), r1: Math.max(anchor.r, focus.r), c0: Math.min(anchor.c, focus.c), c1: Math.max(anchor.c, focus.c) }
+    : null;
+  const { onSelectionChange } = props;
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    if (!rect) return onSelectionChange({ rows: [], columns: [] });
+    const rs: number[] = [];
+    for (let r = rect.r0; r <= rect.r1; r++) rs.push(r);
+    onSelectionChange({ rows: rs, columns: visible.slice(rect.c0, rect.c1 + 1).map((v) => v.c.name) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rect?.r0, rect?.r1, rect?.c0, rect?.c1, visible, onSelectionChange]);
+
+  const valueAt = (r: number, c: number): CellValue => {
+    const col = visible[c];
+    const original = rows[r][col.idx];
+    return props.cellValue ? props.cellValue(r, col.c.name, original) : original;
+  };
+  const copy = async () => {
+    if (!rect) return;
+    const out: CellValue[][] = [];
+    for (let r = rect.r0; r <= rect.r1; r++) {
+      const line: CellValue[] = [];
+      for (let c = rect.c0; c <= rect.c1; c++) line.push(valueAt(r, c));
+      out.push(line);
+    }
+    await navigator.clipboard.writeText(toTsv(out));
+    const n = out.length * (rect.c1 - rect.c0 + 1);
+    notify(`Copied ${n} cell${n === 1 ? "" : "s"}`);
+  };
+
+  const headers = table.getHeaderGroups()[0]?.headers ?? [];
+  const totalWidth = 56 + headers.reduce((s, h) => s + h.getSize(), 0);
+
+  return (
+    <div
+      className="grid"
+      ref={scrollRef}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !(e.target instanceof HTMLInputElement)) {
+          e.preventDefault();
+          void copy();
+        }
+      }}
+    >
+      <div className="grid-header" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
+        <div className="grid-rownum head" />
+        {headers.map((h) => {
+          const c = h.column.columnDef.meta as ColumnMeta;
+          return (
+            <div
+              key={h.id}
+              className={`grid-th${props.onSort ? " sortable" : ""}`}
+              style={{ width: h.getSize() }}
+              onClick={() => props.onSort?.(c.name)}
+              title={`${c.name} ${c.typeName}`}
+            >
+              <span className="th-name">{c.name}</span>
+              {props.sort?.column === c.name && (props.sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} />)}
+              <span className="th-type">{c.typeName}</span>
+              <span className={`resizer${h.column.getIsResizing() ? " on" : ""}`} onMouseDown={h.getResizeHandler()} onClick={(e) => e.stopPropagation()} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" }}>
+        {virtualizer.getVirtualItems().map((vr) => {
+          const r = vr.index;
+          return (
+            <div
+              key={vr.key}
+              className={`grid-row${r % 2 ? " odd" : ""} ${props.rowClass?.(r) ?? ""}`}
+              style={{ transform: `translateY(${vr.start - HEADER_HEIGHT}px)`, height: ROW_HEIGHT }}
+            >
+              <div className="grid-rownum">{r < savedRowCount ? rowNumberOffset + r + 1 : "*"}</div>
+              {headers.map((h, c) => {
+                const name = visible[c].c.name;
+                const editor = props.renderEditor?.(r, name);
+                const d = displayCell(valueAt(r, c));
+                const selected = rect && r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
+                return (
+                  <div
+                    key={h.id}
+                    className={`grid-cell ${d.tone}${selected ? " selected" : ""} ${props.cellClass?.(r, name) ?? ""}`}
+                    style={{ width: h.getSize() }}
+                    title={d.text.length > 40 ? d.text : undefined}
+                    data-cell={`${r}:${name}`}
+                    onMouseDown={(e) => {
+                      if (e.button !== 0 || editor) return;
+                      if (e.shiftKey && anchor) setFocus({ r, c });
+                      else {
+                        setAnchor({ r, c });
+                        setFocus({ r, c });
+                      }
+                      dragging.current = true;
+                    }}
+                    onMouseEnter={() => dragging.current && setFocus({ r, c })}
+                    onDoubleClick={() => props.onCellDoubleClick?.(r, name)}
+                  >
+                    {editor ?? <span className="cell-text">{d.text}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      {rows.length === 0 && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
+    </div>
+  );
+}

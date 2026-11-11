@@ -39,7 +39,7 @@ impl Value {
     pub fn to_cell(&self) -> CellValue {
         match self {
             Value::Null => CellValue::Null,
-            Value::Int(i) if i.abs() <= JS_SAFE_INT => CellValue::Int(*i),
+            Value::Int(i) if i.unsigned_abs() <= JS_SAFE_INT as u64 => CellValue::Int(*i),
             Value::Int(i) => CellValue::BigInt(i.to_string()),
             Value::UInt(u) if *u <= JS_SAFE_INT as u64 => CellValue::Int(*u as i64),
             Value::UInt(u) => CellValue::BigInt(u.to_string()),
@@ -89,6 +89,13 @@ impl CellValue {
             CellValue::Text(s) => Value::Text(s.clone()),
             CellValue::DateTime(s) => Value::DateTime(s.clone()),
             CellValue::Json(s) => Value::Json(s.clone()),
+            // A preview that covers the whole value is the value itself.
+            CellValue::Bytes { preview_hex, len } if preview_hex.len() == len * 2 => Value::Bytes(
+                (0..*len)
+                    .map(|i| u8::from_str_radix(&preview_hex[i * 2..i * 2 + 2], 16))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| crate::AppError::validation("Invalid binary value"))?,
+            ),
             CellValue::Bytes { .. } => {
                 return Err(crate::AppError::validation("Binary values cannot be edited in the grid"));
             }

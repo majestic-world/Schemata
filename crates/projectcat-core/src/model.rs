@@ -225,3 +225,34 @@ pub struct Page {
     pub columns: Vec<ColumnMeta>,
     pub rows: Vec<Vec<CellValue>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnValue {
+    pub column: String,
+    pub value: CellValue,
+}
+
+/// One pending grid change. `key` lists the row-identity column values in identity order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RowChange {
+    Update { key: Vec<CellValue>, values: Vec<ColumnValue> },
+    Insert { values: Vec<ColumnValue> },
+    Delete { key: Vec<CellValue> },
+}
+
+/// Failure of a change set; `index` points at the change that failed, when known.
+#[derive(Debug, Clone, Serialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
+#[error("{error}")]
+pub struct ChangeError {
+    pub index: Option<usize>,
+    pub error: crate::AppError,
+}
+
+impl From<crate::AppError> for ChangeError {
+    fn from(error: crate::AppError) -> Self {
+        ChangeError { index: None, error }
+    }
+}

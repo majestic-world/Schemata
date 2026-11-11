@@ -14,7 +14,7 @@
 | 02 | Conexões SQLite, store, credenciais e árvore | 01 | implemented | `7f1354c` |
 | 03 | Driver MySQL/MariaDB e suíte multi-engine | 02 | implemented | `90a9ae7` |
 | 04 | Lista de objetos, inspector e bancos | 03 | implemented | `ed5a517` |
-| 05 | Grid de dados: leitura paginada | 04 | ready-for-agent | |
+| 05 | Grid de dados: leitura paginada | 04 | implemented | `6e2c070` |
 | 06 | Grid de dados: edição com change set | 05 | ready-for-agent | |
 | 07 | Designer de tabela e operações de tabela | 05 | ready-for-agent | |
 | 08 | Editor SQL | 05 | ready-for-agent | |

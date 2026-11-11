@@ -1,17 +1,29 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Plus, RefreshCw, X } from "lucide-react";
+import { Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../api/client";
-import type { CellValue, ColumnMeta, Filter, FilterOp, SortSpec } from "../api/types";
+import type { CellValue, ChangeError, Filter, FilterOp, SortSpec } from "../api/types";
 import { useTabs, type TableTab } from "../store/tabs";
-import { displayCell, toTsv } from "../lib/cells";
 import { formatCount } from "../lib/format";
-import { notify } from "../store/toasts";
+import { notify, notifyError } from "../store/toasts";
+import { confirmAction } from "../store/confirm";
+import { GridView, type GridSelection } from "./GridView";
+import { useTableInfo } from "./TableTabView";
+import {
+  addRow,
+  buildChangeSet,
+  cellValue,
+  changeCount,
+  deleteRows,
+  emptyPending,
+  isDeleted,
+  isDirty,
+  isEdited,
+  setCell,
+  type Pending,
+  type RowRef,
+} from "../lib/pendingChanges";
 
-const ROW_HEIGHT = 30;
-const HEADER_HEIGHT = 36;
 const PAGE_SIZES = [100, 500, 1000];
 
 const OPS: { op: FilterOp; label: string; needsValue: boolean }[] = [
@@ -28,29 +40,8 @@ const OPS: { op: FilterOp; label: string; needsValue: boolean }[] = [
 ];
 
 type DraftFilter = { column: string; op: FilterOp; value: string };
-type Pos = { r: number; c: number };
 
-/** Hooks used by the editing layer to decorate and react to cells. */
-export type GridDecorations = {
-  rowClass?: (rowIndex: number) => string | undefined;
-  cellValue?: (rowIndex: number, column: string, original: CellValue) => CellValue;
-  cellClass?: (rowIndex: number, column: string) => string | undefined;
-  onCellDoubleClick?: (rowIndex: number, column: string) => void;
-  renderEditor?: (rowIndex: number, column: string) => ReactNode | null;
-  extraRows?: CellValue[][];
-  toolbar?: ReactNode;
-};
-
-function widthFor(c: ColumnMeta): number {
-  const t = c.typeName.toLowerCase();
-  if (/bigint/.test(t)) return 200;
-  if (/int|bit|bool|year/.test(t)) return 110;
-  if (/date|time/.test(t)) return 180;
-  if (/decimal|numeric|float|double|real/.test(t)) return 140;
-  return Math.min(320, Math.max(140, c.name.length * 9 + 40));
-}
-
-export function DataGrid({ tab, decorations }: { tab: TableTab; decorations?: GridDecorations }) {
+export function DataGrid({ tab }: { tab: TableTab }) {
   const qc = useQueryClient();
   const setRowCount = useTabs((s) => s.setRowCount);
   const [pageSize, setPageSize] = useState(500);
@@ -59,10 +50,15 @@ export function DataGrid({ tab, decorations }: { tab: TableTab; decorations?: Gr
   const [filters, setFilters] = useState<Filter[]>([]);
   const [drafts, setDrafts] = useState<DraftFilter[]>([]);
   const [showFilters, setShowFilters] = useState(false);
-  const [anchor, setAnchor] = useState<Pos | null>(null);
-  const [focus, setFocus] = useState<Pos | null>(null);
-  const dragging = useRef(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [pending, setPending] = useState<Pending>(emptyPending);
+  const [editing, setEditing] = useState<{ row: number; column: string } | null>(null);
+  const [selection, setSelection] = useState<GridSelection>({ rows: [], columns: [] });
+  const [failedRow, setFailedRow] = useState<RowRef | null>(null);
+  const [committing, setCommitting] = useState(false);
+
+  const info = useTableInfo(tab);
+  const identity = info.data?.rowIdentity;
+  const readOnly = !identity || identity.kind === "none";
 
   const req = { offset, limit: pageSize, sort, filters };
   const base = [tab.connectionId, tab.database, tab.name] as const;
@@ -77,109 +73,139 @@ export function DataGrid({ tab, decorations }: { tab: TableTab; decorations?: Gr
   });
   useEffect(() => setRowCount(tab.id, count.data), [count.data, tab.id, setRowCount]);
 
-  const meta = page.data?.columns ?? [];
-  const visible = useMemo(() => meta.map((c, idx) => ({ c, idx })).filter((x) => !x.c.hidden), [meta]);
-  const rows = useMemo(() => [...(page.data?.rows ?? []), ...(decorations?.extraRows ?? [])], [page.data, decorations?.extraRows]);
-
-  const columns = useMemo<ColumnDef<CellValue[]>[]>(
-    () => visible.map(({ c, idx }) => ({ id: c.name, header: c.name, size: widthFor(c), accessorFn: (row) => row[idx], meta: c })),
-    [visible],
+  const columns = useMemo(() => page.data?.columns ?? [], [page.data]);
+  const pageRows = useMemo(() => page.data?.rows ?? [], [page.data]);
+  const saved = pageRows.length;
+  const rows = useMemo(
+    () => [...pageRows, ...pending.inserts.map(() => columns.map((): CellValue => ({ type: "null" })))],
+    [pageRows, pending.inserts, columns],
   );
-  const table = useReactTable({
-    data: rows,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    columnResizeMode: "onChange",
-    defaultColumn: { minSize: 60, maxSize: 900 },
-  });
+  const refOf = (r: number): RowRef => (r < saved ? { kind: "existing", index: r } : { kind: "new", index: r - saved });
+  const colIndex = (name: string) => columns.findIndex((c) => c.name === name);
+  const original = (r: number, column: string): CellValue => (r < saved ? pageRows[r][colIndex(column)] : { type: "null" });
 
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 12,
-    scrollMargin: HEADER_HEIGHT,
-  });
-
-  useEffect(() => {
-    const up = () => (dragging.current = false);
-    window.addEventListener("mouseup", up);
-    return () => window.removeEventListener("mouseup", up);
-  }, []);
-
-  const total = count.data;
-  const lastOffset = total !== undefined ? Math.max(0, Math.floor((total - 1) / pageSize) * pageSize) : offset;
-  const go = (o: number) => {
-    setOffset(Math.max(0, o));
-    setAnchor(null);
-    setFocus(null);
-    scrollRef.current?.scrollTo({ top: 0 });
+  const dirty = isDirty(pending);
+  const guard = async () =>
+    !dirty ||
+    (await confirmAction({ title: "Discard changes", message: `Discard ${changeCount(pending)} pending change${changeCount(pending) === 1 ? "" : "s"}?`, confirmLabel: "Discard", danger: true }));
+  const reset = () => {
+    setPending(emptyPending());
+    setEditing(null);
+    setFailedRow(null);
   };
-  const refresh = () => {
+  const go = async (o: number) => {
+    if (!(await guard())) return;
+    reset();
+    setOffset(Math.max(0, o));
+  };
+  const refresh = async () => {
+    if (!(await guard())) return;
+    reset();
     void qc.invalidateQueries({ queryKey: ["page", ...base] });
     void qc.invalidateQueries({ queryKey: ["count", ...base] });
   };
-  const toggleSort = (column: string) => {
+  const toggleSort = async (column: string) => {
+    if (!(await guard())) return;
+    reset();
     setSort((s) => (s?.column !== column ? { column, desc: false } : !s.desc ? { column, desc: true } : null));
-    go(0);
+    setOffset(0);
   };
-  const applyFilters = () => {
-    const next: Filter[] = drafts
-      .filter((d) => d.column)
-      .map((d) => ({
-        column: d.column,
-        op: d.op,
-        value: OPS.find((o) => o.op === d.op)!.needsValue ? { type: "text", value: d.value } : null,
-      }));
-    setFilters(next);
-    go(0);
+  const applyFilters = async () => {
+    if (!(await guard())) return;
+    reset();
+    setFilters(
+      drafts
+        .filter((d) => d.column)
+        .map((d) => ({ column: d.column, op: d.op, value: OPS.find((o) => o.op === d.op)!.needsValue ? { type: "text", value: d.value } : null })),
+    );
+    setOffset(0);
   };
 
-  const rect = anchor && focus
-    ? { r0: Math.min(anchor.r, focus.r), r1: Math.max(anchor.r, focus.r), c0: Math.min(anchor.c, focus.c), c1: Math.max(anchor.c, focus.c) }
-    : null;
-  const valueAt = (r: number, c: number): CellValue => {
-    const col = visible[c];
-    const original = rows[r][col.idx];
-    return decorations?.cellValue ? decorations.cellValue(r, col.c.name, original) : original;
+  const total = count.data;
+  const lastOffset = total !== undefined ? Math.max(0, Math.floor((total - 1) / pageSize) * pageSize) : offset;
+
+  const startEdit = useCallback(
+    (row: number, column: string) => {
+      if (readOnly) {
+        notifyError("This data is read-only", { message: "The table has no primary or unique key, so rows cannot be addressed safely." });
+        return;
+      }
+      const v = original(row, column);
+      if (v.type === "bytes" && row < saved) {
+        notifyError("Binary values cannot be edited here", { message: "Set the cell to NULL or use the SQL editor." });
+        return;
+      }
+      setEditing({ row, column });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [readOnly, pageRows, columns],
+  );
+  const write = (row: number, column: string, value: CellValue) => {
+    setPending((p) => setCell(p, refOf(row), column, value, original(row, column)));
+    setFailedRow(null);
   };
-  const copy = async () => {
-    if (!rect) return;
-    const out: CellValue[][] = [];
-    for (let r = rect.r0; r <= rect.r1; r++) {
-      const line: CellValue[] = [];
-      for (let c = rect.c0; c <= rect.c1; c++) line.push(valueAt(r, c));
-      out.push(line);
+
+  const commit = async () => {
+    if (!identity || !page.data) return;
+    const identityColumns = identity.kind === "primaryKey" || identity.kind === "uniqueKey" ? identity.columns : identity.kind === "rowId" ? ["__rowid__"] : [];
+    const { changes, rowOf } = buildChangeSet(pending, pageRows, columns, identityColumns);
+    setCommitting(true);
+    try {
+      await api.applyChanges(tab.connectionId, tab.database, tab.name, changes);
+      notify("Changes saved", `${changes.length} change${changes.length === 1 ? "" : "s"} applied`);
+      reset();
+      await qc.invalidateQueries({ queryKey: ["page", ...base] });
+      await qc.invalidateQueries({ queryKey: ["count", ...base] });
+      void qc.invalidateQueries({ queryKey: ["objects", tab.connectionId, tab.database] });
+    } catch (e) {
+      const err = e as ChangeError;
+      setFailedRow(err.index !== null ? rowOf[err.index] : null);
+      notifyError("Changes were not saved", err.error);
+    } finally {
+      setCommitting(false);
     }
-    await navigator.clipboard.writeText(toTsv(out));
-    notify(`Copied ${out.length * (rect.c1 - rect.c0 + 1)} cell${out.length * (rect.c1 - rect.c0 + 1) === 1 ? "" : "s"}`);
   };
 
-  const headers = table.getHeaderGroups()[0]?.headers ?? [];
-  const totalWidth = 56 + headers.reduce((s, h) => s + h.getSize(), 0);
-  const items = virtualizer.getVirtualItems();
-  const from = rows.length ? offset + 1 : 0;
-  const to = offset + (page.data?.rows.length ?? 0);
+  const sameRef = (a: RowRef | null, b: RowRef) => !!a && a.kind === b.kind && a.index === b.index;
 
   return (
     <div className="grid-wrap">
       <div className="action-bar grid-toolbar">
-        {decorations?.toolbar}
+        {readOnly ? (
+          info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no primary or unique key"}</span>
+        ) : (
+          <>
+            <button className="btn" onClick={() => { const r = addRow(pending); setPending(r.pending); setEditing({ row: saved + r.row.index, column: columns.find((c) => !c.hidden)?.name ?? "" }); }}>
+              <Plus size={15} />Add Row
+            </button>
+            <button className="btn" disabled={selection.rows.length === 0} onClick={() => { setPending((p) => deleteRows(p, selection.rows.map(refOf))); setEditing(null); }}>
+              <Trash2 size={15} />Delete
+            </button>
+            <button className="btn" disabled={selection.rows.length === 0} title="Set selected cells to NULL" onClick={() => selection.rows.forEach((r) => selection.columns.forEach((c) => write(r, c, { type: "null" })))}>
+              <Ban size={15} />Set NULL
+            </button>
+            <div className="toolbar-sep" />
+            <button className="btn primary" disabled={!dirty || committing} onClick={commit}>
+              <Check size={15} />Commit{dirty ? ` (${changeCount(pending)})` : ""}
+            </button>
+            <button className="btn" disabled={!dirty || committing} onClick={reset}><Undo2 size={15} />Discard</button>
+          </>
+        )}
         <button className={`btn${showFilters || filters.length ? " active-filter" : ""}`} onClick={() => setShowFilters((v) => !v)}>
           <FilterIcon size={15} />Filter{filters.length ? ` (${filters.length})` : ""}
         </button>
         <div className="grow" />
         <div className="pager">
-          <button className="icon-btn" title="First page" disabled={offset === 0} onClick={() => go(0)}><ChevronsLeft size={16} /></button>
-          <button className="icon-btn" title="Previous page" disabled={offset === 0} onClick={() => go(offset - pageSize)}><ChevronLeft size={16} /></button>
-          <span className="pager-text">{formatCount(from)}–{formatCount(to)} of {total === undefined ? "…" : formatCount(total)}</span>
-          <button className="icon-btn" title="Next page" disabled={total === undefined || offset + pageSize >= total} onClick={() => go(offset + pageSize)}><ChevronRight size={16} /></button>
-          <button className="icon-btn" title="Last page" disabled={total === undefined || offset >= lastOffset} onClick={() => go(lastOffset)}><ChevronsRight size={16} /></button>
-          <select className="input sm" value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); go(0); }} aria-label="Rows per page">
+          <button className="icon-btn" title="First page" aria-label="First page" disabled={offset === 0} onClick={() => go(0)}><ChevronsLeft size={16} /></button>
+          <button className="icon-btn" title="Previous page" aria-label="Previous page" disabled={offset === 0} onClick={() => go(offset - pageSize)}><ChevronLeft size={16} /></button>
+          <span className="pager-text">{formatCount(saved ? offset + 1 : 0)}–{formatCount(offset + saved)} of {total === undefined ? "…" : formatCount(total)}</span>
+          <button className="icon-btn" title="Next page" aria-label="Next page" disabled={total === undefined || offset + pageSize >= total} onClick={() => go(offset + pageSize)}><ChevronRight size={16} /></button>
+          <button className="icon-btn" title="Last page" aria-label="Last page" disabled={total === undefined || offset >= lastOffset} onClick={() => go(lastOffset)}><ChevronsRight size={16} /></button>
+          <select className="input sm" value={pageSize} aria-label="Rows per page" onChange={async (e) => { const n = Number(e.target.value); if (!(await guard())) return; reset(); setPageSize(n); setOffset(0); }}>
             {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
           </select>
         </div>
-        <button className="icon-btn" title="Refresh" onClick={refresh}><RefreshCw size={15} className={page.isFetching ? "spin" : undefined} /></button>
+        <button className="icon-btn" title="Refresh" aria-label="Refresh" onClick={refresh}><RefreshCw size={15} className={page.isFetching ? "spin" : undefined} /></button>
       </div>
       {showFilters && (
         <div className="filter-bar">
@@ -190,102 +216,81 @@ export function DataGrid({ tab, decorations }: { tab: TableTab; decorations?: Gr
               <div className="filter-row" key={i}>
                 <span className="muted filter-join">{i === 0 ? "Where" : "and"}</span>
                 <select className="input sm" value={d.column} aria-label="Filter column" onChange={(e) => patch({ column: e.target.value })}>
-                  {visible.map(({ c }) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  {columns.filter((c) => !c.hidden).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
                 <select className="input sm" value={d.op} aria-label="Filter operator" onChange={(e) => patch({ op: e.target.value as FilterOp })}>
                   {OPS.map((o) => <option key={o.op} value={o.op}>{o.label}</option>)}
                 </select>
                 {needsValue && (
-                  <input className="input sm" value={d.value} aria-label="Filter value" placeholder="value" onChange={(e) => patch({ value: e.target.value })} onKeyDown={(e) => e.key === "Enter" && applyFilters()} />
+                  <input className="input sm" value={d.value} aria-label="Filter value" placeholder="value" onChange={(e) => patch({ value: e.target.value })} onKeyDown={(e) => e.key === "Enter" && void applyFilters()} />
                 )}
                 <button className="icon-btn" aria-label="Remove filter" onClick={() => setDrafts((ds) => ds.filter((_, j) => j !== i))}><X size={14} /></button>
               </div>
             );
           })}
           <div className="filter-actions">
-            <button className="btn sm" onClick={() => setDrafts((ds) => [...ds, { column: visible[0]?.c.name ?? "", op: "eq", value: "" }])}><Plus size={13} />Add condition</button>
+            <button className="btn sm" onClick={() => setDrafts((ds) => [...ds, { column: columns.find((c) => !c.hidden)?.name ?? "", op: "eq", value: "" }])}><Plus size={13} />Add condition</button>
             <button className="btn sm primary" onClick={applyFilters}>Apply</button>
-            {filters.length > 0 && <button className="btn sm ghost" onClick={() => { setDrafts([]); setFilters([]); go(0); }}>Clear</button>}
+            {filters.length > 0 && <button className="btn sm ghost" onClick={async () => { if (!(await guard())) return; reset(); setDrafts([]); setFilters([]); setOffset(0); }}>Clear</button>}
           </div>
         </div>
       )}
       {page.isError ? (
         <div className="empty"><p className="error-text">{(page.error as { message: string }).message}</p></div>
       ) : (
-        <div
-          className="grid"
-          ref={scrollRef}
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
-              e.preventDefault();
-              void copy();
-            }
+        <GridView
+          columns={columns}
+          rows={rows}
+          savedRowCount={saved}
+          rowNumberOffset={offset}
+          sort={sort}
+          onSort={toggleSort}
+          resetKey={page.data}
+          onSelectionChange={setSelection}
+          emptyText={page.isSuccess ? `No rows${filters.length ? " match the filter" : ""}.` : undefined}
+          cellValue={(r, column, orig) => cellValue(pending, refOf(r), column, r < saved ? orig : undefined)}
+          rowClass={(r) => {
+            const ref = refOf(r);
+            if (sameRef(failedRow, ref)) return "row-failed";
+            if (ref.kind === "new") return "row-new";
+            return isDeleted(pending, ref) ? "row-deleted" : undefined;
           }}
-        >
-          <div className="grid-header" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
-            <div className="grid-rownum head" />
-            {headers.map((h) => {
-              const c = h.column.columnDef.meta as ColumnMeta;
-              return (
-                <div key={h.id} className="grid-th" style={{ width: h.getSize() }} onClick={() => toggleSort(c.name)} title={`${c.name} ${c.typeName}`}>
-                  <span className="th-name">{c.name}</span>
-                  {sort?.column === c.name && (sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} />)}
-                  <span className="th-type">{c.typeName}</span>
-                  <span
-                    className={`resizer${h.column.getIsResizing() ? " on" : ""}`}
-                    onMouseDown={h.getResizeHandler()}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" }}>
-            {items.map((vr) => {
-              const r = vr.index;
-              return (
-                <div
-                  key={vr.key}
-                  className={`grid-row${r % 2 ? " odd" : ""} ${decorations?.rowClass?.(r) ?? ""}`}
-                  style={{ transform: `translateY(${vr.start - HEADER_HEIGHT}px)`, height: ROW_HEIGHT }}
-                >
-                  <div className="grid-rownum">{r < (page.data?.rows.length ?? 0) ? offset + r + 1 : "*"}</div>
-                  {headers.map((h, c) => {
-                    const name = visible[c].c.name;
-                    const editor = decorations?.renderEditor?.(r, name);
-                    const v = valueAt(r, c);
-                    const d = displayCell(v);
-                    const selected = rect && r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
-                    return (
-                      <div
-                        key={h.id}
-                        className={`grid-cell ${d.tone}${selected ? " selected" : ""} ${decorations?.cellClass?.(r, name) ?? ""}`}
-                        style={{ width: h.getSize() }}
-                        title={d.text.length > 40 ? d.text : undefined}
-                        onMouseDown={(e) => {
-                          if (e.button !== 0) return;
-                          if (e.shiftKey && anchor) setFocus({ r, c });
-                          else {
-                            setAnchor({ r, c });
-                            setFocus({ r, c });
-                          }
-                          dragging.current = true;
-                        }}
-                        onMouseEnter={() => dragging.current && setFocus({ r, c })}
-                        onDoubleClick={() => decorations?.onCellDoubleClick?.(r, name)}
-                      >
-                        {editor ?? <span className="cell-text">{d.text}</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-          {page.isSuccess && rows.length === 0 && <div className="empty grid-empty"><p>No rows{filters.length ? " match the filter" : ""}.</p></div>}
-        </div>
+          cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
+          onCellDoubleClick={startEdit}
+          renderEditor={(r, column) =>
+            editing?.row === r && editing.column === column ? (
+              <CellEditor
+                initial={cellValue(pending, refOf(r), column, r < saved ? pageRows[r][colIndex(column)] : undefined)}
+                onDone={(v) => {
+                  if (v) write(r, column, v);
+                  setEditing(null);
+                }}
+              />
+            ) : null
+          }
+        />
       )}
     </div>
+  );
+}
+
+function CellEditor({ initial, onDone }: { initial: CellValue; onDone: (v: CellValue | null) => void }) {
+  const start = initial.type === "null" ? "" : initial.type === "bytes" ? "" : String(initial.value);
+  const [text, setText] = useState(start);
+  // Unchanged text is not an edit (so Enter on a NULL cell keeps it NULL).
+  const finish = (save: boolean) => onDone(save && text !== start ? { type: "text", value: text } : null);
+  return (
+    <input
+      className="cell-editor"
+      autoFocus
+      value={text}
+      placeholder={initial.type === "null" ? "NULL" : undefined}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") finish(true);
+        if (e.key === "Escape") onDone(null);
+      }}
+    />
   );
 }

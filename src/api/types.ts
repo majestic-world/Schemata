@@ -109,3 +109,10 @@ export type FilterOp = "eq" | "notEq" | "lt" | "lte" | "gt" | "gte" | "contains"
 export type Filter = { column: string; op: FilterOp; value: CellValue | null };
 export type PageRequest = { offset: number; limit: number; sort: SortSpec | null; filters: Filter[] };
 export type Page = { columns: ColumnMeta[]; rows: CellValue[][] };
+
+export type ColumnValue = { column: string; value: CellValue };
+export type RowChange =
+  | { kind: "update"; key: CellValue[]; values: ColumnValue[] }
+  | { kind: "insert"; values: ColumnValue[] }
+  | { kind: "delete"; key: CellValue[] };
+export type ChangeError = { index: number | null; error: AppError };
