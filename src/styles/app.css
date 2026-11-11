@@ -185,3 +185,49 @@ input, textarea, [contenteditable] { user-select: text; }
 .code-block { margin: 0 14px 14px; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 320px; overflow: auto; }
 .status-item { display: inline-flex; align-items: center; gap: 6px; }
 .crumbs span { display: inline-flex; align-items: center; gap: 5px; }
+
+.inspector-summary { text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.inspector-summary:hover { border-color: var(--accent); }
+.tab-close { width: 20px; height: 20px; margin-left: 2px; }
+.tab .tree-icon { flex: none; }
+.row-count { min-width: 80px; justify-content: flex-end; }
+
+/* Data grid */
+.grid-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.grid-toolbar { flex-wrap: wrap; }
+.btn.active-filter { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.pager { display: flex; align-items: center; gap: 2px; }
+.pager-text { padding: 0 8px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+select.input.sm, input.input.sm { height: 28px; font-size: var(--fs-sm); padding: 0 8px; margin-left: 6px; }
+.filter-bar { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.filter-row { display: flex; align-items: center; gap: 2px; }
+.filter-row .input { margin-left: 6px; }
+.filter-join { width: 46px; text-align: right; font-size: var(--fs-sm); }
+.filter-actions { display: flex; gap: 6px; padding-left: 52px; }
+.grid { flex: 1; overflow: auto; position: relative; outline: none; min-height: 0; }
+.grid-header { position: sticky; top: 0; z-index: 2; display: flex; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.grid-th { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-right: 1px solid var(--border); font-weight: 600; cursor: pointer; white-space: nowrap; overflow: hidden; flex: none; }
+.grid-th:hover { background: var(--surface-hover); }
+.th-name { overflow: hidden; text-overflow: ellipsis; }
+.th-type { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; }
+.resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
+.resizer:hover, .resizer.on { background: var(--accent); }
+.grid-row { position: absolute; left: 0; top: 0; display: flex; }
+.grid-row.odd { background: #fafbfc; }
+.grid-row:hover { background: var(--surface-hover); }
+.grid-rownum { width: 56px; flex: none; display: flex; align-items: center; justify-content: flex-end; padding-right: 10px; color: var(--text-faint); font-size: 11px; border-right: 1px solid var(--border); background: var(--surface-2); position: sticky; left: 0; z-index: 1; font-variant-numeric: tabular-nums; }
+.grid-rownum.head { height: 100%; z-index: 3; }
+.grid-cell { flex: none; display: flex; align-items: center; padding: 0 10px; border-right: 1px solid var(--border); border-bottom: 1px solid #eef1f4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: cell; }
+.grid-cell.number { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.grid-cell.null { color: var(--text-faint); font-style: italic; font-size: 12px; }
+.grid-cell.bytes { color: #7a5aa8; font-family: var(--font-mono); font-size: 12px; }
+.grid-cell.selected { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.grid-empty { position: absolute; inset: 60px 0 auto 0; }
+.error-text { color: var(--danger); user-select: text; }
+.structure, .info-view { padding: 4px 0 20px; }
+.block-title { margin: 16px 14px 8px; font-size: var(--fs); font-weight: 650; }
+.block-title.row-between { display: flex; align-items: center; justify-content: space-between; }
+.block-title.row-between h4 { margin: 0; font-size: var(--fs); }
+.mono { font-family: var(--font-mono); font-size: 12px; }
+.kv.wide { grid-template-columns: 140px 1fr; padding: 16px; max-width: 720px; }
+.cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

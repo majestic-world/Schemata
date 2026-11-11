@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Table2, Eye, Info, Layers, Database, Server } from "lucide-react";
+import { Table2, Eye, Info, Layers, Database, Server, ChevronRight } from "lucide-react";
+import { useTabs } from "../store/tabs";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
@@ -73,13 +74,18 @@ function ObjectDetails({ connectionId, database, name }: { connectionId: string;
           {isTable && (<><dt>Indexes</dt><dd>{t.indexes.length}</dd><dt>Foreign keys</dt><dd>{t.foreignKeys.length}</dd></>)}
         </dl>
       </Section>
-      <div className="card inspector-summary">
+      <button
+        className="card inspector-summary"
+        title={`Open ${t.name}`}
+        onClick={() => useTabs.getState().openTable({ connectionId, database, name: t.name, objectKind: t.kind })}
+      >
         <Database size={26} className="tree-icon" />
-        <div>
+        <div className="grow">
           <b>{t.name}</b>
           <span>{isTable ? `${formatCount(t.rows)} rows • ` : ""}{t.columns.length} columns</span>
         </div>
-      </div>
+        <ChevronRight size={16} className="faint" />
+      </button>
     </div>
   );
 }

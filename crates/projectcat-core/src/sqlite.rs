@@ -1,8 +1,8 @@
 use crate::model::derive_identity;
 use crate::{
-    AppError, CellValue, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind,
-    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Result, RowIdentity, ScriptResult, StatementError,
-    StatementOutcome, TableInfo, Value, split_statements,
+    AppError, CellValue, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
+    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
+    ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
@@ -92,7 +92,48 @@ fn collect<T>(stmt: &mut rusqlite::Statement<'_>, params: impl rusqlite::Params,
     stmt.query_map(params, f).map_err(map_err)?.collect::<rusqlite::Result<Vec<T>>>().map_err(map_err)
 }
 
+pub(crate) fn to_sql(v: &Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value as S;
+    match v {
+        Value::Null => S::Null,
+        Value::Int(i) => S::Integer(*i),
+        Value::UInt(u) => i64::try_from(*u).map(S::Integer).unwrap_or_else(|_| S::Text(u.to_string())),
+        Value::Float(f) => S::Real(*f),
+        Value::Decimal(s) | Value::Text(s) | Value::DateTime(s) | Value::Json(s) => S::Text(s.clone()),
+        Value::Bytes(b) => S::Blob(b.clone()),
+    }
+}
+
 fn read_table_info(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
+    let mut info = read_structure(c, db, name)?;
+    if info.kind == ObjectKind::Table {
+        let sql = format!("SELECT count(*) FROM {}.{}", quote_ident(db), quote_ident(name));
+        info.rows = Some(c.query_row(&sql, [], |r| r.get(0)).map_err(map_err)?);
+    }
+    Ok(info)
+}
+
+fn read_page(c: &Connection, db: &str, table: &str, req: &PageRequest) -> Result<Page> {
+    let info = read_structure(c, db, table)?;
+    let rowid = info.row_identity == RowIdentity::RowId;
+    let select_list = if rowid { format!("rowid AS {}, *", quote_ident(ROWID_COLUMN)) } else { "*".to_owned() };
+    let from = format!("{}.{}", quote_ident(db), quote_ident(table));
+    let (sql, binds) = crate::sql::select_page(&select_list, &from, req, quote_ident)?;
+    let mut columns: Vec<ColumnMeta> = Vec::new();
+    if rowid {
+        columns.push(ColumnMeta { name: ROWID_COLUMN.to_owned(), type_name: "INTEGER".into(), hidden: true });
+    }
+    columns.extend(info.columns.iter().map(|col| ColumnMeta { name: col.name.clone(), type_name: col.data_type.clone(), hidden: false }));
+    let mut stmt = c.prepare(&sql).map_err(map_err)?;
+    let n = columns.len();
+    let params: Vec<rusqlite::types::Value> = binds.iter().map(to_sql).collect();
+    let rows = collect(&mut stmt, rusqlite::params_from_iter(params), |r| {
+        Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect::<Vec<_>>())
+    })?;
+    Ok(Page { columns, rows })
+}
+
+fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     let schema = quote_ident(db);
     let (kind, create_sql): (String, Option<String>) = c
         .query_row(
@@ -162,12 +203,6 @@ fn read_table_info(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         fk.ref_columns.extend(to);
     }
 
-    let rows = match kind {
-        ObjectKind::Table => Some(
-            c.query_row(&format!("SELECT count(*) FROM {schema}.{}", quote_ident(name)), [], |r| r.get(0)).map_err(map_err)?,
-        ),
-        ObjectKind::View => None,
-    };
     let row_identity = match kind {
         ObjectKind::Table => derive_identity(&columns, &indexes, !upper_sql.contains("WITHOUT ROWID")),
         ObjectKind::View => RowIdentity::None,
@@ -181,8 +216,8 @@ fn read_table_info(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         engine: None,
         charset: None,
         collation: None,
-        rows,
         created: None,
+        rows: None,
         modified: None,
         comment: None,
         create_sql,
@@ -311,6 +346,21 @@ impl Driver for SqliteDriver {
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo> {
         let (db, name) = (db.to_owned(), name.to_owned());
         self.with_conn(move |c| read_table_info(c, &db, &name)).await
+    }
+
+    async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page> {
+        let (db, table, req) = (db.to_owned(), table.to_owned(), req.clone());
+        self.with_conn(move |c| read_page(c, &db, &table, &req)).await
+    }
+
+    async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64> {
+        let from = format!("{}.{}", quote_ident(db), quote_ident(table));
+        let (sql, binds) = crate::sql::count(&from, filters, quote_ident)?;
+        self.with_conn(move |c| {
+            let params: Vec<rusqlite::types::Value> = binds.iter().map(to_sql).collect();
+            c.query_row(&sql, rusqlite::params_from_iter(params), |r| r.get::<_, i64>(0)).map(|n| n as u64).map_err(map_err)
+        })
+        .await
     }
 
     async fn create_database(&self, _spec: &CreateDatabase) -> Result<()> {

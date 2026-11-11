@@ -178,3 +178,50 @@ pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has
     }
     if has_rowid { RowIdentity::RowId } else { RowIdentity::None }
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SortSpec {
+    pub column: String,
+    pub desc: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterOp {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Contains,
+    StartsWith,
+    IsNull,
+    IsNotNull,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filter {
+    pub column: String,
+    pub op: FilterOp,
+    pub value: Option<CellValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageRequest {
+    pub offset: u64,
+    pub limit: u64,
+    pub sort: Option<SortSpec>,
+    /// Combined with AND.
+    pub filters: Vec<Filter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page {
+    pub columns: Vec<ColumnMeta>,
+    pub rows: Vec<Vec<CellValue>>,
+}

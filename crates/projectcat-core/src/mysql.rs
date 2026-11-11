@@ -1,9 +1,12 @@
 use crate::model::derive_identity;
 use crate::{
     AppError, CellValue, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
-    Engine, ErrorKind, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Result, RowIdentity, ScriptResult,
-    StatementError, StatementOutcome, TableInfo, Value, split_statements,
+    Engine, ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowIdentity,
+    ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
+use sqlx::MySql;
+use sqlx::mysql::MySqlArguments;
+use sqlx::query::Query;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
@@ -79,6 +82,12 @@ pub(crate) fn read_value(row: &MySqlRow, i: usize) -> Result<Value> {
             Value::UInt(bytes.iter().fold(0u64, |acc, b| (acc << 8) | *b as u64))
         }
         "JSON" => Value::Json(row.try_get_unchecked::<String, _>(i).map_err(dec)?),
+        // Text with a `_bin` collation carries the BINARY flag too; only the `binary` collation means bytes.
+        "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB"
+            if <String as sqlx::Type<MySql>>::compatible(raw.type_info().as_ref()) =>
+        {
+            Value::Text(row.try_get_unchecked::<String, _>(i).map_err(dec)?)
+        }
         "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" | "GEOMETRY" => {
             Value::Bytes(row.try_get_unchecked::<Vec<u8>, _>(i).map_err(dec)?)
         }
@@ -102,6 +111,18 @@ pub(crate) fn column_meta(row: &MySqlRow) -> Vec<ColumnMeta> {
         .iter()
         .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
         .collect()
+}
+
+/// Binds a value as a prepared-statement parameter.
+pub(crate) fn bind(q: Query<'_, MySql, MySqlArguments>, v: Value) -> Query<'_, MySql, MySqlArguments> {
+    match v {
+        Value::Null => q.bind(None::<String>),
+        Value::Int(i) => q.bind(i),
+        Value::UInt(u) => q.bind(u),
+        Value::Float(f) => q.bind(f),
+        Value::Decimal(s) | Value::Text(s) | Value::DateTime(s) | Value::Json(s) => q.bind(s),
+        Value::Bytes(b) => q.bind(b),
+    }
 }
 
 /// Nullable text of a column, decoded leniently (information_schema types vary across servers).
@@ -439,6 +460,48 @@ impl Driver for MySqlDriver {
             create_sql,
             row_identity,
         })
+    }
+
+    async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page> {
+        let col_rows = sqlx::query(
+            "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(db)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        if col_rows.is_empty() {
+            return Err(AppError::validation(format!("Table {table} not found")));
+        }
+        let columns = col_rows
+            .iter()
+            .map(|r| Ok(ColumnMeta { name: text(r, 0)?.unwrap_or_default(), type_name: text(r, 1)?.unwrap_or_default(), hidden: false }))
+            .collect::<Result<Vec<_>>>()?;
+        let from = format!("{}.{}", quote_ident(db), quote_ident(table));
+        let select_list = columns.iter().map(|c| quote_ident(&c.name)).collect::<Vec<_>>().join(", ");
+        let (sql, binds) = crate::sql::select_page(&select_list, &from, req, quote_ident)?;
+        let mut q = sqlx::query(AssertSqlSafe(sql));
+        for v in binds {
+            q = bind(q, v);
+        }
+        let rows = q.fetch_all(&self.pool).await.map_err(map_err)?;
+        let rows = rows
+            .iter()
+            .map(|r| (0..columns.len()).map(|i| read_value(r, i).map(|v| v.to_cell())).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Page { columns, rows })
+    }
+
+    async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64> {
+        let from = format!("{}.{}", quote_ident(db), quote_ident(table));
+        let (sql, binds) = crate::sql::count(&from, filters, quote_ident)?;
+        let mut q = sqlx::query(AssertSqlSafe(sql));
+        for v in binds {
+            q = bind(q, v);
+        }
+        let row = q.fetch_one(&self.pool).await.map_err(map_err)?;
+        Ok(int(&row, 0)?.unwrap_or(0) as u64)
     }
 
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()> {

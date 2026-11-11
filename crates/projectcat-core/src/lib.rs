@@ -7,6 +7,7 @@ mod mysql;
 mod secrets;
 mod sessions;
 mod splitter;
+mod sql;
 mod sqlite;
 mod store;
 mod value;

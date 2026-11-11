@@ -31,7 +31,7 @@ function compareBy(a: ObjectInfo, b: ObjectInfo, key: SortKey): number {
   }
 }
 
-export function ObjectList({ actions }: { actions?: React.ReactNode }) {
+export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onOpen: (o: ObjectInfo) => void }) {
   const qc = useQueryClient();
   const selection = useWorkspace((s) => s.selection);
   const select = useWorkspace((s) => s.select);
@@ -101,6 +101,7 @@ export function ObjectList({ actions }: { actions?: React.ReactNode }) {
                   key={o.name}
                   className={selected ? "selected" : undefined}
                   onClick={() => select({ connectionId, database, object: { name: o.name, kind: o.kind } })}
+                  onDoubleClick={() => onOpen(o)}
                   data-object={o.name}
                 >
                   <td><span className="cell-name"><Icon size={15} className="tree-icon obj" />{o.name}</span></td>

@@ -103,3 +103,9 @@ export type TableInfo = {
 };
 export type CreateDatabase = { name: string; charset: string | null; collation: string | null };
 export type CharsetInfo = { name: string; defaultCollation: string; collations: string[] };
+
+export type SortSpec = { column: string; desc: boolean };
+export type FilterOp = "eq" | "notEq" | "lt" | "lte" | "gt" | "gte" | "contains" | "startsWith" | "isNull" | "isNotNull";
+export type Filter = { column: string; op: FilterOp; value: CellValue | null };
+export type PageRequest = { offset: number; limit: number; sort: SortSpec | null; filters: Filter[] };
+export type Page = { columns: ColumnMeta[]; rows: CellValue[][] };

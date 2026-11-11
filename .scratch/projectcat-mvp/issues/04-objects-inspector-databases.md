@@ -6,11 +6,15 @@
 
 **Bloqueado por:** 03
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] Lista de objetos e inspector exibem metadados corretos nos 3 engines
-- [ ] Criar/excluir banco atualiza a árvore; exclusão exige digitar o nome
-- [ ] Attach/detach de arquivo SQLite funciona
+- [x] Lista de objetos e inspector exibem metadados corretos nos 3 engines
+- [x] Criar/excluir banco atualiza a árvore; exclusão exige digitar o nome
+- [x] Attach/detach de arquivo SQLite funciona
 
 ## Evidências de implementação
+
+- Commit `ed5a517`
+- `cargo test --test metadata`: 15 passed (table_info com colunas/índices/FKs/defaults/identidade de linha, CREATE reexecutável, criar/excluir banco com charset/collation, attach/detach SQLite) nos 3 engines
+- UI via CDP: lista de objetos ordenável (tabelas antes de views), inspector com Rows/Created/Modified/Comment/Engine/Charset/Collation, breadcrumb na status bar; criar banco latin1 e excluir exigindo digitar o nome; attach/detach de arquivo SQLite

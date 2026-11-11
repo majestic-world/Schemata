@@ -11,6 +11,10 @@ import { closeConnection, openConnection } from "../lib/connect";
 import { confirmAction } from "../store/confirm";
 import { notify, notifyError } from "../store/toasts";
 import { useDialogs } from "../store/dialogs";
+import { OBJECTS_TAB, useTabs, type TableView } from "../store/tabs";
+
+/** Selecting a database or object in the tree shows it in the Objects tab. */
+const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
 
 export function Sidebar() {
   const showDialog = useConnections((s) => s.showDialog);
@@ -242,7 +246,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
             icon={<DbIcon size={16} className="tree-icon db" />}
             label={database}
             onToggle={toggle}
-            onClick={() => select({ connectionId, database })}
+            onClick={() => { select({ connectionId, database }); showObjects(); }}
             onDoubleClick={toggle}
           />
         </div>
@@ -278,6 +282,11 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
         label={kind === "table" ? "Tables" : "Views"}
         trailing={<span className="count">{search ? `${shown.length}/${all.length}` : all.length}</span>}
         onToggle={() => setExpanded(key, !expandedFlag)}
+        onClick={() => {
+          useWorkspace.getState().select({ connectionId, database });
+          showObjects();
+          setExpanded(key, !expandedFlag);
+        }}
       />
       {expanded &&
         shown.map((o) => <ObjectNode key={o.name} connectionId={connectionId} database={database} object={o} />)}
@@ -294,14 +303,24 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
       s.selection.object?.name === object.name,
   );
   const Icon = object.kind === "table" ? Table2 : Eye;
+  const open = (view: TableView) => useTabs.getState().openTable({ connectionId, database, name: object.name, objectKind: object.kind }, view);
+  const items: Item[] = [
+    { label: object.kind === "table" ? "Open Table" : "Open View", onSelect: () => open("data") },
+    { label: object.kind === "table" ? "Structure" : "Definition", onSelect: () => open(object.kind === "table" ? "structure" : "info") },
+  ];
   return (
-    <Row
-      depth={3}
-      expandable={false}
-      selected={selected}
-      icon={<Icon size={15} className="tree-icon obj" />}
-      label={object.name}
-      onClick={() => select({ connectionId, database, object: { name: object.name, kind: object.kind } })}
-    />
+    <Menu items={items}>
+      <div>
+        <Row
+          depth={3}
+          expandable={false}
+          selected={selected}
+          icon={<Icon size={15} className="tree-icon obj" />}
+          label={object.name}
+          onClick={() => { select({ connectionId, database, object: { name: object.name, kind: object.kind } }); showObjects(); }}
+          onDoubleClick={() => open("data")}
+        />
+      </div>
+    </Menu>
   );
 }

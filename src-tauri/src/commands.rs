@@ -1,8 +1,8 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use projectcat_core::{
-    AppError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, ObjectInfo, SaveOutcome,
-    ScriptResult, Sessions, TableInfo, connect,
+    AppError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
+    PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
 };
 use tauri::State;
 
@@ -106,4 +106,18 @@ pub async fn list_charsets(sessions: State<'_, Sessions>, id: String) -> CmdResu
 #[tauri::command]
 pub async fn attach_database(sessions: State<'_, Sessions>, id: String, path: String, alias: String) -> CmdResult<()> {
     sessions.driver(&id).await?.attach_database(&path, &alias).await
+}
+
+#[tauri::command]
+pub async fn fetch_page(sessions: State<'_, Sessions>, id: String, db: String, table: String, req: PageRequest) -> CmdResult<Page> {
+    sessions
+        .with_driver(&id, |d| { let (db, table, req) = (db.clone(), table.clone(), req.clone()); async move { d.fetch_page(&db, &table, &req).await } })
+        .await
+}
+
+#[tauri::command]
+pub async fn count_rows(sessions: State<'_, Sessions>, id: String, db: String, table: String, filters: Vec<Filter>) -> CmdResult<u64> {
+    sessions
+        .with_driver(&id, |d| { let (db, table, filters) = (db.clone(), table.clone(), filters.clone()); async move { d.count_rows(&db, &table, &filters).await } })
+        .await
 }

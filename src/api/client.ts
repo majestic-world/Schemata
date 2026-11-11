@@ -10,6 +10,9 @@ import type {
   TableInfo,
   CreateDatabase,
   CharsetInfo,
+  Filter,
+  Page,
+  PageRequest,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -49,4 +52,6 @@ export const api = {
   dropDatabase: (id: string, name: string) => call<void>("drop_database", { id, name }),
   listCharsets: (id: string) => call<CharsetInfo[]>("list_charsets", { id }),
   attachDatabase: (id: string, path: string, alias: string) => call<void>("attach_database", { id, path, alias }),
+  fetchPage: (id: string, db: string, table: string, req: PageRequest) => call<Page>("fetch_page", { id, db, table, req }),
+  countRows: (id: string, db: string, table: string, filters: Filter[]) => call<number>("count_rows", { id, db, table, filters }),
 };

@@ -31,6 +31,8 @@ pub fn run() {
             commands::drop_database,
             commands::list_charsets,
             commands::attach_database,
+            commands::fetch_page,
+            commands::count_rows,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");

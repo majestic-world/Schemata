@@ -1,4 +1,7 @@
-use crate::{AppError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, ObjectInfo, Result, ScriptResult, TableInfo};
+use crate::{
+    AppError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
+    TableInfo,
+};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -47,6 +50,9 @@ pub trait Driver: Send + Sync {
     /// Cancels the statement currently running under `execution_id`, if any.
     async fn cancel(&self, execution_id: &str) -> Result<()>;
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo>;
+    /// One page of a table or view. On SQLite tables addressed by rowid, a hidden rowid column comes first.
+    async fn fetch_page(&self, db: &str, table: &str, req: &PageRequest) -> Result<Page>;
+    async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64>;
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()>;
     /// Drops a database (detaches it on SQLite).
     async fn drop_database(&self, name: &str) -> Result<()>;

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Database, Server, Table2 } from "lucide-react";
+import { ChevronRight, Database, Server, Table2, Rows3, ListTree, Info } from "lucide-react";
+import { useTabs, type TableView } from "../store/tabs";
+import { formatCount } from "../lib/format";
 import { api } from "../api/client";
 import { useWorkspace } from "../store/workspace";
 import { useConnections } from "../store/connections";
@@ -23,6 +25,32 @@ export function StatusBar() {
         </nav>
       )}
       <div className="grow" />
+      <TableToggles />
     </footer>
+  );
+}
+
+const VIEWS: { view: TableView; label: string; icon: typeof Rows3 }[] = [
+  { view: "data", label: "Data", icon: Rows3 },
+  { view: "structure", label: "Structure", icon: ListTree },
+  { view: "info", label: "Info", icon: Info },
+];
+
+function TableToggles() {
+  const { tabs, active, setView, rowCounts } = useTabs();
+  const tab = tabs.find((t) => t.id === active);
+  if (!tab) return null;
+  const rows = rowCounts[tab.id];
+  return (
+    <>
+      <div className="segmented" role="group" aria-label="Table view">
+        {VIEWS.map(({ view, label, icon: Icon }) => (
+          <button key={view} className={tab.view === view ? "on" : ""} onClick={() => setView(tab.id, view)}>
+            <Icon size={14} />{label}
+          </button>
+        ))}
+      </div>
+      <span className="status-item row-count">{rows === undefined ? "" : `${formatCount(rows)} row${rows === 1 ? "" : "s"}`}</span>
+    </>
   );
 }
