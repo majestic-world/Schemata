@@ -7,7 +7,7 @@ use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 #[cfg(windows)]
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Settings3, ICoreWebView2Settings4};
 #[cfg(windows)]
 use windows_core::Interface;
 
@@ -64,14 +64,18 @@ pub fn run() {
                     // SAFETY: Tauri runs this callback on the UI thread with a live WebView2 controller.
                     // Browser-owned menus and shortcuts are disabled; DOM contextmenu and key events still reach the
                     // page. Browser shortcuts (Ctrl+N new window, Ctrl+F find, Ctrl+P print, zoom…) would otherwise
-                    // swallow the app's own, so Ctrl+N never reached the frontend.
+                    // swallow the app's own, so Ctrl+N never reached the frontend. Autofill is off because its
+                    // "information saved" bubble popped up over the toolbar after typing in the search box.
                     unsafe {
                         webview.controller().CoreWebView2().and_then(|core| core.Settings()).and_then(|settings| {
                             settings.SetAreDefaultContextMenusEnabled(false)?;
-                            settings.cast::<ICoreWebView2Settings3>()?.SetAreBrowserAcceleratorKeysEnabled(false)
+                            settings.cast::<ICoreWebView2Settings3>()?.SetAreBrowserAcceleratorKeysEnabled(false)?;
+                            let autofill = settings.cast::<ICoreWebView2Settings4>()?;
+                            autofill.SetIsGeneralAutofillEnabled(false)?;
+                            autofill.SetIsPasswordAutosaveEnabled(false)
                         })
                     }
-                    .expect("Failed to disable the WebView2 default menus and shortcuts");
+                    .expect("Failed to disable the WebView2 default menus, shortcuts and autofill");
                 })?;
                 window_chrome::apply(&window)?;
                 // Window-state restores the last size first; always start maximized on top of it so un-maximizing

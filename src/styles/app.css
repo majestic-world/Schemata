@@ -71,13 +71,13 @@ button:focus-visible { outline: none; }
 .toolbar-spacer { flex: 1; }
 .search {
   display: flex; align-items: center; gap: 6px; width: 230px; height: 28px; padding: 0 8px;
-  border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface); color: var(--text-faint);
+  border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text-faint);
 }
 .search:focus-within { border-color: var(--accent); }
 .search input { border: 0; outline: 0; background: transparent; flex: 1; min-width: 0; color: var(--text); }
 .search kbd { font-family: var(--font); font-size: 10.5px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .icon-btn.toggle { width: 30px; height: 28px; margin-left: 6px; }
-.icon-btn.toggle.on { color: var(--accent-text); background: var(--accent-soft); }
+.icon-btn.toggle.on { color: var(--text); background: var(--surface-3); }
 
 /* ---------- Panes ---------- */
 .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
