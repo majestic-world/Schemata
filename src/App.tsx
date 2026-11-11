@@ -103,6 +103,13 @@ export function App() {
         const connectionId = sel && sel.connectionId in useConnections.getState().open ? sel.connectionId : open[0];
         if (connectionId) useTabs.getState().newQuery({ connectionId, database: sel?.connectionId === connectionId ? (sel.database ?? null) : null });
         else notifyError("No open connection", { message: "Open a connection to start a query." });
+      } else if (key === "n" && !e.shiftKey && !e.altKey) {
+        // Navicat: Ctrl+N designs a new table in the selected database (same as the toolbar's Table button).
+        e.preventDefault();
+        if (e.repeat || document.querySelector('[role="dialog"]')) return;
+        const sel = useWorkspace.getState().selection;
+        if (sel?.database) useTabs.getState().newTable(sel.connectionId, sel.database);
+        else notifyError("No database selected", { message: "Select a database in the tree to create a table in it." });
       } else if (key === "d" && !e.shiftKey) {
         // Navicat: Ctrl+D designs the open table, or the table selected in the tree / object list.
         const tabs = useTabs.getState();

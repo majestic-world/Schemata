@@ -13,6 +13,7 @@ import { useConnection } from "../lib/useConnection";
 import { copyCreateStatement, designTable, dropObjects, renameTable, truncateTable } from "../lib/objectActions";
 import { openTransfer } from "../store/transfer";
 import { requestCloseTabs } from "../lib/tabActions";
+import { MOD } from "../lib/platform";
 
 function TabContextMenu({ id, children }: { id: string; children: ReactNode }) {
   const tabs = useTabs((s) => s.tabs);
@@ -133,7 +134,7 @@ function ObjectsView() {
             <ExternalLink size={15} className="ob-open" />Open {obj?.kind === "view" ? "View" : "Table"}
           </button>
           <button className="obj-btn" disabled={!ref || !isTable || multiple} onClick={() => ref && designTable(ref)}><PencilRuler size={15} className="ob-design" />Design Table</button>
-          <button className="obj-btn" disabled={!selection?.database} onClick={() => selection?.database && newTable(selection.connectionId, selection.database)}><Plus size={15} className="ob-new" />New Table</button>
+          <button className="obj-btn" title={`New table (${MOD}+N)`} disabled={!selection?.database} onClick={() => selection?.database && newTable(selection.connectionId, selection.database)}><Plus size={15} className="ob-new" />New Table</button>
           <button className="obj-btn" disabled={!selection?.database || selectedObjects.length === 0} onClick={() => selection?.database && void dropObjects({ connectionId: selection.connectionId, database: selection.database }, selectedObjects, qc)}><Trash2 size={15} className="ob-delete" />{multiple ? `Delete ${selectedObjects.length} Objects` : `Delete ${obj?.kind === "view" ? "View" : "Table"}`}</button>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>

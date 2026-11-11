@@ -23,3 +23,6 @@ tauri-plugin-decorum = "1"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Foundation"] }
+# Same versions as Tauri's, so the WebView2 interfaces it hands out can be cast to newer settings interfaces.
+webview2-com = "0.39"
+windows-core = "0.62"

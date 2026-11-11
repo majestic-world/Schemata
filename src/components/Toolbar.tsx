@@ -40,7 +40,7 @@ export function Toolbar() {
       <ToolButton
         icon={<TableIcon />}
         label="Table"
-        title="New table in the selected database"
+        title={`New table in the selected database (${MOD}+N)`}
         disabled={!db}
         onClick={() => selection && db && useTabs.getState().newTable(selection.connectionId, db)}
       />

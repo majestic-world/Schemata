@@ -5,6 +5,10 @@ use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
 use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
+#[cfg(windows)]
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+#[cfg(windows)]
+use windows_core::Interface;
 
 /// App identifier used while the app was called ProjectCat.
 const LEGACY_IDENTIFIER: &str = "dev.projectcat.app";
@@ -39,13 +43,16 @@ pub fn run() {
                 #[cfg(windows)]
                 window.with_webview(|webview| {
                     // SAFETY: Tauri runs this callback on the UI thread with a live WebView2 controller.
-                    // This disables only browser-owned menus; DOM contextmenu events still reach Radix.
+                    // Browser-owned menus and shortcuts are disabled; DOM contextmenu and key events still reach the
+                    // page. Browser shortcuts (Ctrl+N new window, Ctrl+F find, Ctrl+P print, zoom…) would otherwise
+                    // swallow the app's own, so Ctrl+N never reached the frontend.
                     unsafe {
-                        webview.controller().CoreWebView2()
-                            .and_then(|core| core.Settings())
-                            .and_then(|settings| settings.SetAreDefaultContextMenusEnabled(false))
+                        webview.controller().CoreWebView2().and_then(|core| core.Settings()).and_then(|settings| {
+                            settings.SetAreDefaultContextMenusEnabled(false)?;
+                            settings.cast::<ICoreWebView2Settings3>()?.SetAreBrowserAcceleratorKeysEnabled(false)
+                        })
                     }
-                    .expect("Failed to disable the WebView2 default context menu");
+                    .expect("Failed to disable the WebView2 default menus and shortcuts");
                 })?;
                 window_chrome::apply(&window)?;
                 // Window-state restores the last size first; always start maximized on top of it so un-maximizing

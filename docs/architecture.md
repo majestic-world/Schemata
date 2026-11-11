@@ -59,6 +59,8 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Workspace interactions
 
 - On Windows, startup disables WebView2's default context menus with `SetAreDefaultContextMenusEnabled(false)` for the entire webview, independently of DOM event propagation. The frontend context-menu listener remains a fallback for other platforms. Browser-owned menus are disabled; app-owned Radix menus still receive DOM events.
+- Windows startup also disables WebView2's browser shortcuts (`SetAreBrowserAcceleratorKeysEnabled(false)`: Ctrl+N new window, Ctrl+F find, Ctrl+P print, zoom, DevTools keys). WebView2 consumed Ctrl+N before the page saw it; with the setting off, key events reach the frontend, which owns every shortcut.
+- Ctrl+N opens the table designer for a new table in the selected database (same as the toolbar's Table button). It ignores key repeat and open dialogs and reports when no database is selected.
 - Tables and views in the schema tree and central object list share `ObjectContextMenu`. Opening it selects the clicked object; actions use that object's explicit reference. Menu portals do not count as clicks on the list's empty background.
 - F6 opens the existing rename dialog for the selected table while Objects is active. It ignores key repeat, modifier chords, text editing, open dialogs/menus, and non-table selections.
 - Tab context menus close the selected tab, other tabs, tabs to its right, or all tabs. Objects is permanent and never included in a close operation.
