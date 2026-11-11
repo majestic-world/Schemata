@@ -1,0 +1,33 @@
+:root {
+  --bg: #f1f5f7;
+  --surface: #ffffff;
+  --surface-2: #f7f9fa;
+  --surface-hover: #eef3f5;
+  --border: #e2e8ed;
+  --border-strong: #cfd8df;
+  --text: #1d2733;
+  --text-muted: #6a7684;
+  --text-faint: #9aa4af;
+  --accent: #14a3a3;
+  --accent-hover: #0f8f8f;
+  --accent-soft: #dff3f3;
+  --accent-text: #0d6e6f;
+  --danger: #e04f55;
+  --danger-soft: #fdecec;
+  --warning: #c98a10;
+  --warning-soft: #fdf4df;
+  --success: #2e9e5b;
+  --pending-update: #fff6d9;
+  --pending-insert: #e4f6ea;
+  --pending-delete: #fde7e7;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 2px rgba(16, 32, 48, 0.06), 0 1px 1px rgba(16, 32, 48, 0.03);
+  --shadow-pop: 0 8px 28px rgba(16, 32, 48, 0.16);
+  --font: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Ubuntu, Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --fs: 13px;
+  --fs-sm: 12px;
+  --fs-lg: 15px;
+}
