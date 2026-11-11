@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Upload, Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../api/client";
@@ -13,6 +13,7 @@ import { MOD, isMod } from "../lib/platform";
 import { useRefreshShortcut } from "../lib/refreshShortcut";
 import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
+import { DatePicker, dateKind, type DateKind } from "./DatePicker";
 import {
   addRow,
   isUnset,
@@ -301,6 +302,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           renderEditor={(r, column) =>
             editing?.row === r && editing.column === column ? (
               <CellEditor
+                kind={dateKind(columns[colIndex(column)]?.typeName ?? "")}
                 initial={cellValue(pending, refOf(r), column, r < saved ? pageRows[r][colIndex(column)] : undefined)}
                 onDone={(v) => {
                   if (v) write(r, column, v);
@@ -330,24 +332,76 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   );
 }
 
-function CellEditor({ initial, onDone }: { initial: CellValue; onDone: (v: CellValue | null) => void }) {
+function CellEditor({ initial, kind, onDone }: { initial: CellValue; kind: DateKind | null; onDone: (v: CellValue | null) => void }) {
   const start = initial.type === "null" ? "" : initial.type === "bytes" ? "" : String(initial.value);
   const [text, setText] = useState(start);
+  const [pickerAt, setPickerAt] = useState<DOMRect | null>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const picker = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   // Unchanged text is not an edit (so Enter on a NULL cell keeps it NULL).
-  const finish = (save: boolean) => onDone(save && text !== start ? { type: "text", value: text } : null);
+  const commit = (value: string) => onDone(value !== start ? { type: "text", value } : null);
+  /** Focus leaving both the editor and its picker ends the edit, saving it. */
+  const onBlur = (e: FocusEvent) => {
+    const to = e.relatedTarget as Node | null;
+    if (to && (wrap.current?.contains(to) || picker.current?.contains(to))) return;
+    commit(text);
+  };
+  // Keys go to the picker while it is open (Esc closes it, Enter picks); the editor gets them back on Cancel.
+  const openPicker = () => {
+    setPickerAt(wrap.current?.getBoundingClientRect() ?? null);
+    requestAnimationFrame(() => picker.current?.focus());
+  };
   return (
-    <input
-      className="cell-editor"
-      autoFocus
-      value={text}
-      placeholder={initial.type === "null" ? "NULL" : undefined}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => finish(true)}
-      onKeyDown={(e) => {
-        // Tab also saves; the grid then moves the editor to the neighbouring cell.
-        if (e.key === "Enter" || e.key === "Tab") finish(true);
-        if (e.key === "Escape") onDone(null);
-      }}
-    />
+    <div className="cell-editor-wrap" ref={wrap}>
+      <input
+        ref={input}
+        className="cell-editor"
+        autoFocus
+        value={text}
+        placeholder={initial.type === "null" ? "NULL" : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={onBlur}
+        onKeyDown={(e) => {
+          if (kind && e.altKey && e.key === "ArrowDown") {
+            e.preventDefault();
+            openPicker();
+            return;
+          }
+          // Tab also saves; the grid then moves the editor to the neighbouring cell.
+          if (e.key === "Enter" || e.key === "Tab") commit(text);
+          if (e.key === "Escape") onDone(null);
+        }}
+      />
+      {kind && (
+        <button
+          className="cell-editor-btn"
+          tabIndex={-1}
+          title="Pick a date (Alt+↓)"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => (pickerAt ? setPickerAt(null) : openPicker())}
+        >
+          …
+        </button>
+      )}
+      {kind && pickerAt && (
+        <DatePicker
+          ref={picker}
+          kind={kind}
+          value={text}
+          anchor={pickerAt}
+          onBlur={onBlur}
+          onPick={(value) => {
+            // The editor goes away with the pick; keep the keyboard in the grid.
+            wrap.current?.closest<HTMLElement>(".grid")?.focus({ preventScroll: true });
+            commit(value);
+          }}
+          onCancel={() => {
+            setPickerAt(null);
+            input.current?.focus();
+          }}
+        />
+      )}
+    </div>
   );
 }
