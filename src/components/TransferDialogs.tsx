@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useConnection } from "../lib/useConnection";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -71,6 +72,10 @@ export function TransferDialogs() {
       return <ImportDialog key={JSON.stringify(request)} req={request} />;
     case "runSql":
       return <RunSqlDialog key={JSON.stringify(request)} req={request} />;
+    case "backup":
+      return <BackupDialog key={JSON.stringify(request)} req={request} />;
+    case "restore":
+      return <RestoreDialog key={JSON.stringify(request)} req={request} />;
     default: {
       const never: never = request;
       return never;
@@ -322,6 +327,116 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
         </Outcome>
       )}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Stopped" : "Failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
+    </Dialog>
+  );
+}
+
+function BackupDialog({ req }: { req: Extract<TransferRequest, { kind: "backup" }> }) {
+  const close = () => useTransfer.getState().open(null);
+  const [structure, setStructure] = useState(true);
+  const [data, setData] = useState(true);
+  const op = useOperation<Awaited<ReturnType<typeof api.backupDatabase>>>();
+  const start = async () => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const path = await saveDialog({ defaultPath: `${req.database}-${stamp}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
+    if (typeof path !== "string") return;
+    await op.run((id) => api.backupDatabase(req.connectionId, req.database, path, { structure, data }, id));
+  };
+  return (
+    <Dialog
+      open
+      onClose={() => (op.phase.state === "running" ? op.cancel() : close())}
+      title={`Back up ${req.database}`}
+      width={460}
+      footer={
+        op.phase.state === "running" ? (
+          <button className="btn danger" onClick={op.cancel}>Cancel</button>
+        ) : op.phase.state === "form" ? (
+          <><button className="btn" onClick={close}>Cancel</button><button className="btn primary" disabled={!structure && !data} onClick={start}>Back Up…</button></>
+        ) : (
+          <button className="btn primary" onClick={close}>Close</button>
+        )
+      }
+    >
+      {op.phase.state === "form" && (
+        <div className="form">
+          <p className="dialog-text">Writes a .sql file with tables, views, indexes, foreign keys and triggers that can be restored here or with the database's own tools.</p>
+          <label className="check"><input type="checkbox" checked={structure} onChange={(e) => setStructure(e.target.checked)} />Structure (CREATE statements)</label>
+          <label className="check"><input type="checkbox" checked={data} onChange={(e) => setData(e.target.checked)} />Data (INSERT statements)</label>
+        </div>
+      )}
+      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="rows" />}
+      {op.phase.state === "done" && <Outcome ok title={`Backed up ${formatCount(op.phase.report.tables)} tables and ${formatCount(op.phase.report.rows)} rows`} />}
+      {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Backup cancelled" : "Backup failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
+    </Dialog>
+  );
+}
+
+function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore" }> }) {
+  const qc = useQueryClient();
+  const close = () => useTransfer.getState().open(null);
+  const conn = useConnection(req.connectionId);
+  const sqlite = conn?.engine === "sqlite";
+  const databases = useQuery({ queryKey: ["databases", req.connectionId], queryFn: () => api.listDatabases(req.connectionId) });
+  const [path, setPath] = useState("");
+  const [target, setTarget] = useState(req.database ?? (sqlite ? "main" : ""));
+  const [newName, setNewName] = useState("");
+  const createNew = !sqlite && target === "";
+  const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
+  const pick = async () => {
+    const p = await openDialog({ multiple: false, directory: false, filters: [{ name: "SQL", extensions: ["sql"] }] });
+    if (typeof p === "string") setPath(p);
+  };
+  const start = () =>
+    op.run(async (id) => {
+      const db = createNew ? newName.trim() : target;
+      if (createNew) {
+        await api.createDatabase(req.connectionId, { name: db, charset: "utf8mb4", collation: null });
+        void qc.invalidateQueries({ queryKey: ["databases", req.connectionId] });
+      }
+      const report = await api.runSqlFile(req.connectionId, db, path, true, id);
+      void qc.invalidateQueries({ queryKey: ["objects", req.connectionId] });
+      return report;
+    });
+  return (
+    <Dialog
+      open
+      onClose={() => (op.phase.state === "running" ? op.cancel() : close())}
+      title="Restore backup"
+      width={540}
+      footer={
+        op.phase.state === "running" ? (
+          <button className="btn danger" onClick={op.cancel}>Cancel</button>
+        ) : op.phase.state === "form" ? (
+          <><button className="btn" onClick={close}>Cancel</button><button className="btn primary" disabled={!path || (createNew ? !newName.trim() : !target)} onClick={start}>Restore</button></>
+        ) : (
+          <button className="btn primary" onClick={close}>Close</button>
+        )
+      }
+    >
+      {op.phase.state === "form" && (
+        <div className="form">
+          <div className="row">
+            <label className="field grow"><span>Backup file (.sql)</span><input value={path} onChange={(e) => setPath(e.target.value)} aria-label="Backup file" /></label>
+            <button className="btn" onClick={pick}><FolderOpen size={15} />Browse…</button>
+          </div>
+          <label className="field"><span>Restore into</span>
+            <select value={target} aria-label="Target database" onChange={(e) => setTarget(e.target.value)}>
+              {!sqlite && <option value="">New database…</option>}
+              {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+            </select>
+          </label>
+          {createNew && <label className="field"><span>New database name</span><input value={newName} aria-label="New database name" onChange={(e) => setNewName(e.target.value)} /></label>}
+          {!createNew && <p className="hint">Tables in the backup replace tables with the same name in the target.</p>}
+        </div>
+      )}
+      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="statements" />}
+      {op.phase.state === "done" && (
+        <Outcome ok={op.phase.report.failed.length === 0} title={op.phase.report.failed.length ? "Restore stopped at an error" : `Restored (${formatCount(op.phase.report.executed)} statements)`}>
+          {op.phase.report.failed.map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
+        </Outcome>
+      )}
+      {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Restore cancelled" : "Restore failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
     </Dialog>
   );
 }

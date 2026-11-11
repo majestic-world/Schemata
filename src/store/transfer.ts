@@ -4,7 +4,9 @@ import type { ExportSource } from "../api/types";
 export type TransferRequest =
   | { kind: "export"; connectionId: string; database: string; source: ExportSource; label: string }
   | { kind: "import"; connectionId: string; database: string; table: string }
-  | { kind: "runSql"; connectionId: string; database: string };
+  | { kind: "runSql"; connectionId: string; database: string }
+  | { kind: "backup"; connectionId: string; database: string }
+  | { kind: "restore"; connectionId: string; database: string | null };
 
 type TransferState = { request: TransferRequest | null; open: (r: TransferRequest | null) => void };
 

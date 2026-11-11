@@ -18,7 +18,7 @@
 | 06 | Grid de dados: edição com change set | 05 | implemented | `79dce02` |
 | 07 | Designer de tabela e operações de tabela | 05 | implemented | `d7c9872` |
 | 08 | Editor SQL | 05 | implemented | `365d171` |
-| 09 | Exportar e importar | 06, 08 | ready-for-agent | |
+| 09 | Exportar e importar | 06, 08 | implemented | `ddb42d1` |
 | 10 | Backup e restore | 09 | ready-for-agent | |
 | 11 | Atalhos, estado persistido e erros | 06, 07, 08 | ready-for-agent | |
 | 12 | CI e empacotamento | 10, 11 | ready-for-agent | |

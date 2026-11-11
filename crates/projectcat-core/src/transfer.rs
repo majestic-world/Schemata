@@ -152,7 +152,6 @@ pub(crate) fn literal(v: &Value, engine: Engine) -> String {
         Value::Float(f) => quote(&f.to_string()),
         Value::Decimal(d) => d.clone(),
         Value::Text(s) | Value::DateTime(s) | Value::Json(s) => quote(s),
-        Value::Bytes(b) if b.is_empty() => "''".to_owned(),
         Value::Bytes(b) => format!("X'{}'", hex(b)),
     }
 }
@@ -487,4 +486,123 @@ pub async fn run_sql_file(
     let text = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
     let statements = split_statements(&text, driver.engine());
     driver.execute_statements(Some(db), statements, stop_on_error, progress, cancel).await
+}
+
+// ---------------------------------------------------------------- backup
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DumpOptions {
+    pub structure: bool,
+    pub data: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DumpReport {
+    pub tables: u64,
+    pub rows: u64,
+}
+
+/// Engine-specific parts of a dump, each item a complete SQL chunk (statement terminators included).
+pub struct DumpScript {
+    /// Session setup, written first.
+    pub prologue: Vec<String>,
+    /// Tables in a creation-safe order with their `DROP ...; CREATE ...;` text.
+    pub tables: Vec<(String, String)>,
+    /// Statements that depend on the data being present (e.g. SQLite's autoincrement counters).
+    pub data_tail: Vec<String>,
+    /// Indexes, views and triggers, in dependency order.
+    pub objects: Vec<String>,
+    pub epilogue: Vec<String>,
+}
+
+/// Writes a `.sql` dump of `db` that the engine's own CLI (or [`run_sql_file`]) can restore.
+pub async fn dump_database(
+    driver: &dyn Driver,
+    db: &str,
+    path: &Path,
+    options: &DumpOptions,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<DumpReport> {
+    if !options.structure && !options.data {
+        return Err(AppError::validation("Choose structure, data or both"));
+    }
+    let engine = driver.engine();
+    let script = driver.dump_script(db).await?;
+    let mut total = 0u64;
+    if options.data {
+        for (table, _) in &script.tables {
+            total += driver.count_rows(db, table, &[]).await?;
+        }
+    }
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(out, "-- ProjectCat dump of {db} ({})\n", driver.server_version())?;
+    for s in &script.prologue {
+        writeln!(out, "{s}")?;
+    }
+    let mut done = 0u64;
+    progress(Progress { done, total: Some(total) });
+    let q = quote_for(engine);
+    for (table, create) in &script.tables {
+        writeln!(out)?;
+        if options.structure {
+            writeln!(out, "{create}")?;
+        }
+        if !options.data {
+            continue;
+        }
+        let mut stream = driver.stream_query(Some(db), &format!("SELECT * FROM {}", q(table)), BATCH).await?;
+        let mut columns = Vec::new();
+        loop {
+            let item = tokio::select! {
+                _ = cancel.cancelled() => return Err(AppError::cancelled()),
+                item = stream.recv() => item,
+            };
+            match item {
+                None => break,
+                Some(Err(e)) => return Err(e),
+                Some(Ok(StreamItem::Columns(c))) => columns = c,
+                Some(Ok(StreamItem::Rows(rows))) => {
+                    insert_statements(&mut out, engine, table, &columns, &rows)?;
+                    done += rows.len() as u64;
+                    progress(Progress { done, total: Some(total) });
+                }
+            }
+        }
+    }
+    if options.data {
+        for s in &script.data_tail {
+            writeln!(out, "{s}")?;
+        }
+    }
+    if options.structure {
+        writeln!(out)?;
+        for s in &script.objects {
+            writeln!(out, "{s}")?;
+        }
+    }
+    writeln!(out)?;
+    for s in &script.epilogue {
+        writeln!(out, "{s}")?;
+    }
+    out.flush()?;
+    if cancel.is_cancelled() {
+        return Err(AppError::cancelled());
+    }
+    Ok(DumpReport { tables: script.tables.len() as u64, rows: done })
+}
+
+/// Orders views so that each comes after the views its definition mentions.
+pub(crate) fn order_views(mut views: Vec<(String, String)>, mention: impl Fn(&str) -> String) -> Vec<(String, String)> {
+    let mut ordered = Vec::with_capacity(views.len());
+    while !views.is_empty() {
+        let ready = views
+            .iter()
+            .position(|(name, sql)| !views.iter().any(|(other, _)| other != name && sql.contains(&mention(other))))
+            .unwrap_or(0);
+        ordered.push(views.remove(ready));
+    }
+    ordered
 }

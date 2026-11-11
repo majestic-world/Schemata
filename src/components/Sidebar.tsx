@@ -143,6 +143,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
       ? { label: "Close Connection", onSelect: () => void closeConnection(config.id, qc).then(() => setExpanded(key, false)) }
       : { label: "Open Connection", onSelect: () => void toggle() },
     { label: "Refresh", disabled: !isOpen, onSelect: () => void qc.invalidateQueries({ queryKey: ["databases", config.id] }) },
+    { label: "Restore Backup…", disabled: !isOpen, onSelect: () => openTransfer({ kind: "restore", connectionId: config.id, database: null }) },
     { label: "New Query", disabled: !isOpen, onSelect: () => useTabs.getState().newQuery({ connectionId: config.id, database: config.engine === "sqlite" ? "main" : config.database }) },
     config.engine === "sqlite"
       ? { label: "Attach Database…", disabled: !isOpen, onSelect: () => useDialogs.getState().set({ attachDatabaseFor: config.id }) }
@@ -233,6 +234,8 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
     { label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) },
     { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
     { label: "Run SQL File…", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
+    { label: "Backup…", onSelect: () => openTransfer({ kind: "backup", connectionId, database }) },
+    { label: "Restore Backup…", onSelect: () => openTransfer({ kind: "restore", connectionId, database }) },
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
     "separator",
     engine === "sqlite"

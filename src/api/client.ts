@@ -86,6 +86,8 @@ export const api = {
     call<ImportReport>("import_csv", { id, db, table, path, spec, operationId }),
   runSqlFile: (id: string, db: string, path: string, stopOnError: boolean, operationId: string) =>
     call<ScriptRunReport>("run_sql_file", { id, db, path, stopOnError, operationId }),
+  backupDatabase: (id: string, db: string, path: string, options: { structure: boolean; data: boolean }, operationId: string) =>
+    call<{ tables: number; rows: number }>("backup_database", { id, db, path, options, operationId }),
   cancelOperation: (operationId: string) => call<void>("cancel_operation", { operationId }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {

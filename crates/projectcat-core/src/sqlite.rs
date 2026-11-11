@@ -4,7 +4,7 @@ use crate::{
     ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
     ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
 };
-use crate::transfer::{ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
@@ -517,8 +517,55 @@ impl Driver for SqliteDriver {
                     progress(Progress { done: index as u64 + 1, total });
                 }
             }
+            // A failed dump must not leave the session inside its transaction or without FK enforcement.
+            if !c.is_autocommit() {
+                c.execute_batch("ROLLBACK").map_err(map_err)?;
+            }
+            c.execute_batch("PRAGMA foreign_keys = ON").map_err(map_err)?;
             progress(Progress { done: statements.len() as u64, total });
             Ok(report)
+        })
+        .await
+    }
+
+    async fn dump_script(&self, db: &str) -> Result<DumpScript> {
+        let db = db.to_owned();
+        self.with_conn(move |c| {
+            let schema = quote_ident(&db);
+            let mut stmt = c
+                .prepare(&format!("SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"))
+                .map_err(map_err)?;
+            let entries = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+            let mut tables = Vec::new();
+            let mut objects = Vec::new();
+            for (kind, name, sql) in entries {
+                if kind == "table" {
+                    tables.push((name.clone(), format!("DROP TABLE IF EXISTS {};
+{sql};", quote_ident(&name))));
+                } else {
+                    objects.push(format!("{sql};"));
+                }
+            }
+            let has_sequence: bool = c
+                .query_row(&format!("SELECT count(*) FROM {schema}.sqlite_schema WHERE name = 'sqlite_sequence'"), [], |r| r.get::<_, i64>(0))
+                .map_err(map_err)?
+                > 0;
+            let mut data_tail = Vec::new();
+            if has_sequence {
+                let mut stmt = c.prepare(&format!("SELECT name, seq FROM {schema}.sqlite_sequence")).map_err(map_err)?;
+                let seqs = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                data_tail.push("DELETE FROM sqlite_sequence;".to_owned());
+                for (name, seq) in seqs {
+                    data_tail.push(format!("INSERT INTO sqlite_sequence (name, seq) VALUES ('{}', {seq});", name.replace('\'', "''")));
+                }
+            }
+            Ok(DumpScript {
+                prologue: vec!["PRAGMA foreign_keys = OFF;".into(), "BEGIN TRANSACTION;".into()],
+                tables,
+                data_tail,
+                objects,
+                epilogue: vec!["COMMIT;".into(), "PRAGMA foreign_keys = ON;".into()],
+            })
         })
         .await
     }

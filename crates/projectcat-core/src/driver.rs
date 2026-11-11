@@ -1,4 +1,4 @@
-use crate::transfer::{ImportBatch, ImportReport, ProgressFn, RowStream, ScriptRunReport};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, ProgressFn, RowStream, ScriptRunReport};
 use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
@@ -74,6 +74,8 @@ pub trait Driver: Send + Sync {
         progress: ProgressFn,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport>;
+    /// Schema parts of a database dump (see [`crate::dump_database`]).
+    async fn dump_script(&self, db: &str) -> Result<DumpScript>;
     /// Cancels the statement currently running under `execution_id`, if any.
     async fn cancel(&self, execution_id: &str) -> Result<()>;
     async fn table_info(&self, db: &str, name: &str) -> Result<TableInfo>;

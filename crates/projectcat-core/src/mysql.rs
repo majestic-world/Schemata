@@ -7,7 +7,7 @@ use crate::{
 use sqlx::MySql;
 use sqlx::mysql::MySqlArguments;
 use sqlx::query::Query;
-use crate::transfer::{ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
+use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use futures::TryStreamExt;
@@ -168,6 +168,14 @@ fn default_expression(engine: Engine, raw: Option<String>, data_type: &str, extr
         return Some(if upper.starts_with("CURRENT_TIMESTAMP") || upper.starts_with("NOW") { raw } else { format!("({raw})") });
     }
     if is_numeric_type(data_type) { Some(raw) } else { Some(format!("'{}'", raw.replace('\'', "''"))) }
+}
+
+/// Removes `DEFINER=user@host` so a dumped view can be created by whoever restores it.
+fn strip_definer(sql: &str) -> String {
+    let Some(start) = sql.find("DEFINER=") else { return sql.to_owned() };
+    let rest = &sql[start..];
+    let end = rest.find(" SQL SECURITY").or_else(|| rest.find(" VIEW")).unwrap_or(rest.len());
+    format!("{}{}", &sql[..start], rest[end..].trim_start())
 }
 
 /// Statements whose results are row sets even when empty.
@@ -473,8 +481,61 @@ impl Driver for MySqlDriver {
                 progress(Progress { done: index as u64 + 1, total });
             }
         }
+        // Dumps disable FK checks for their session; the pooled connection must not keep that.
+        sqlx::raw_sql("SET FOREIGN_KEY_CHECKS = 1").execute(&mut *conn).await.map_err(map_err)?;
         progress(Progress { done: statements.len() as u64, total });
         Ok(report)
+    }
+
+    async fn dump_script(&self, db: &str) -> Result<DumpScript> {
+        let objects = self.list_objects(db).await?;
+        let qdb = quote_ident(db);
+        let mut tables = Vec::new();
+        let mut views = Vec::new();
+        for o in &objects {
+            let row = sqlx::raw_sql(AssertSqlSafe(format!("SHOW CREATE TABLE {qdb}.{}", quote_ident(&o.name))))
+                .fetch_one(&self.pool)
+                .await
+                .map_err(map_err)?;
+            let create = text(&row, 1)?.unwrap_or_default();
+            match o.kind {
+                ObjectKind::Table => tables.push((o.name.clone(), format!("DROP TABLE IF EXISTS {};
+{create};", quote_ident(&o.name)))),
+                ObjectKind::View => {
+                    // Portable views: no DEFINER, no references to the source database name.
+                    let create = strip_definer(&create).replace(&format!("{qdb}."), "");
+                    views.push((o.name.clone(), format!("DROP VIEW IF EXISTS {};
+{create};", quote_ident(&o.name))));
+                }
+            }
+        }
+        let mut objects_sql: Vec<String> = crate::transfer::order_views(views, |name| quote_ident(name)).into_iter().map(|(_, sql)| sql).collect();
+        let triggers = sqlx::query(
+            "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT \
+             FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, ACTION_ORDER",
+        )
+        .bind(db)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        for r in &triggers {
+            let (name, timing, event, table, body) = (text(r, 0)?.unwrap_or_default(), text(r, 1)?.unwrap_or_default(), text(r, 2)?.unwrap_or_default(), text(r, 3)?.unwrap_or_default(), text(r, 4)?.unwrap_or_default());
+            objects_sql.push(format!(
+                "DROP TRIGGER IF EXISTS {0};
+DELIMITER ;;
+CREATE TRIGGER {0} {timing} {event} ON {1} FOR EACH ROW {body};;
+DELIMITER ;",
+                quote_ident(&name),
+                quote_ident(&table)
+            ));
+        }
+        Ok(DumpScript {
+            prologue: vec!["SET NAMES utf8mb4;".into(), "SET FOREIGN_KEY_CHECKS = 0;".into()],
+            tables,
+            data_tail: Vec::new(),
+            objects: objects_sql,
+            epilogue: vec!["SET FOREIGN_KEY_CHECKS = 1;".into()],
+        })
     }
 
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {

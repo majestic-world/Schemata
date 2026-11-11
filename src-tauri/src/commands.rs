@@ -5,7 +5,7 @@ use projectcat_core::{
     PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
 };
 use projectcat_core::{
-    CancellationToken, CsvImport, CsvPreview, CsvReadOptions, ExportFormat, ExportReport, ExportSource, ImportReport, Progress,
+    CancellationToken, DumpOptions, DumpReport, CsvImport, CsvPreview, CsvReadOptions, ExportFormat, ExportReport, ExportSource, ImportReport, Progress,
     ProgressFn, ScriptRunReport,
 };
 use std::collections::HashMap;
@@ -301,5 +301,27 @@ pub async fn run_sql_file(
     let (progress, cancel) = begin(&app, &ops, &operation_id);
     let result = projectcat_core::run_sql_file(driver.as_ref(), &db, &path, stop_on_error, progress, cancel).await;
     end(&ops, &operation_id);
+    result
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn backup_database(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    id: String,
+    db: String,
+    path: PathBuf,
+    options: DumpOptions,
+    operation_id: String,
+) -> CmdResult<DumpReport> {
+    let driver = sessions.driver(&id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
+    end(&ops, &operation_id);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
     result
 }

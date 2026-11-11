@@ -28,5 +28,6 @@ pub use transfer::{
     BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, ExportFormat, ExportReport,
     ExportSource, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport,
     SqlExportOptions, StatementFailure, StreamItem, TextEncoding, export, import_csv, preview_csv, run_sql_file,
+    DumpOptions, DumpReport, DumpScript, dump_database,
 };
 pub use value::{CellValue, Value};
