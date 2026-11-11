@@ -159,3 +159,4 @@ export type CsvImport = { options: CsvReadOptions; mapping: ColumnMapping[]; emp
 export type ImportReport = { inserted: number; failed: { line: number; message: string }[]; failedCount: number };
 export type ScriptRunReport = { executed: number; failed: { index: number; statement: string; message: string }[] };
 export type OperationProgress = { operationId: string; done: number; total: number | null };
+export type CopyTableTarget = { db: string; name: string; data: boolean };

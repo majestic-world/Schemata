@@ -554,6 +554,155 @@ pub async fn run_sql_file(
     report
 }
 
+// ---------------------------------------------------------------- copy table
+
+/// Where a copied table goes: possibly another database, connection or engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyTableTarget {
+    pub db: String,
+    pub name: String,
+    /// Copy the rows too, not only the structure.
+    pub data: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyTableReport {
+    pub rows: u64,
+}
+
+/// Structure of `design` recreated as `name` in the target database. Self-references follow the copy;
+/// foreign keys to tables missing from the target, and table options of another engine, are dropped.
+/// Index and foreign key names are scoped to the database (SQLite indexes, MySQL foreign keys), so a copy
+/// under a new name renames them after it (`ix_orders_total` → `ix_orders_copy_total`).
+pub(crate) fn copy_design(
+    mut design: crate::TableDesign,
+    name: &str,
+    source_engine: Engine,
+    target_engine: Engine,
+    target_tables: &[String],
+) -> crate::TableDesign {
+    let source_name = std::mem::replace(&mut design.name, name.to_owned());
+    let rename = |object: &mut String| {
+        if source_name != name {
+            *object = if object.contains(&source_name) { object.replacen(&source_name, name, 1) } else { format!("{name}_{object}") };
+        }
+    };
+    design.foreign_keys.retain(|fk| fk.ref_table == source_name || target_tables.contains(&fk.ref_table));
+    for fk in &mut design.foreign_keys {
+        if fk.ref_table == source_name {
+            fk.ref_table = name.to_owned();
+        }
+        rename(&mut fk.name);
+    }
+    for index in &mut design.indexes {
+        rename(&mut index.name);
+    }
+    if source_engine != target_engine {
+        design.options = crate::TableOptions { comment: design.options.comment.take(), ..Default::default() };
+    }
+    for c in &mut design.columns {
+        c.original_name = None;
+        // SQLite only auto-increments an INTEGER PRIMARY KEY.
+        if target_engine == Engine::Sqlite && c.auto_increment {
+            c.data_type = "INTEGER".into();
+        }
+    }
+    design
+}
+
+/// Copies a table's structure (and optionally its rows) into another database, possibly on another
+/// connection or engine. The new table is dropped again when the data copy fails or is cancelled.
+pub async fn copy_table(
+    source: &dyn Driver,
+    source_db: &str,
+    table: &str,
+    target: &dyn Driver,
+    to: &CopyTableTarget,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<CopyTableReport> {
+    if to.name.trim().is_empty() {
+        return Err(AppError::validation("Enter a name for the copy"));
+    }
+    let target_tables: Vec<String> = target.list_objects(&to.db).await?.into_iter().map(|o| o.name).collect();
+    if target_tables.iter().any(|t| t.eq_ignore_ascii_case(&to.name)) {
+        return Err(AppError::validation(format!("A table named {} already exists in {}", to.name, to.db)));
+    }
+    let design = copy_design(source.table_design(source_db, table).await?, &to.name, source.engine(), target.engine(), &target_tables);
+    let ddl = target.plan_table(&to.db, None, &design).await?;
+    target.apply_ddl(&to.db, &ddl).await?;
+    if !to.data {
+        return Ok(CopyTableReport { rows: 0 });
+    }
+    match copy_rows(source, source_db, table, target, to, progress, cancel).await {
+        Ok(rows) => Ok(CopyTableReport { rows }),
+        Err(e) => {
+            let _ = target.drop_object(&to.db, &to.name, crate::ObjectKind::Table).await;
+            Err(e)
+        }
+    }
+}
+
+async fn copy_rows(
+    source: &dyn Driver,
+    source_db: &str,
+    table: &str,
+    target: &dyn Driver,
+    to: &CopyTableTarget,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<u64> {
+    let total = Some(source.count_rows(source_db, table, &[]).await?);
+    let q = quote_for(source.engine());
+    let mut stream = source.stream_query(Some(source_db), &format!("SELECT * FROM {}.{}", q(source_db), q(table)), BATCH).await?;
+    let columns = match stream.recv().await {
+        Some(Ok(StreamItem::Columns(c))) => c,
+        Some(Err(e)) => return Err(e),
+        _ => return Err(AppError::sql("The table did not return a result set")),
+    };
+    let visible: Vec<usize> = (0..columns.len()).filter(|i| !columns[*i].hidden).collect();
+    let names: Vec<String> = visible.iter().map(|i| columns[*i].name.clone()).collect();
+    progress(Progress { done: 0, total });
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportBatch>>(4);
+    let feed = async move {
+        let mut done = 0u64;
+        loop {
+            let item = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Some(Err(AppError::cancelled())),
+                item = stream.recv() => item,
+            };
+            let rows = match item {
+                None => break,
+                Some(Ok(StreamItem::Columns(_))) => continue,
+                Some(Ok(StreamItem::Rows(rows))) => rows,
+                Some(Err(e)) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            };
+            let batch: ImportBatch = rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut r)| (done + i as u64 + 1, visible.iter().map(|c| std::mem::replace(&mut r[*c], Value::Null)).collect()))
+                .collect();
+            done += batch.len() as u64;
+            if tx.send(Ok(batch)).await.is_err() {
+                break;
+            }
+            progress(Progress { done, total });
+        }
+    };
+    let (report, ()) = tokio::join!(target.import_rows(&to.db, &to.name, &names, rx, false), feed);
+    let report = report?;
+    if let Some(f) = report.failed.first() {
+        return Err(AppError::sql(format!("Row {} could not be copied: {}", f.line, f.message)));
+    }
+    Ok(report.inserted)
+}
+
 // ---------------------------------------------------------------- backup
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

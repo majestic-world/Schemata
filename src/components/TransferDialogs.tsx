@@ -81,6 +81,8 @@ export function TransferDialogs() {
       return <BackupDialog key={JSON.stringify(request)} req={request} />;
     case "restore":
       return <RestoreDialog key={JSON.stringify(request)} req={request} />;
+    case "copyTable":
+      return <CopyTableDialog key={JSON.stringify(request)} req={request} />;
     default: {
       const never: never = request;
       return never;
@@ -451,6 +453,53 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
         </Outcome>
       )}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Restore cancelled" : "Restore failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
+    </Dialog>
+  );
+}
+
+/** Free name for a copy: the source name, or `name_copy`, `name_copy2`, … when it is taken. */
+function copyName(name: string, existing: string[]): string {
+  const taken = new Set(existing.map((n) => n.toLowerCase()));
+  if (!taken.has(name.toLowerCase())) return name;
+  for (let i = 1; ; i++) {
+    const candidate = `${name}_copy${i === 1 ? "" : i}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/** Pasting a copied table: starts right away (like Navicat) and reports progress and the outcome. */
+function CopyTableDialog({ req }: { req: Extract<TransferRequest, { kind: "copyTable" }> }) {
+  const close = () => useTransfer.getState().open(null);
+  const qc = useQueryClient();
+  const { source, target } = req;
+  const [name, setName] = useState<string | null>(null);
+  const op = useOperation<Awaited<ReturnType<typeof api.copyTable>>>();
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    void (async () => {
+      const objects = await api.listObjects(target.connectionId, target.database).catch(() => []);
+      const to = copyName(source.name, objects.map((o) => o.name));
+      setName(to);
+      await op.run((id) => api.copyTable(source.connectionId, source.database, source.name, target.connectionId, { db: target.database, name: to, data: true }, id));
+      void qc.invalidateQueries({ queryKey: ["objects", target.connectionId, target.database] });
+    })();
+  }, [op, qc, source, target]);
+  return (
+    <Dialog
+      open
+      onClose={() => (op.phase.state === "running" ? op.cancel() : close())}
+      title={`Copy ${source.name} to ${target.database}`}
+      width={460}
+      footer={op.phase.state === "running" || op.phase.state === "form" ? <button className="btn danger" onClick={op.cancel}>Cancel</button> : <button className="btn primary" onClick={close}>Close</button>}
+    >
+      <p className="dialog-text">
+        {source.database}.{source.name} → {target.database}.{name ?? "…"}
+      </p>
+      {(op.phase.state === "running" || op.phase.state === "form") && <ProgressView done={op.phase.state === "running" ? op.phase.done : 0} total={op.phase.state === "running" ? op.phase.total : null} unit="rows" />}
+      {op.phase.state === "done" && <Outcome ok title={`Copied ${source.name} with ${plural(op.phase.report.rows, "row")}`}>{name !== source.name && <span>Saved as {name} because {source.name} already exists there.</span>}</Outcome>}
+      {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Copy cancelled" : "Copy failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
     </Dialog>
   );
 }

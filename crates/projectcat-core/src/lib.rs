@@ -25,9 +25,9 @@ pub use sessions::{Sessions, params_for};
 pub use splitter::{Splitter, split_statements};
 pub use store::{ConnectionConfig, ConnectionStore, SaveOutcome};
 pub use transfer::{
-    BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, DumpScript,
-    ExportFormat, ExportReport, ExportSource, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure,
-    RowStream, ScriptRunReport, SqlExportOptions, StatementFailure, StreamItem, TextEncoding, dump_database, export, import_csv,
-    preview_csv, run_sql_file,
+    BATCH, CancellationToken, ColumnMapping, CopyTableReport, CopyTableTarget, CsvImport, CsvOptions, CsvPreview, CsvReadOptions,
+    DumpOptions, DumpReport, DumpScript, ExportFormat, ExportReport, ExportSource, ImportBatch, ImportReport, MAX_REPORTED_FAILURES,
+    Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, SqlExportOptions, StatementFailure, StreamItem, TextEncoding, copy_table,
+    dump_database, export, import_csv, preview_csv, run_sql_file,
 };
 pub use value::{CellValue, Value};

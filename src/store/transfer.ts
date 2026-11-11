@@ -6,7 +6,10 @@ export type TransferRequest =
   | { kind: "import"; connectionId: string; database: string; table: string }
   | { kind: "runSql"; connectionId: string; database: string }
   | { kind: "backup"; connectionId: string; database: string }
-  | { kind: "restore"; connectionId: string; database: string | null };
+  | { kind: "restore"; connectionId: string; database: string | null }
+  | { kind: "copyTable"; source: TableRef; target: { connectionId: string; database: string } };
+
+export type TableRef = { connectionId: string; database: string; name: string };
 
 type TransferState = { request: TransferRequest | null; open: (r: TransferRequest | null) => void };
 

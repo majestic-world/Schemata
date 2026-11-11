@@ -5,8 +5,8 @@ use projectcat_core::{
     ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, TableDesign, TableInfo, connect,
 };
 use projectcat_core::{
-    CancellationToken, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, ExportFormat, ExportReport, ExportSource,
-    ImportReport, Progress, ProgressFn, ScriptRunReport,
+    CancellationToken, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, ExportFormat,
+    ExportReport, ExportSource, ImportReport, Progress, ProgressFn, ScriptRunReport,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -353,6 +353,27 @@ pub async fn backup_database(
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
     let result = projectcat_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
+    end(&ops, &operation_id);
+    result
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn copy_table(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    source_id: String,
+    source_db: String,
+    table: String,
+    target_id: String,
+    target: CopyTableTarget,
+    operation_id: String,
+) -> CmdResult<CopyTableReport> {
+    let source = sessions.driver(&source_id).await?;
+    let target_driver = sessions.driver(&target_id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::copy_table(source.as_ref(), &source_db, &table, target_driver.as_ref(), &target, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }

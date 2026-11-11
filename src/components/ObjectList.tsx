@@ -93,7 +93,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
         </button>
       </div>
-      <div className="table-scroll">
+      <div className="table-scroll object-list" tabIndex={-1}>
         <table className="list-table">
           <thead>
             <tr>

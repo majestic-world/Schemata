@@ -14,6 +14,8 @@ import { useDialogs } from "../store/dialogs";
 import { copyCreateStatement, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 import { OBJECTS_TAB, useTabs, type TableView } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
+import { copyTable, pasteTable, useTableClipboard } from "../store/tableClipboard";
+import { MOD } from "../lib/platform";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -204,6 +206,8 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
     queryFn: () => api.listObjects(connectionId, database),
     enabled: expanded,
   });
+  const copied = useTableClipboard((s) => s.copied);
+  const pasteLabel = copied ? `Paste ${copied.name} (${MOD}+V)` : "Paste Table";
   const toggle = () => setExpanded(key, !expanded);
   const drop = async () => {
     const sqlite = engine === "sqlite";
@@ -237,6 +241,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
     { label: "Backup…", onSelect: () => openTransfer({ kind: "backup", connectionId, database }) },
     { label: "Restore Backup…", onSelect: () => openTransfer({ kind: "restore", connectionId, database }) },
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
+    { label: pasteLabel, disabled: !copied, onSelect: () => pasteTable({ connectionId, database }) },
     "separator",
     engine === "sqlite"
       ? { label: "Detach Database", disabled: database === "main", onSelect: () => void drop() }
@@ -281,8 +286,14 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
   const expanded = expandedFlag || (search !== "" && shown.length > 0);
   if (search && shown.length === 0) return null;
   const Icon = kind === "table" ? TableIcon : ViewIcon;
+  const copied = useTableClipboard((s) => s.copied);
   const groupItems: Item[] =
-    kind === "table" ? [{ label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) }] : [];
+    kind === "table"
+      ? [
+          { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
+          { label: copied ? `Paste ${copied.name} (${MOD}+V)` : "Paste Table", disabled: !copied, onSelect: () => pasteTable({ connectionId, database }) },
+        ]
+      : [];
   return (
     <>
       <Menu items={groupItems}>
@@ -326,7 +337,12 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
     { label: isTable ? "Open Table" : "Open View", onSelect: () => open("data") },
     { label: isTable ? "Design Table" : "Definition", onSelect: () => open(isTable ? "structure" : "info") },
     "separator",
-    ...(isTable ? [{ label: "Rename…", onSelect: () => void renameTable(ref, qc) }] : []),
+    ...(isTable
+      ? [
+          { label: `Copy (${MOD}+C)`, onSelect: () => copyTable({ connectionId, database, name: object.name }) },
+          { label: "Rename…", onSelect: () => void renameTable(ref, qc) },
+        ]
+      : []),
     { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(ref) },
     { label: "Export…", onSelect: () => openTransfer({ kind: "export", connectionId, database, source: { kind: "table", table: object.name }, label: object.name }) },
     ...(isTable ? [{ label: "Import CSV…", onSelect: () => openTransfer({ kind: "import", connectionId, database, table: object.name }) }] : []),

@@ -6,6 +6,7 @@ import { useWorkspace } from "./store/workspace";
 import { isMod } from "./lib/platform";
 import { isRefreshShortcut, runRefreshHandler } from "./lib/refreshShortcut";
 import { notifyError } from "./store/toasts";
+import { copyTable, pasteTable } from "./store/tableClipboard";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
@@ -69,6 +70,22 @@ export function App() {
         const connectionId = sel && sel.connectionId in useConnections.getState().open ? sel.connectionId : open[0];
         if (connectionId) useTabs.getState().newQuery({ connectionId, database: sel?.connectionId === connectionId ? (sel.database ?? null) : null });
         else notifyError("No open connection", { message: "Open a connection to start a query." });
+      } else if (
+        (key === "c" || key === "v") &&
+        !e.shiftKey &&
+        e.target instanceof HTMLElement &&
+        !e.target.closest("input, textarea, select") &&
+        e.target.closest(".sidebar, .object-list")
+      ) {
+        // Navicat-style: copy a table in the tree or object list, paste it into another database.
+        const sel = useWorkspace.getState().selection;
+        if (key === "c" && sel?.database && sel.object?.kind === "table") {
+          e.preventDefault();
+          copyTable({ connectionId: sel.connectionId, database: sel.database, name: sel.object.name });
+        } else if (key === "v" && sel?.database) {
+          e.preventDefault();
+          pasteTable({ connectionId: sel.connectionId, database: sel.database });
+        }
       }
     };
     const onRejection = (e: PromiseRejectionEvent) => notifyError("Unexpected error", e.reason);

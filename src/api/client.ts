@@ -25,6 +25,7 @@ import type {
   CsvImport,
   ImportReport,
   ScriptRunReport,
+  CopyTableTarget,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -88,6 +89,8 @@ export const api = {
     call<ScriptRunReport>("run_sql_file", { id, db, path, stopOnError, operationId }),
   backupDatabase: (id: string, db: string, path: string, options: { structure: boolean; data: boolean }, operationId: string) =>
     call<{ tables: number; rows: number }>("backup_database", { id, db, path, options, operationId }),
+  copyTable: (sourceId: string, sourceDb: string, table: string, targetId: string, target: CopyTableTarget, operationId: string) =>
+    call<{ rows: number }>("copy_table", { sourceId, sourceDb, table, targetId, target, operationId }),
   cancelOperation: (operationId: string) => call<void>("cancel_operation", { operationId }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {

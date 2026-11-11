@@ -57,6 +57,7 @@ pub fn run() {
             commands::import_csv,
             commands::run_sql_file,
             commands::backup_database,
+            commands::copy_table,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ProjectCat");
