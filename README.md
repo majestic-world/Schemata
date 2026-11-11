@@ -2,7 +2,7 @@
 
 Desktop database client for MySQL, MariaDB and SQLite, inspired by Navicat. Runs on Windows, Linux and macOS.
 
-Features: saved connections (passwords in the OS credential store), schema tree, object list and inspector, data grid with editing, table designer with DDL preview, SQL editor, CSV/JSON/SQL export, CSV import, `.sql` file execution, database backup/restore, and copying tables (structure and data) between databases with Ctrl+C / Ctrl+V in the tree.
+Features: saved connections (passwords in the OS credential store), schema tree, object list and inspector, data grid with editing, table designer with DDL preview, SQL editor, CSV/JSON/SQL export, CSV import, `.sql` file execution, database backup/restore, copying tables (structure and data) between databases with Ctrl+C / Ctrl+V in the tree, and realistic test data generation per column (names, emails, addresses, lorem ipsum, dates, foreign keys…).
 
 ## Stack
 

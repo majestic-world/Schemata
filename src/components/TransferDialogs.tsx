@@ -5,11 +5,12 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, CheckCircle2, FolderOpen } from "lucide-react";
 import { api } from "../api/client";
-import type { AppError, CsvPreview, CsvReadOptions, ExportFormat, OperationProgress, TextEncoding } from "../api/types";
+import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
 import { Dialog } from "./Dialog";
 import { formatCount, plural } from "../lib/format";
 import { assign, autoMap, toMapping, type MappingDraft } from "../lib/importMapping";
+import { displayCell } from "../lib/cells";
 
 type Phase<R> = { state: "form" } | { state: "running"; done: number; total: number | null } | { state: "done"; report: R } | { state: "failed"; error: AppError };
 
@@ -83,6 +84,8 @@ export function TransferDialogs() {
       return <RestoreDialog key={JSON.stringify(request)} req={request} />;
     case "copyTable":
       return <CopyTableDialog key={JSON.stringify(request)} req={request} />;
+    case "generate":
+      return <GenerateDialog key={JSON.stringify(request)} req={request} />;
     default: {
       const never: never = request;
       return never;
@@ -500,6 +503,165 @@ function CopyTableDialog({ req }: { req: Extract<TransferRequest, { kind: "copyT
       {(op.phase.state === "running" || op.phase.state === "form") && <ProgressView done={op.phase.state === "running" ? op.phase.done : 0} total={op.phase.state === "running" ? op.phase.total : null} unit="rows" />}
       {op.phase.state === "done" && <Outcome ok title={`Copied ${source.name} with ${plural(op.phase.report.rows, "row")}`}>{name !== source.name && <span>Saved as {name} because {source.name} already exists there.</span>}</Outcome>}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Copy cancelled" : "Copy failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
+    </Dialog>
+  );
+}
+
+const GENERATOR_GROUPS: { label: string; kinds: GeneratorKind[] }[] = [
+  { label: "Basic", kinds: ["skip", "null", "sequence", "integer", "decimal", "boolean"] },
+  { label: "People", kinds: ["firstName", "lastName", "fullName", "email", "username", "phone"] },
+  { label: "Places", kinds: ["address", "city", "state", "country", "zipCode"] },
+  { label: "Business & web", kinds: ["company", "title", "code", "url", "ipAddress", "uuid", "hash", "color", "slug"] },
+  { label: "Text (lorem ipsum)", kinds: ["word", "sentence", "paragraph"] },
+  { label: "Date & time", kinds: ["date", "dateTime", "time", "year"] },
+  { label: "Other", kinds: ["enumValue", "json", "bytes", "foreignKey"] },
+];
+const GENERATOR_LABEL: Record<GeneratorKind, string> = {
+  skip: "Database default (skip)",
+  null: "NULL",
+  sequence: "Sequence (after current max)",
+  integer: "Integer",
+  decimal: "Decimal",
+  boolean: "Boolean (0/1)",
+  firstName: "First name",
+  lastName: "Last name",
+  fullName: "Full name",
+  email: "Email",
+  username: "Username",
+  phone: "Phone",
+  company: "Company",
+  city: "City",
+  state: "State / province",
+  country: "Country",
+  address: "Street address",
+  zipCode: "ZIP / postal code",
+  url: "URL",
+  uuid: "UUID",
+  ipAddress: "IP address",
+  word: "Word",
+  title: "Product name",
+  sentence: "Sentence",
+  paragraph: "Paragraph",
+  slug: "Slug",
+  code: "Code (ABC-1234)",
+  color: "Hex color",
+  hash: "Hash (64 hex)",
+  date: "Date",
+  dateTime: "Date and time",
+  time: "Time",
+  year: "Year",
+  enumValue: "Enum value",
+  json: "JSON object",
+  bytes: "Random bytes",
+  foreignKey: "Existing referenced value",
+};
+
+/** Fills a table with realistic test data (Navicat's Data Generation): a generator per column, previewed first. */
+function GenerateDialog({ req }: { req: Extract<TransferRequest, { kind: "generate" }> }) {
+  const close = () => useTransfer.getState().open(null);
+  const qc = useQueryClient();
+  const { connectionId, database, table } = req;
+  const [rows, setRows] = useState(100);
+  const [emptyFirst, setEmptyFirst] = useState(false);
+  const [columns, setColumns] = useState<ColumnGenerator[] | null>(null);
+  const info = useQuery({ queryKey: ["tableInfo", connectionId, database, table], queryFn: () => api.tableInfo(connectionId, database, table) });
+  const suggested = useQuery({ queryKey: ["generators", connectionId, database, table], queryFn: () => api.suggestGenerators(connectionId, database, table), staleTime: 0 });
+  useEffect(() => {
+    if (suggested.data && !columns) setColumns(suggested.data);
+  }, [suggested.data, columns]);
+  const preview = useQuery({
+    queryKey: ["generatedPreview", connectionId, database, table, columns],
+    queryFn: () => api.previewGenerated(connectionId, database, table, columns!),
+    enabled: !!columns && columns.some((c) => c.kind !== "skip"),
+    retry: false,
+    staleTime: 0,
+  });
+  const op = useOperation<Awaited<ReturnType<typeof api.generateData>>>();
+  const validRows = Number.isInteger(rows) && rows >= 1 && rows <= 1_000_000;
+  const start = async () => {
+    if (!columns) return;
+    await op.run((id) => api.generateData(connectionId, database, table, { rows, columns, emptyFirst }, id));
+    for (const key of [["page", connectionId, database, table], ["count", connectionId, database, table], ["objects", connectionId, database], ["tableInfo", connectionId, database, table]]) {
+      void qc.invalidateQueries({ queryKey: key });
+    }
+  };
+  const typeOf = (column: string) => info.data?.columns.find((c) => c.name === column)?.dataType ?? "";
+  return (
+    <Dialog
+      open
+      onClose={() => (op.phase.state === "running" ? op.cancel() : close())}
+      title={`Generate data for ${table}`}
+      width={780}
+      footer={
+        op.phase.state === "running" ? (
+          <button className="btn danger" onClick={op.cancel}>Cancel</button>
+        ) : op.phase.state === "form" ? (
+          <>
+            <button className="btn" onClick={close}>Cancel</button>
+            <button className="btn primary" disabled={!columns || !validRows || preview.isError} onClick={start}>Generate {validRows ? plural(rows, "row") : "rows"}</button>
+          </>
+        ) : (
+          <button className="btn primary" onClick={close}>Close</button>
+        )
+      }
+    >
+      {op.phase.state === "form" && (
+        <div className="form">
+          <div className="gen-options">
+            <label className="field">
+              <span>Rows</span>
+              <input className="input" type="number" min={1} max={1_000_000} value={Number.isNaN(rows) ? "" : rows} onChange={(e) => setRows(e.target.valueAsNumber)} />
+            </label>
+            <label className="check"><input type="checkbox" checked={emptyFirst} onChange={(e) => setEmptyFirst(e.target.checked)} />Delete existing rows first</label>
+          </div>
+          {suggested.isError && <p className="error-text">{(suggested.error as { message: string }).message}</p>}
+          {columns && (
+            <div className="gen-columns">
+              <table className="list-table">
+                <thead><tr><th>Column</th><th>Type</th><th>Generator</th></tr></thead>
+                <tbody>
+                  {columns.map((c, i) => (
+                    <tr key={c.column}>
+                      <td>{c.column}</td>
+                      <td className="muted">{typeOf(c.column)}</td>
+                      <td>
+                        <select className="input" aria-label={`Generator for ${c.column}`} value={c.kind} onChange={(e) => setColumns(columns.map((x, j) => (j === i ? { ...x, kind: e.target.value as GeneratorKind } : x)))}>
+                          {GENERATOR_GROUPS.map((g) => (
+                            <optgroup key={g.label} label={g.label}>
+                              {g.kinds.map((k) => <option key={k} value={k}>{GENERATOR_LABEL[k]}</option>)}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="gen-preview-head">
+            <span className="hint">Preview</span>
+            <button className="btn sm" disabled={!preview.data && !preview.isError} onClick={() => void preview.refetch()}>Shuffle</button>
+          </div>
+          {preview.isError ? (
+            <p className="error-text">{(preview.error as { message: string }).message}</p>
+          ) : (
+            <div className="gen-preview">
+              <table className="list-table">
+                <thead><tr>{preview.data?.columns.map((c) => <th key={c.name}>{c.name}</th>)}</tr></thead>
+                <tbody>
+                  {preview.data?.rows.map((r, i) => (
+                    <tr key={i}>{r.map((v, j) => { const d = displayCell(v); return <td key={j} className={d.tone === "null" ? "muted" : undefined}>{d.text}</td>; })}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="rows" />}
+      {op.phase.state === "done" && <Outcome ok title={`Inserted ${plural(op.phase.report.rows, "row")} into ${table}`} />}
+      {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Generation cancelled — nothing was inserted" : "Generation failed — nothing was inserted"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
     </Dialog>
   );
 }

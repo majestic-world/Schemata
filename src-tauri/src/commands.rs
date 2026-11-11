@@ -5,8 +5,8 @@ use projectcat_core::{
     ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, TableDesign, TableInfo, connect,
 };
 use projectcat_core::{
-    CancellationToken, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, ExportFormat,
-    ExportReport, ExportSource, ImportReport, Progress, ProgressFn, ScriptRunReport,
+    CancellationToken, ColumnGenerator, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport,
+    ExportFormat, ExportReport, ExportSource, GenerateReport, GenerateSpec, ImportReport, Progress, ProgressFn, ScriptRunReport,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -374,6 +374,43 @@ pub async fn copy_table(
     let target_driver = sessions.driver(&target_id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
     let result = projectcat_core::copy_table(source.as_ref(), &source_db, &table, target_driver.as_ref(), &target, progress, cancel).await;
+    end(&ops, &operation_id);
+    result
+}
+
+#[tauri::command]
+pub async fn suggest_generators(sessions: State<'_, Sessions>, id: String, db: String, table: String) -> CmdResult<Vec<ColumnGenerator>> {
+    let info = sessions.driver(&id).await?.table_info(&db, &table).await?;
+    Ok(projectcat_core::suggest_generators(&info))
+}
+
+#[tauri::command]
+pub async fn preview_generated(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: String,
+    table: String,
+    columns: Vec<ColumnGenerator>,
+) -> CmdResult<Page> {
+    let driver = sessions.driver(&id).await?;
+    projectcat_core::preview_generated(driver.as_ref(), &db, &table, &columns, 5).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_data(
+    app: AppHandle,
+    sessions: State<'_, Sessions>,
+    ops: State<'_, Operations>,
+    id: String,
+    db: String,
+    table: String,
+    spec: GenerateSpec,
+    operation_id: String,
+) -> CmdResult<GenerateReport> {
+    let driver = sessions.driver(&id).await?;
+    let (progress, cancel) = begin(&app, &ops, &operation_id);
+    let result = projectcat_core::generate_data(driver.as_ref(), &db, &table, &spec, progress, cancel).await;
     end(&ops, &operation_id);
     result
 }

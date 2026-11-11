@@ -345,7 +345,12 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
       : []),
     { label: "Copy CREATE Statement", onSelect: () => void copyCreateStatement(ref) },
     { label: "Export…", onSelect: () => openTransfer({ kind: "export", connectionId, database, source: { kind: "table", table: object.name }, label: object.name }) },
-    ...(isTable ? [{ label: "Import CSV…", onSelect: () => openTransfer({ kind: "import", connectionId, database, table: object.name }) }] : []),
+    ...(isTable
+      ? [
+          { label: "Import CSV…", onSelect: () => openTransfer({ kind: "import", connectionId, database, table: object.name }) },
+          { label: "Generate Data…", onSelect: () => openTransfer({ kind: "generate", connectionId, database, table: object.name }) },
+        ]
+      : []),
     "separator",
     ...(isTable ? [{ label: "Empty Table…", danger: true, onSelect: () => void truncateTable(ref, qc) }] : []),
     { label: isTable ? "Delete Table…" : "Delete View…", danger: true, onSelect: () => void dropObject(ref, qc) },

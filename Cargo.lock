@@ -3518,6 +3518,7 @@ dependencies = [
  "csv",
  "encoding_rs",
  "encoding_rs_io",
+ "fastrand",
  "futures",
  "keyring",
  "rusqlite",

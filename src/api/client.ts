@@ -26,6 +26,8 @@ import type {
   ImportReport,
   ScriptRunReport,
   CopyTableTarget,
+  ColumnGenerator,
+  GenerateSpec,
 } from "./types";
 
 export function isAppError(e: unknown): e is AppError {
@@ -91,6 +93,11 @@ export const api = {
     call<{ tables: number; rows: number }>("backup_database", { id, db, path, options, operationId }),
   copyTable: (sourceId: string, sourceDb: string, table: string, targetId: string, target: CopyTableTarget, operationId: string) =>
     call<{ rows: number }>("copy_table", { sourceId, sourceDb, table, targetId, target, operationId }),
+  suggestGenerators: (id: string, db: string, table: string) => call<ColumnGenerator[]>("suggest_generators", { id, db, table }),
+  previewGenerated: (id: string, db: string, table: string, columns: ColumnGenerator[]) =>
+    call<Page>("preview_generated", { id, db, table, columns }),
+  generateData: (id: string, db: string, table: string, spec: GenerateSpec, operationId: string) =>
+    call<{ rows: number }>("generate_data", { id, db, table, spec, operationId }),
   cancelOperation: (operationId: string) => call<void>("cancel_operation", { operationId }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
   applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {

@@ -160,3 +160,11 @@ export type ImportReport = { inserted: number; failed: { line: number; message: 
 export type ScriptRunReport = { executed: number; failed: { index: number; statement: string; message: string }[] };
 export type OperationProgress = { operationId: string; done: number; total: number | null };
 export type CopyTableTarget = { db: string; name: string; data: boolean };
+export type GeneratorKind =
+  | "skip" | "null" | "sequence" | "integer" | "decimal" | "boolean"
+  | "firstName" | "lastName" | "fullName" | "email" | "username" | "phone"
+  | "company" | "city" | "state" | "country" | "address" | "zipCode"
+  | "url" | "uuid" | "ipAddress" | "word" | "title" | "sentence" | "paragraph" | "slug" | "code" | "color" | "hash"
+  | "date" | "dateTime" | "time" | "year" | "enumValue" | "json" | "bytes" | "foreignKey";
+export type ColumnGenerator = { column: string; kind: GeneratorKind };
+export type GenerateSpec = { rows: number; columns: ColumnGenerator[]; emptyFirst: boolean };

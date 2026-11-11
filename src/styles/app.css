@@ -387,3 +387,12 @@ select.cell-input { padding: 0 4px; }
 .design-table input[aria-label="Comment"] { min-width: 160px; }
 .design-table input[aria-label="Index name"], .design-table input[aria-label="Foreign key name"] { min-width: 160px; }
 .query-editor .inline-field .input { width: 170px; margin-left: 0; }
+
+/* ---------- Data generation ---------- */
+.gen-options { display: flex; align-items: flex-end; gap: 18px; }
+.gen-options .field { width: 140px; }
+.gen-columns { max-height: 260px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.gen-columns select.input { width: 100%; }
+.gen-preview-head { display: flex; align-items: center; justify-content: space-between; }
+.gen-preview { max-height: 190px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.gen-preview td { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

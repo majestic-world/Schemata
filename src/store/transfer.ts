@@ -7,7 +7,8 @@ export type TransferRequest =
   | { kind: "runSql"; connectionId: string; database: string }
   | { kind: "backup"; connectionId: string; database: string }
   | { kind: "restore"; connectionId: string; database: string | null }
-  | { kind: "copyTable"; source: TableRef; target: { connectionId: string; database: string } };
+  | { kind: "copyTable"; source: TableRef; target: { connectionId: string; database: string } }
+  | { kind: "generate"; connectionId: string; database: string; table: string };
 
 export type TableRef = { connectionId: string; database: string; name: string };
 

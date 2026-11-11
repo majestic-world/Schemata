@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Upload, Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
+import { Download, Upload, Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../api/client";
 import type { CellValue, ChangeError, Filter, FilterOp, SortSpec } from "../api/types";
 import { useTabs, type TableTab } from "../store/tabs";
@@ -217,6 +217,11 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         {!readOnly && (
           <button className="obj-btn" title="Import a CSV file" onClick={() => openTransfer({ kind: "import", connectionId: tab.connectionId, database: tab.database, table: tab.name })}>
             <Download size={15} className="ob-new" />Import
+          </button>
+        )}
+        {tab.objectKind === "table" && (
+          <button className="obj-btn" title="Fill the table with realistic test data" onClick={() => openTransfer({ kind: "generate", connectionId: tab.connectionId, database: tab.database, table: tab.name })}>
+            <Sparkles size={15} className="ob-design" />Generate
           </button>
         )}
         <button className={`obj-btn${showFilters || filters.length ? " active-filter" : ""}`} onClick={() => setShowFilters((v) => !v)}>
