@@ -11,6 +11,7 @@ import { useGridState, type DraftFilter } from "../store/gridState";
 import { openTransfer } from "../store/transfer";
 import { MOD, isMod } from "../lib/platform";
 import { useRefreshShortcut } from "../lib/refreshShortcut";
+import { useRefetchFlash } from "../lib/refetchFlash";
 import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import { DatePicker, dateKind, type DateKind } from "./DatePicker";
@@ -85,6 +86,9 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     queryFn: () => api.fetchPage(tab.connectionId, tab.database, tab.name, req),
     placeholderData: keepPreviousData,
   });
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  // Placeholder rows from the previous page/sort/filter must not count as a refetch of the new one.
+  useRefetchFlash(gridRef, JSON.stringify(["page", ...base, req]), page.isPlaceholderData ? 0 : page.dataUpdatedAt, page.isSuccess);
   const count = useQuery({
     queryKey: ["count", ...base, filters],
     queryFn: () => api.countRows(tab.connectionId, tab.database, tab.name, filters),
@@ -284,6 +288,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         <div className="empty"><p className="error-text">{(page.error as { message: string }).message}</p></div>
       ) : (
         <GridView
+          ref={gridRef}
           columns={columns}
           rows={rows}
           savedRowCount={saved}

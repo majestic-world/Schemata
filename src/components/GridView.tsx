@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp } from "lucide-react";
@@ -40,6 +40,8 @@ type Props = {
   /** Changes when the underlying data is replaced, clearing the selection and scroll. */
   resetKey?: unknown;
   emptyText?: string;
+  /** The scrolling grid element. */
+  ref?: Ref<HTMLDivElement>;
 };
 
 type Pos = { r: number; c: number };
@@ -59,6 +61,7 @@ export function GridView(props: Props) {
   const [focus, setFocus] = useState<Pos | null>(null);
   const dragging = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  useImperativeHandle(props.ref, () => scrollRef.current!, []);
 
   const visible = useMemo(() => meta.map((c, idx) => ({ c, idx })).filter((x) => !x.c.hidden), [meta]);
   const placeholderRow = rows.length === 0 && !!props.onAppendRow && visible.length > 0;
