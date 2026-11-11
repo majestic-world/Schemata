@@ -27,13 +27,53 @@ pnpm install
 pnpm tauri dev                  # run the app
 pnpm typecheck && pnpm test     # frontend checks (Vitest)
 cargo test -p schematadb-core   # core tests on SQLite, MySQL 8.4 and MariaDB 11.4
-pnpm tauri build                # installers in target/release/bundle
+make build                     # native installer for the current OS/architecture
+make linux                     # Ubuntu 24.04 x86_64 AppImage, built in Docker
+make mac                       # macOS Apple Silicon .pkg, cross-compiled in Docker
 ```
 
 The core tests start reusable containers named `schematadb-test-mysql` and `schematadb-test-mariadb`; remove them with `docker rm -f` when no longer needed.
 
 CI (`.github/workflows/ci.yml`) runs the core and frontend tests on Linux and builds installers on Windows, Ubuntu and macOS. Version tags (`v*`) also create a draft release.
 
+## Packaging
+
+GNU Make and Node 24 are required for the three `make` commands. `make build`
+also needs pnpm, Rust and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/)
+for the current OS (MSVC Build Tools on Windows, Xcode Command Line Tools on macOS,
+or WebKitGTK development libraries on Linux). It builds natively, without Docker.
+
+| Command | Build environment | Installer output |
+|---|---|---|
+| `make build` on Windows | Windows, current architecture | `package/windows/*.exe` (NSIS) |
+| `make build` on Linux | Linux, current architecture | `package/linux/*.AppImage` |
+| `make build` on macOS | macOS, current architecture | `package/macos/*.dmg` |
+| `make linux` | Docker, Ubuntu 24.04 x86_64 | `package/linux/*.AppImage` |
+| `make mac` | Docker, Linux x86_64 with OSXCross | `package/macos/*_aarch64.pkg` |
+
+The Docker targets work from Windows, Linux and macOS with Docker Desktop or a
+local Docker Engine configured for Linux containers and BuildKit. They install
+their own toolchains; Rust, pnpm, FUSE and privileged containers are not required
+on the host. ARM64 hosts need Docker's x86_64 emulation for these targets.
+The first build downloads the toolchains and dependencies; subsequent builds reuse
+Docker layers and Cargo caches. Temporary native build files remain under
+`target/package-native/`; only installers are exported to `package/`.
+
+The macOS Docker build uses the Apple SDK provided by
+[`rust-linux-darwin-builder`](https://github.com/joseluisq/rust-linux-darwin-builder).
+Use of that SDK is subject to Apple's applicable terms. It embeds the frontend,
+creates an ARM64 `.app`, applies an ad-hoc code signature with `rcodesign`, and
+packages it as a flat `.pkg` installing into `/Applications`. Requires macOS 11+
+on Apple Silicon; it is not an Intel/ARM universal binary. Native `make build`
+always uses the Mac's own architecture instead.
+
+The Docker `.pkg` is intentionally not a DMG: Tauri's DMG bundler depends on
+macOS tools and cannot run in a Linux container. The installers have no Developer
+ID/distribution signature or notarization; Gatekeeper may block them. Generating
+the cross-compiled package does not verify installation or application behavior
+on a Mac.
+
+
 ## Limitations
 
-Light theme and English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync, and installers are not code-signed.
+Light theme and English UI only. No SSH tunnels or TLS options beyond the driver's defaults, no user/privilege management, routine designer, visual view designer, schema/data compare or sync. Installers have no distribution signature or notarization.
