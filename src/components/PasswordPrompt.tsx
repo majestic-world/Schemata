@@ -1,3 +1,4 @@
+import { useWorkspace } from "../store/workspace";
 import { useState } from "react";
 import { Dialog } from "./Dialog";
 import { useConnections } from "../store/connections";
@@ -16,7 +17,7 @@ export function PasswordPrompt() {
     setBusy(true);
     const config = passwordFor;
     close();
-    await openConnection(config, password);
+    if (await openConnection(config, password)) useWorkspace.getState().setExpanded(`c:${config.id}`, true);
     setBusy(false);
   };
   return (

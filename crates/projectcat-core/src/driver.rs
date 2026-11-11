@@ -54,6 +54,6 @@ pub async fn connect(params: &ConnectParams) -> Result<Arc<dyn Driver>> {
             let path = params.file_path.as_deref().ok_or_else(|| AppError::validation("A database file is required"))?;
             Ok(Arc::new(crate::sqlite::SqliteDriver::open(path, params.create_file).await?))
         }
-        Engine::MySql | Engine::MariaDb => Err(AppError::validation("MySQL/MariaDB support is not available yet")),
+        Engine::MySql | Engine::MariaDb => Ok(Arc::new(crate::mysql::MySqlDriver::connect(params).await?)),
     }
 }

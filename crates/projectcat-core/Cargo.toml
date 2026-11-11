@@ -16,6 +16,8 @@ uuid = { version = "1.29.2", features = ["v4"] }
 tokio-util = "0.7.20"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "mysql", "tls-rustls-ring-webpki"] }
 futures = "0.3.34"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+sqlx-mysql = { version = "0.9.0", features = ["chrono"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

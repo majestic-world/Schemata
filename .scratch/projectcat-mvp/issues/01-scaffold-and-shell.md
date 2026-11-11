@@ -6,12 +6,16 @@
 
 **Bloqueado por:** Nenhum
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] `pnpm tauri dev` abre a janela com decoração nativa
-- [ ] Layout segue o design 04 com superfícies sólidas e acento teal
-- [ ] Sidebar e inspector redimensionáveis; inspector recolhível
-- [ ] ADR 0001 registra a stack
+- [x] `pnpm tauri dev` abre a janela com decoração nativa
+- [x] Layout segue o design 04 com superfícies sólidas e acento teal
+- [x] Sidebar e inspector redimensionáveis; inspector recolhível
+- [x] ADR 0001 registra a stack
 
 ## Evidências de implementação
+
+- Commit `5e869d8`
+- `pnpm typecheck` ok; `cargo build -p projectcat` ok
+- UI via CDP (WebView2 remote debugging): janela abre, splitter redimensiona sidebar 280→360 px, toggle recolhe o inspector

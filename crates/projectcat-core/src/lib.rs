@@ -3,6 +3,7 @@
 mod driver;
 mod error;
 mod model;
+mod mysql;
 mod secrets;
 mod sessions;
 mod splitter;
