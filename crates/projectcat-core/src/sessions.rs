@@ -64,12 +64,7 @@ impl Sessions {
     }
 
     pub async fn driver(&self, id: &str) -> Result<Arc<dyn Driver>> {
-        self.open
-            .lock()
-            .await
-            .get(id)
-            .map(|s| s.driver.clone())
-            .ok_or_else(|| AppError::connection("Connection is not open"))
+        self.open.lock().await.get(id).map(|s| s.driver.clone()).ok_or_else(|| AppError::connection("Connection is not open"))
     }
 
     async fn reconnect(&self, id: &str) -> Result<Arc<dyn Driver>> {

@@ -2,8 +2,8 @@ mod common;
 
 use common::TestDb;
 use projectcat_core::{
-    CancellationToken, CellValue, ColumnMapping, CsvImport, CsvOptions, CsvReadOptions, Engine, ErrorKind, ExportFormat,
-    ExportSource, PageRequest, ProgressFn, SortSpec, SqlExportOptions, TextEncoding, export, import_csv, preview_csv, run_sql_file,
+    CancellationToken, CellValue, ColumnMapping, CsvImport, CsvOptions, CsvReadOptions, Engine, ErrorKind, ExportFormat, ExportSource,
+    PageRequest, ProgressFn, SortSpec, SqlExportOptions, TextEncoding, export, import_csv, preview_csv, run_sql_file,
 };
 use std::sync::{Arc, Mutex};
 
@@ -47,9 +47,17 @@ async fn csv_round_trip_preserves_values(t: TestDb) {
         let seen = seen.clone();
         Arc::new(move |p| seen.lock().unwrap().push(p.done))
     };
-    let report = export(t.driver.as_ref(), &t.db, &ExportSource::Table { table: "src".into() }, &ExportFormat::Csv(csv_opts()), &file, progress, CancellationToken::new())
-        .await
-        .unwrap();
+    let report = export(
+        t.driver.as_ref(),
+        &t.db,
+        &ExportSource::Table { table: "src".into() },
+        &ExportFormat::Csv(csv_opts()),
+        &file,
+        progress,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(report.rows, 3);
     assert_eq!(*seen.lock().unwrap().last().unwrap(), 3);
 
@@ -57,7 +65,8 @@ async fn csv_round_trip_preserves_values(t: TestDb) {
     assert_eq!(preview.headers, vec!["id", "name", "note", "amount"]);
     assert_eq!(preview.rows.len(), 3);
 
-    let spec = CsvImport { options: read_opts(), mapping: mapping(&["id", "name", "note", "amount"]), empty_as_null: false, skip_errors: false };
+    let spec =
+        CsvImport { options: read_opts(), mapping: mapping(&["id", "name", "note", "amount"]), empty_as_null: false, skip_errors: false };
     let imported = import_csv(t.driver.as_ref(), &t.db, "dst", &file, &spec, no_progress(), CancellationToken::new()).await.unwrap();
     assert_eq!((imported.inserted, imported.failed.len()), (3, 0));
     let (a, b) = (rows(&t, "src").await, rows(&t, "dst").await);
@@ -116,7 +125,9 @@ async fn sql_export_recreates_table_elsewhere(t: TestDb) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("src.sql");
     let format = ExportFormat::Sql(SqlExportOptions { include_create: true, table_name: None });
-    export(t.driver.as_ref(), &t.db, &ExportSource::Table { table: "src".into() }, &format, &file, no_progress(), CancellationToken::new()).await.unwrap();
+    export(t.driver.as_ref(), &t.db, &ExportSource::Table { table: "src".into() }, &format, &file, no_progress(), CancellationToken::new())
+        .await
+        .unwrap();
     // Load it under the same name after dropping the original.
     let original = rows(&t, "src").await;
     t.exec("DROP TABLE src").await;
@@ -131,9 +142,17 @@ async fn cancelled_export_reports_cancellation(t: TestDb) {
     let dir = tempfile::tempdir().unwrap();
     let cancel = CancellationToken::new();
     cancel.cancel();
-    let err = export(t.driver.as_ref(), &t.db, &ExportSource::Table { table: "src".into() }, &ExportFormat::Json, &dir.path().join("x.json"), no_progress(), cancel)
-        .await
-        .unwrap_err();
+    let err = export(
+        t.driver.as_ref(),
+        &t.db,
+        &ExportSource::Table { table: "src".into() },
+        &ExportFormat::Json,
+        &dir.path().join("x.json"),
+        no_progress(),
+        cancel,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
 }
 scenario!(cancelled_export_reports_cancellation);
@@ -145,9 +164,17 @@ async fn csv_export_honors_delimiter_and_windows_1252() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("w.csv");
     let opts = CsvOptions { delimiter: ';', encoding: TextEncoding::Windows1252, null_text: "NULL".into(), ..csv_opts() };
-    export(t.driver.as_ref(), &t.db, &ExportSource::Query { sql: "SELECT id, name, note FROM src WHERE id IN (1, 3) ORDER BY id".into() }, &ExportFormat::Csv(opts), &file, no_progress(), CancellationToken::new())
-        .await
-        .unwrap();
+    export(
+        t.driver.as_ref(),
+        &t.db,
+        &ExportSource::Query { sql: "SELECT id, name, note FROM src WHERE id IN (1, 3) ORDER BY id".into() },
+        &ExportFormat::Csv(opts),
+        &file,
+        no_progress(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     let bytes = std::fs::read(&file).unwrap();
     assert!(bytes.contains(&0xC7), "Ç must be a single windows-1252 byte");
     let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes);

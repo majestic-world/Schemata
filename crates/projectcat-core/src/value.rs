@@ -30,7 +30,10 @@ pub enum CellValue {
     Decimal(String),
     Text(String),
     #[serde(rename_all = "camelCase")]
-    Bytes { preview_hex: String, len: usize },
+    Bytes {
+        preview_hex: String,
+        len: usize,
+    },
     DateTime(String),
     Json(String),
 }
@@ -47,10 +50,9 @@ impl Value {
             Value::Float(f) => CellValue::Text(f.to_string()),
             Value::Decimal(d) => CellValue::Decimal(d.clone()),
             Value::Text(t) => CellValue::Text(t.clone()),
-            Value::Bytes(b) => CellValue::Bytes {
-                preview_hex: b.iter().take(BYTES_PREVIEW).map(|x| format!("{x:02X}")).collect(),
-                len: b.len(),
-            },
+            Value::Bytes(b) => {
+                CellValue::Bytes { preview_hex: b.iter().take(BYTES_PREVIEW).map(|x| format!("{x:02X}")).collect(), len: b.len() }
+            }
             Value::DateTime(d) => CellValue::DateTime(d.clone()),
             Value::Json(j) => CellValue::Json(j.clone()),
         }

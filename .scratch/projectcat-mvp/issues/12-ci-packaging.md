@@ -6,10 +6,15 @@
 
 **Bloqueado por:** 10, 11
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Critérios de aceite
-- [ ] Workflow válido gera .msi/.exe, .deb/.AppImage e .dmg
-- [ ] Build local do Windows gera instalador
+- [x] Workflow válido gera .msi/.exe, .deb/.AppImage e .dmg
+- [x] Build local do Windows gera instalador
 
 ## Evidências de implementação
+
+- Commit `9a18695`
+- `pnpm tauri build` local: `ProjectCat_0.1.0_x64_en-US.msi` (6,95 MiB) e `ProjectCat_0.1.0_x64-setup.exe` (4,89 MiB); executável release abre a janela (screenshot)
+- `actionlint` no workflow: sem erros
+- Pendente de execução real: jobs do GitHub Actions (Linux/macOS e geração de .deb/.AppImage/.dmg) só rodam após push

@@ -30,7 +30,12 @@ async fn reconnects_after_connection_loss(t: TestDb) {
         let _ = admin.execute_script(None, &format!("KILL {id}"), 1, None).await;
     }
 
-    let objects = sessions.with_driver(&config.id, |d| { let db = t.db.clone(); async move { d.list_objects(&db).await } }).await;
+    let objects = sessions
+        .with_driver(&config.id, |d| {
+            let db = t.db.clone();
+            async move { d.list_objects(&db).await }
+        })
+        .await;
     assert!(objects.is_ok(), "{objects:?}");
 }
 

@@ -109,8 +109,12 @@ pub struct ForeignKeyInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RowIdentity {
-    PrimaryKey { columns: Vec<String> },
-    UniqueKey { columns: Vec<String> },
+    PrimaryKey {
+        columns: Vec<String>,
+    },
+    UniqueKey {
+        columns: Vec<String>,
+    },
     /// SQLite implicit rowid.
     RowId,
     /// No reliable identity: the data is read-only.

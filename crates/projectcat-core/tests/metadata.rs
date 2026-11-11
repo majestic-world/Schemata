@@ -17,10 +17,7 @@ async fn lists_tables_then_views(t: TestDb) {
 
     let objects = t.driver.list_objects(&t.db).await.unwrap();
     let summary: Vec<_> = objects.iter().map(|o| (o.name.as_str(), o.kind)).collect();
-    assert_eq!(
-        summary,
-        vec![("culture", ObjectKind::Table), ("product", ObjectKind::Table), ("cheap", ObjectKind::View)]
-    );
+    assert_eq!(summary, vec![("culture", ObjectKind::Table), ("product", ObjectKind::Table), ("cheap", ObjectKind::View)]);
     assert!(objects[0].rows.is_some(), "tables report a row count");
     assert_eq!(objects[2].rows, None, "views have no row count");
     if t.engine == Engine::Sqlite {
@@ -63,12 +60,7 @@ async fn describes_table_structure(t: TestDb) {
     let cols: Vec<_> = info.columns.iter().map(|c| (c.name.as_str(), c.nullable, c.primary_key, c.auto_increment)).collect();
     assert_eq!(
         cols,
-        vec![
-            ("id", false, true, true),
-            ("sku", false, false, false),
-            ("name", true, false, false),
-            ("category_id", true, false, false),
-        ]
+        vec![("id", false, true, true), ("sku", false, false, false), ("name", true, false, false), ("category_id", true, false, false),]
     );
     assert!(info.columns[1].data_type.to_lowercase().starts_with("varchar"), "{}", info.columns[1].data_type);
     assert_eq!(info.columns[2].default.as_deref(), Some("'unnamed'"));
@@ -83,7 +75,10 @@ async fn describes_table_structure(t: TestDb) {
 
     assert_eq!(info.foreign_keys.len(), 1);
     let fk = &info.foreign_keys[0];
-    assert_eq!((fk.columns.clone(), fk.ref_table.as_str(), fk.ref_columns.clone()), (vec!["category_id".to_string()], "category", vec!["id".to_string()]));
+    assert_eq!(
+        (fk.columns.clone(), fk.ref_table.as_str(), fk.ref_columns.clone()),
+        (vec!["category_id".to_string()], "category", vec!["id".to_string()])
+    );
     assert_eq!(fk.on_delete, "CASCADE");
 
     // The CREATE statement recreates the same structure.
@@ -129,14 +124,23 @@ async fn creates_and_drops_databases(t: TestDb) {
     }
     let name = format!("{}_new", t.db);
     t.driver
-        .create_database(&CreateDatabase { name: name.clone(), charset: Some("latin1".into()), collation: Some("latin1_swedish_ci".into()) })
+        .create_database(&CreateDatabase {
+            name: name.clone(),
+            charset: Some("latin1".into()),
+            collation: Some("latin1_swedish_ci".into()),
+        })
         .await
         .unwrap();
     let charsets = t.driver.list_charsets().await.unwrap();
     assert!(charsets.iter().any(|c| c.name == "utf8mb4" && c.collations.iter().any(|x| x == &c.default_collation)));
     let r = t
         .driver
-        .execute_script(None, &format!("SELECT DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{name}'"), 1, None)
+        .execute_script(
+            None,
+            &format!("SELECT DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{name}'"),
+            1,
+            None,
+        )
         .await
         .unwrap();
     let projectcat_core::StatementOutcome::Rows { rows, .. } = &r.outcomes[0] else { panic!() };

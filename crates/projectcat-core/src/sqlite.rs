@@ -1,16 +1,18 @@
 use crate::model::derive_identity;
-use crate::{
-    AppError, CellValue, ChangeError, RowChange, TableDesign, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
-    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowIdentity,
-    ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
+use crate::transfer::{
+    DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem,
 };
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
+use crate::{
+    AppError, CellValue, ChangeError, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
+    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity, ScriptResult,
+    StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+};
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 pub struct SqliteDriver {
     conn: Arc<Mutex<Connection>>,
@@ -24,9 +26,7 @@ pub(crate) fn map_err(e: rusqlite::Error) -> AppError {
             let message = msg.clone().unwrap_or_else(|| e.to_string());
             match f.code {
                 rusqlite::ErrorCode::OperationInterrupted => AppError::cancelled(),
-                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::NotADatabase => {
-                    AppError::new(ErrorKind::Connection, message)
-                }
+                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::NotADatabase => AppError::new(ErrorKind::Connection, message),
                 _ => AppError::sql(message),
             }
         }
@@ -90,7 +90,11 @@ impl SqliteDriver {
     }
 }
 
-fn collect<T>(stmt: &mut rusqlite::Statement<'_>, params: impl rusqlite::Params, f: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> Result<Vec<T>> {
+fn collect<T>(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+    f: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>> {
     stmt.query_map(params, f).map_err(map_err)?.collect::<rusqlite::Result<Vec<T>>>().map_err(map_err)
 }
 
@@ -197,11 +201,9 @@ fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
 fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     let schema = quote_ident(db);
     let (kind, create_sql): (String, Option<String>) = c
-        .query_row(
-            &format!("SELECT type, sql FROM {schema}.sqlite_schema WHERE name = ?1 AND type IN ('table', 'view')"),
-            [name],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .query_row(&format!("SELECT type, sql FROM {schema}.sqlite_schema WHERE name = ?1 AND type IN ('table', 'view')"), [name], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => AppError::validation(format!("Table {name} not found")),
             e => map_err(e),
@@ -210,9 +212,8 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
     let kind = if kind == "view" { ObjectKind::View } else { ObjectKind::Table };
     let upper_sql = create_sql.to_ascii_uppercase();
 
-    let mut stmt = c
-        .prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1, ?2) ORDER BY cid")
-        .map_err(map_err)?;
+    let mut stmt =
+        c.prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1, ?2) ORDER BY cid").map_err(map_err)?;
     let raw = collect(&mut stmt, [name, db], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
     })?;
@@ -230,9 +231,8 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         })
         .collect();
 
-    let mut stmt = c
-        .prepare("SELECT name, \"unique\" FROM pragma_index_list(?1, ?2) WHERE origin <> 'pk' ORDER BY name")
-        .map_err(map_err)?;
+    let mut stmt =
+        c.prepare("SELECT name, \"unique\" FROM pragma_index_list(?1, ?2) WHERE origin <> 'pk' ORDER BY name").map_err(map_err)?;
     let index_rows = collect(&mut stmt, [name, db], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
     let mut indexes = Vec::new();
     for (index, unique) in index_rows {
@@ -245,19 +245,29 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         .prepare("SELECT id, \"table\", \"from\", \"to\", on_update, on_delete FROM pragma_foreign_key_list(?1, ?2) ORDER BY id, seq")
         .map_err(map_err)?;
     let fk_rows = collect(&mut stmt, [name, db], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+        ))
     })?;
     let mut foreign_keys: Vec<(i64, ForeignKeyInfo)> = Vec::new();
     for (id, table, from, to, on_update, on_delete) in fk_rows {
         if foreign_keys.last().is_none_or(|(last, _)| *last != id) {
-            foreign_keys.push((id, ForeignKeyInfo {
-                name: format!("fk_{name}_{id}"),
-                columns: Vec::new(),
-                ref_table: table,
-                ref_columns: Vec::new(),
-                on_update,
-                on_delete,
-            }));
+            foreign_keys.push((
+                id,
+                ForeignKeyInfo {
+                    name: format!("fk_{name}_{id}"),
+                    columns: Vec::new(),
+                    ref_table: table,
+                    ref_columns: Vec::new(),
+                    on_update,
+                    on_delete,
+                },
+            ));
         }
         let fk = &mut foreign_keys.last_mut().unwrap().1;
         fk.columns.push(from);
@@ -314,13 +324,7 @@ fn run_statement(conn: &Connection, sql: &str, row_limit: usize) -> Result<State
         }
         rows.push((0..n).map(|i| read_value(row.get_ref_unwrap(i)).to_cell()).collect::<Vec<CellValue>>());
     }
-    Ok(StatementOutcome::Rows {
-        statement: sql.to_owned(),
-        columns,
-        rows,
-        has_more,
-        duration_ms: started.elapsed().as_millis() as u64,
-    })
+    Ok(StatementOutcome::Rows { statement: sql.to_owned(), columns, rows, has_more, duration_ms: started.elapsed().as_millis() as u64 })
 }
 
 #[async_trait]
@@ -340,11 +344,8 @@ impl Driver for SqliteDriver {
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
         self.with_conn(|c| {
             let mut stmt = c.prepare("PRAGMA database_list").map_err(map_err)?;
-            let names = stmt
-                .query_map([], |r| r.get::<_, String>(1))
-                .map_err(map_err)?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(map_err)?;
+            let names =
+                stmt.query_map([], |r| r.get::<_, String>(1)).map_err(map_err)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?;
             Ok(names.into_iter().filter(|n| n != "temp").map(|name| DatabaseInfo { name }).collect())
         })
         .await
@@ -533,21 +534,31 @@ impl Driver for SqliteDriver {
         self.with_conn(move |c| {
             let schema = quote_ident(&db);
             let mut stmt = c
-                .prepare(&format!("SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"))
+                .prepare(&format!(
+                    "SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
+                ))
                 .map_err(map_err)?;
             let entries = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
             let mut tables = Vec::new();
             let mut objects = Vec::new();
             for (kind, name, sql) in entries {
                 if kind == "table" {
-                    tables.push((name.clone(), format!("DROP TABLE IF EXISTS {};
-{sql};", quote_ident(&name))));
+                    tables.push((
+                        name.clone(),
+                        format!(
+                            "DROP TABLE IF EXISTS {};
+{sql};",
+                            quote_ident(&name)
+                        ),
+                    ));
                 } else {
                     objects.push(format!("{sql};"));
                 }
             }
             let has_sequence: bool = c
-                .query_row(&format!("SELECT count(*) FROM {schema}.sqlite_schema WHERE name = 'sqlite_sequence'"), [], |r| r.get::<_, i64>(0))
+                .query_row(&format!("SELECT count(*) FROM {schema}.sqlite_schema WHERE name = 'sqlite_sequence'"), [], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .map_err(map_err)?
                 > 0;
             let mut data_tail = Vec::new();
@@ -579,7 +590,9 @@ impl Driver for SqliteDriver {
                 .map(|col| ColumnMeta { name: col.name().to_owned(), type_name: col.decl_type().unwrap_or("").to_owned(), hidden: false })
                 .collect();
             let n = columns.len();
-            let rows = collect(&mut stmt, [limit as i64, offset as i64], |r| Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect()))?;
+            let rows = collect(&mut stmt, [limit as i64, offset as i64], |r| {
+                Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect())
+            })?;
             Ok(Page { columns, rows })
         })
         .await

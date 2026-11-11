@@ -164,7 +164,13 @@ pub(crate) fn quote_for(engine: Engine) -> fn(&str) -> String {
 }
 
 /// Writes `INSERT` statements for a batch of rows.
-pub(crate) fn insert_statements(out: &mut impl Write, engine: Engine, table: &str, columns: &[ColumnMeta], rows: &[Vec<Value>]) -> Result<()> {
+pub(crate) fn insert_statements(
+    out: &mut impl Write,
+    engine: Engine,
+    table: &str,
+    columns: &[ColumnMeta],
+    rows: &[Vec<Value>],
+) -> Result<()> {
     let q = quote_for(engine);
     let visible: Vec<usize> = (0..columns.len()).filter(|i| !columns[*i].hidden).collect();
     let cols = visible.iter().map(|i| q(&columns[*i].name)).collect::<Vec<_>>().join(", ");
@@ -194,11 +200,9 @@ pub async fn export(
     let engine = driver.engine();
     let q = quote_for(engine);
     let (sql, total, default_name) = match source {
-        ExportSource::Table { table } => (
-            format!("SELECT * FROM {}.{}", q(db), q(table)),
-            Some(driver.count_rows(db, table, &[]).await?),
-            table.clone(),
-        ),
+        ExportSource::Table { table } => {
+            (format!("SELECT * FROM {}.{}", q(db), q(table)), Some(driver.count_rows(db, table, &[]).await?), table.clone())
+        }
         ExportSource::Query { sql } => (sql.trim().trim_end_matches(';').to_owned(), None, "query_result".to_owned()),
     };
     let mut stream = driver.stream_query(Some(db), &sql, BATCH).await?;
@@ -213,7 +217,7 @@ pub async fn export(
 
     // Each format: a header, a writer per batch and a footer.
     enum Sink<W: Write> {
-        Csv(csv::Writer<Encoded<W>>, String),
+        Csv(Box<csv::Writer<Encoded<W>>>, String),
         Json(W, bool),
         Sql(W, String),
     }
@@ -227,7 +231,7 @@ pub async fn export(
             if o.header {
                 w.write_record(&names).map_err(|e| AppError::io(e.to_string()))?;
             }
-            Sink::Csv(w, o.null_text.clone())
+            Sink::Csv(Box::new(w), o.null_text.clone())
         }
         ExportFormat::Json => {
             let mut f = file;
@@ -238,12 +242,12 @@ pub async fn export(
             let mut f = file;
             let name = o.table_name.clone().filter(|n| !n.is_empty()).unwrap_or(default_name);
             writeln!(f, "-- Exported by ProjectCat")?;
-            if o.include_create {
-                if let ExportSource::Table { table } = source {
-                    let create = driver.table_info(db, table).await?.create_sql;
-                    let create = if name != *table { create.replacen(table.as_str(), &name, 1) } else { create };
-                    writeln!(f, "{};\n", create.trim_end_matches(';'))?;
-                }
+            if o.include_create
+                && let ExportSource::Table { table } = source
+            {
+                let create = driver.table_info(db, table).await?.create_sql;
+                let create = if name != *table { create.replacen(table.as_str(), &name, 1) } else { create };
+                writeln!(f, "{};\n", create.trim_end_matches(';'))?;
             }
             Sink::Sql(f, name)
         }
@@ -469,7 +473,8 @@ pub struct ScriptRunReport {
 }
 
 pub(crate) fn failure(index: usize, statement: &str, message: String) -> StatementFailure {
-    let statement = if statement.len() > 300 { format!("{}…", &statement[..statement.floor_char_boundary(300)]) } else { statement.to_owned() };
+    let statement =
+        if statement.len() > 300 { format!("{}…", &statement[..statement.floor_char_boundary(300)]) } else { statement.to_owned() };
     StatementFailure { index, statement, message }
 }
 

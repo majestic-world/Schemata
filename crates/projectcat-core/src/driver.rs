@@ -1,11 +1,11 @@
 use crate::transfer::{DumpScript, ImportBatch, ImportReport, ProgressFn, RowStream, ScriptRunReport};
-use tokio_util::sync::CancellationToken;
 use crate::{
-    AppError, ChangeError, ObjectKind, RowChange, TableDesign, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, Page, PageRequest, Result, ScriptResult,
-    TableInfo,
+    AppError, ChangeError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, ObjectKind, Page, PageRequest, Result,
+    RowChange, ScriptResult, TableDesign, TableInfo,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Everything needed to open a session. Built from a saved connection plus its password.
 #[derive(Debug, Clone, serde::Deserialize)]

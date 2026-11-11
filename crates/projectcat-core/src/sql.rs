@@ -9,10 +9,7 @@ pub(crate) fn where_clause(filters: &[Filter], quote: fn(&str) -> String) -> Res
     for f in filters {
         let col = quote(&f.column);
         let value = || -> Result<Value> {
-            f.value
-                .as_ref()
-                .ok_or_else(|| AppError::validation(format!("Filter on {} needs a value", f.column)))?
-                .to_value()
+            f.value.as_ref().ok_or_else(|| AppError::validation(format!("Filter on {} needs a value", f.column)))?.to_value()
         };
         let like = |prefix: &str| -> Result<Value> {
             let text = value()?.as_text().unwrap_or_default();
@@ -78,11 +75,8 @@ pub(crate) fn change_statements(
     quote: fn(&str) -> String,
     empty_insert: &str,
 ) -> Result<Vec<ChangeStatement>, ChangeError> {
-    let key_columns: Vec<String> = identity
-        .columns()
-        .into_iter()
-        .map(|c| if c == ROWID_COLUMN { "rowid".to_owned() } else { quote(&c) })
-        .collect();
+    let key_columns: Vec<String> =
+        identity.columns().into_iter().map(|c| if c == ROWID_COLUMN { "rowid".to_owned() } else { quote(&c) }).collect();
     let needs_key = changes.iter().any(|c| !matches!(c, RowChange::Insert { .. }));
     if needs_key && key_columns.is_empty() {
         return Err(AppError::validation("This table has no primary or unique key, so its rows cannot be edited").into());
@@ -118,7 +112,13 @@ pub(crate) fn change_statements(
                 }
                 RowChange::Delete { key } => {
                     let key_binds = key_values(key)?;
-                    ChangeStatement { sql: format!("DELETE FROM {table_ref} WHERE {where_key}"), binds: key_binds, keyed: true, exists_sql: None, key_binds: Vec::new() }
+                    ChangeStatement {
+                        sql: format!("DELETE FROM {table_ref} WHERE {where_key}"),
+                        binds: key_binds,
+                        keyed: true,
+                        exists_sql: None,
+                        key_binds: Vec::new(),
+                    }
                 }
                 RowChange::Insert { values } => {
                     let sql = if values.is_empty() {

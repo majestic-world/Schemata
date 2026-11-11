@@ -78,7 +78,11 @@ impl TableDesign {
                     comment: c.comment.clone(),
                 })
                 .collect(),
-            indexes: info.indexes.iter().map(|i| IndexDesign { name: i.name.clone(), columns: i.columns.clone(), unique: i.unique }).collect(),
+            indexes: info
+                .indexes
+                .iter()
+                .map(|i| IndexDesign { name: i.name.clone(), columns: i.columns.clone(), unique: i.unique })
+                .collect(),
             foreign_keys: info
                 .foreign_keys
                 .iter()
@@ -244,7 +248,11 @@ pub(crate) mod mysql {
 
         let new_fks: HashMap<&str, &ForeignKeyDesign> = d.foreign_keys.iter().map(|f| (f.name.as_str(), f)).collect();
         let fk_same = |o: &ForeignKeyDesign, n: &ForeignKeyDesign| {
-            renamed(&o.columns, &map) == n.columns && o.ref_table == n.ref_table && o.ref_columns == n.ref_columns && o.on_update == n.on_update && o.on_delete == n.on_delete
+            renamed(&o.columns, &map) == n.columns
+                && o.ref_table == n.ref_table
+                && o.ref_columns == n.ref_columns
+                && o.on_update == n.on_update
+                && o.on_delete == n.on_delete
         };
         for fk in &original.foreign_keys {
             if new_fks.get(fk.name.as_str()).is_none_or(|n| !fk_same(fk, n)) {
@@ -391,12 +399,13 @@ pub(crate) mod sqlite {
         let map = rename_map(d);
         let orig_cols: HashMap<&str, &ColumnDesign> = original.columns.iter().map(|c| (c.name.as_str(), c)).collect();
         let kept: Vec<&ColumnDesign> = d.columns.iter().filter(|c| c.original_name.is_some()).collect();
-        let kept_in_original_order = original.columns.iter().filter(|c| kept.iter().any(|k| k.original_name.as_deref() == Some(&c.name))).count() == kept.len()
-            && kept.iter().map(|c| c.original_name.as_deref().unwrap()).eq(original
-                .columns
-                .iter()
-                .map(|c| c.name.as_str())
-                .filter(|n| kept.iter().any(|k| k.original_name.as_deref() == Some(*n))));
+        let kept_in_original_order =
+            original.columns.iter().filter(|c| kept.iter().any(|k| k.original_name.as_deref() == Some(&c.name))).count() == kept.len()
+                && kept.iter().map(|c| c.original_name.as_deref().unwrap()).eq(original
+                    .columns
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .filter(|n| kept.iter().any(|k| k.original_name.as_deref() == Some(*n))));
         let dropped_any = original.columns.len() != kept.len();
         let defs_unchanged = kept.iter().all(|c| orig_cols.get(c.original_name.as_deref().unwrap()).is_some_and(|o| same_definition(o, c)));
         // New columns may only be appended, and must be addable by ALTER TABLE ADD COLUMN.
@@ -405,16 +414,23 @@ pub(crate) mod sqlite {
         let addable = d.columns[first_new..].iter().all(|c| !c.primary_key && !c.auto_increment && (c.nullable || c.default.is_some()));
         let fks_same = original.foreign_keys.len() == d.foreign_keys.len()
             && original.foreign_keys.iter().zip(&d.foreign_keys).all(|(o, n)| {
-                renamed(&o.columns, &map) == n.columns && o.ref_table == n.ref_table && o.ref_columns == n.ref_columns && o.on_update == n.on_update && o.on_delete == n.on_delete
+                renamed(&o.columns, &map) == n.columns
+                    && o.ref_table == n.ref_table
+                    && o.ref_columns == n.ref_columns
+                    && o.on_update == n.on_update
+                    && o.on_delete == n.on_delete
             });
         let idx_same = |o: &IndexDesign, n: &IndexDesign| renamed(&o.columns, &map) == n.columns && o.unique == n.unique;
         let new_idx: HashMap<&str, &IndexDesign> = d.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
         let orig_idx: HashMap<&str, &IndexDesign> = original.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
-        let dropped_indexes: Vec<&IndexDesign> = original.indexes.iter().filter(|i| new_idx.get(i.name.as_str()).is_none_or(|n| !idx_same(i, n))).collect();
-        let added_indexes: Vec<&IndexDesign> = d.indexes.iter().filter(|i| orig_idx.get(i.name.as_str()).is_none_or(|o| !idx_same(o, i))).collect();
+        let dropped_indexes: Vec<&IndexDesign> =
+            original.indexes.iter().filter(|i| new_idx.get(i.name.as_str()).is_none_or(|n| !idx_same(i, n))).collect();
+        let added_indexes: Vec<&IndexDesign> =
+            d.indexes.iter().filter(|i| orig_idx.get(i.name.as_str()).is_none_or(|o| !idx_same(o, i))).collect();
         let auto_index_touched = dropped_indexes.iter().any(|i| i.name.starts_with("sqlite_"));
 
-        let simple = kept_in_original_order && !dropped_any && defs_unchanged && appended_only && addable && fks_same && !auto_index_touched;
+        let simple =
+            kept_in_original_order && !dropped_any && defs_unchanged && appended_only && addable && fks_same && !auto_index_touched;
         let table = q(&original.name);
         let schema = q(db);
         let mut out = Vec::new();
@@ -450,7 +466,12 @@ pub(crate) mod sqlite {
         let new_cols: Vec<String> = kept.iter().map(|c| c.name.clone()).collect();
         let old_cols: Vec<String> = kept.iter().map(|c| c.original_name.clone().unwrap()).collect();
         if !kept.is_empty() {
-            out.push(format!("INSERT INTO {schema}.{} ({}) SELECT {} FROM {schema}.{table}", q(&tmp), list(&new_cols, q), list(&old_cols, q)));
+            out.push(format!(
+                "INSERT INTO {schema}.{} ({}) SELECT {} FROM {schema}.{table}",
+                q(&tmp),
+                list(&new_cols, q),
+                list(&old_cols, q)
+            ));
         }
         out.push(format!("DROP TABLE {schema}.{table}"));
         out.push(format!("ALTER TABLE {schema}.{} RENAME TO {}", q(&tmp), q(&d.name)));

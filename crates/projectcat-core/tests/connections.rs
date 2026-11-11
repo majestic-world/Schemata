@@ -1,9 +1,7 @@
 mod common;
 
 use common::TestDb;
-use projectcat_core::{
-    ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, connect,
-};
+use projectcat_core::{ConnectParams, ConnectionConfig, ConnectionStore, Engine, ErrorKind, MemorySecrets, ObjectKind, connect};
 
 #[tokio::test]
 async fn store_persists_connections_without_secrets() {
@@ -90,10 +88,6 @@ async fn sqlite_lists_main_database_and_objects_with_exact_counts() {
     let summary: Vec<_> = objects.iter().map(|o| (o.name.as_str(), o.kind, o.rows)).collect();
     assert_eq!(
         summary,
-        vec![
-            ("culture", ObjectKind::Table, Some(0)),
-            ("product", ObjectKind::Table, Some(3)),
-            ("cheap", ObjectKind::View, None),
-        ]
+        vec![("culture", ObjectKind::Table, Some(0)), ("product", ObjectKind::Table, Some(3)), ("cheap", ObjectKind::View, None),]
     );
 }

@@ -49,8 +49,8 @@ pub fn split_statements(sql: &str, engine: Engine) -> Vec<String> {
         let next = chars.get(i + 1).copied();
 
         // Comments are kept in the statement text but do not count as code.
-        let line_comment = (c == '-' && next == Some('-') && (!mysql || chars.get(i + 2).is_none_or(|c| c.is_whitespace())))
-            || (mysql && c == '#');
+        let line_comment =
+            (c == '-' && next == Some('-') && (!mysql || chars.get(i + 2).is_none_or(|c| c.is_whitespace()))) || (mysql && c == '#');
         if line_comment {
             finish_word(&mut word, &mut words, &mut trigger_depth);
             while i < chars.len() && chars[i] != '\n' {
@@ -150,14 +150,7 @@ fn at_line_start(chars: &[char], i: usize) -> bool {
 }
 
 fn starts_with(chars: &[char], i: usize, pat: &str) -> bool {
-    let mut j = i;
-    for p in pat.chars() {
-        if chars.get(j).is_none_or(|c| !c.eq_ignore_ascii_case(&p)) {
-            return false;
-        }
-        j += 1;
-    }
-    true
+    pat.chars().enumerate().all(|(k, p)| chars.get(i + k).is_some_and(|c| c.eq_ignore_ascii_case(&p)))
 }
 
 fn find_seq(chars: &[char], from: usize, seq: &[char]) -> Option<usize> {

@@ -2,8 +2,7 @@ mod common;
 
 use common::TestDb;
 use projectcat_core::{
-    CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, ObjectKind, PageRequest, SortSpec, TableDesign,
-    TableOptions,
+    CellValue, ColumnDesign, Engine, ErrorKind, ForeignKeyDesign, IndexDesign, ObjectKind, PageRequest, SortSpec, TableDesign, TableOptions,
 };
 
 fn col(name: &str, data_type: &str) -> ColumnDesign {
@@ -66,12 +65,10 @@ async fn creates_table_from_design(t: TestDb) {
     apply(&t, None, &design).await;
 
     let info = t.driver.table_info(&t.db, "product").await.unwrap();
-    assert_eq!(info.columns.iter().map(|c| (c.name.as_str(), c.nullable, c.primary_key, c.auto_increment)).collect::<Vec<_>>(), vec![
-        ("id", false, true, true),
-        ("sku", false, false, false),
-        ("status", true, false, false),
-        ("category_id", true, false, false),
-    ]);
+    assert_eq!(
+        info.columns.iter().map(|c| (c.name.as_str(), c.nullable, c.primary_key, c.auto_increment)).collect::<Vec<_>>(),
+        vec![("id", false, true, true), ("sku", false, false, false), ("status", true, false, false), ("category_id", true, false, false),]
+    );
     assert_eq!(info.columns[2].default.as_deref(), Some("'new'"));
     assert!(info.indexes.iter().any(|i| i.unique && i.columns == vec!["sku".to_string()]));
     assert_eq!(info.foreign_keys[0].on_delete, "CASCADE");
@@ -113,15 +110,19 @@ async fn alters_columns_indexes_and_name(t: TestDb) {
     let info = t.driver.table_info(&t.db, "people").await.unwrap();
     assert!(info.columns[3].data_type.to_lowercase().contains("60"), "{}", info.columns[3].data_type);
     assert!(info.indexes.iter().any(|i| i.name == "ix_age"));
-    assert_eq!(all_rows(&t, "people", "id").await, vec![
-        vec![CellValue::Int(1), CellValue::Int(30), CellValue::Text("none".into()), CellValue::Text("Ana".into())],
-        vec![CellValue::Int(2), CellValue::Int(41), CellValue::Text("none".into()), CellValue::Text("Bia".into())],
-    ]);
+    assert_eq!(
+        all_rows(&t, "people", "id").await,
+        vec![
+            vec![CellValue::Int(1), CellValue::Int(30), CellValue::Text("none".into()), CellValue::Text("Ana".into())],
+            vec![CellValue::Int(2), CellValue::Int(41), CellValue::Text("none".into()), CellValue::Text("Bia".into())],
+        ]
+    );
 }
 scenario!(alters_columns_indexes_and_name);
 
 async fn failed_alteration_leaves_table_untouched(t: TestDb) {
-    t.exec(&format!("CREATE TABLE note (id {} PRIMARY KEY, body VARCHAR(20)); INSERT INTO note VALUES (1, NULL), (2, 'x');", int_type(&t))).await;
+    t.exec(&format!("CREATE TABLE note (id {} PRIMARY KEY, body VARCHAR(20)); INSERT INTO note VALUES (1, NULL), (2, 'x');", int_type(&t)))
+        .await;
     let original = t.driver.table_design(&t.db, "note").await.unwrap();
     let mut design = original.clone();
     let body = design.columns.iter_mut().find(|c| c.name == "body").unwrap();
@@ -162,12 +163,18 @@ async fn sqlite_rebuild_preserves_dependents(t: TestDb) {
     assert_eq!(info.columns.iter().find(|c| c.name == "weight").unwrap().data_type, "REAL");
     assert!(info.indexes.iter().any(|i| i.name == "ix_pet_name"));
     assert_eq!(info.foreign_keys.len(), 1);
-    assert_eq!(all_rows(&t, "pet", "id").await, vec![vec![CellValue::Int(1), CellValue::Int(1), CellValue::Text("Rex".into()), CellValue::Float(12.5)]]);
+    assert_eq!(
+        all_rows(&t, "pet", "id").await,
+        vec![vec![CellValue::Int(1), CellValue::Int(1), CellValue::Text("Rex".into()), CellValue::Float(12.5)]]
+    );
     // The trigger still fires (and did not fire for the rows copied during the rebuild).
     t.exec("INSERT INTO pet (owner_id, name, weight) VALUES (1, 'Tom', 3)").await;
     assert_eq!(all_rows(&t, "log", "msg").await, vec![vec![CellValue::Text("pet Rex".into())], vec![CellValue::Text("pet Tom".into())]]);
     assert_eq!(t.driver.table_info(&t.db, "heavy").await.unwrap().kind, ObjectKind::View);
-    assert_eq!(t.driver.fetch_page(&t.db, "heavy", &PageRequest { offset: 0, limit: 10, sort: None, filters: vec![] }).await.unwrap().rows.len(), 1);
+    assert_eq!(
+        t.driver.fetch_page(&t.db, "heavy", &PageRequest { offset: 0, limit: 10, sort: None, filters: vec![] }).await.unwrap().rows.len(),
+        1
+    );
 }
 scenario!(sqlite_rebuild_preserves_dependents);
 

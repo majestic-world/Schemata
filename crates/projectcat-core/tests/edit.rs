@@ -85,7 +85,8 @@ async fn written_values_round_trip(t: TestDb) {
     if sqlite {
         t.exec("CREATE TABLE w (id INTEGER PRIMARY KEY, big INTEGER, amount TEXT, js TEXT, dt TEXT, s TEXT)").await;
     } else {
-        t.exec("CREATE TABLE w (id BIGINT UNSIGNED PRIMARY KEY, big BIGINT, amount DECIMAL(30,10), js JSON, dt DATETIME, s VARCHAR(10))").await;
+        t.exec("CREATE TABLE w (id BIGINT UNSIGNED PRIMARY KEY, big BIGINT, amount DECIMAL(30,10), js JSON, dt DATETIME, s VARCHAR(10))")
+            .await;
     }
     let id = if sqlite { int(1) } else { CellValue::BigInt("18446744073709551615".into()) };
     let values = vec![
@@ -100,11 +101,20 @@ async fn written_values_round_trip(t: TestDb) {
     let row = &rows(&t, "w").await[0];
     assert_eq!(row[0], id);
     assert_eq!(row[1], CellValue::BigInt("-9223372036854775808".into()));
-    let amount = match &row[2] { CellValue::Decimal(s) | CellValue::Text(s) => s.clone(), other => panic!("{other:?}") };
+    let amount = match &row[2] {
+        CellValue::Decimal(s) | CellValue::Text(s) => s.clone(),
+        other => panic!("{other:?}"),
+    };
     assert_eq!(amount, "12345678901234567890.0123456789");
-    let js = match &row[3] { CellValue::Json(s) | CellValue::Text(s) => s.clone(), other => panic!("{other:?}") };
+    let js = match &row[3] {
+        CellValue::Json(s) | CellValue::Text(s) => s.clone(),
+        other => panic!("{other:?}"),
+    };
     assert_eq!(serde_json::from_str::<serde_json::Value>(&js).unwrap(), serde_json::json!({"k": [1, 2]}));
-    let dt = match &row[4] { CellValue::DateTime(s) | CellValue::Text(s) => s.clone(), other => panic!("{other:?}") };
+    let dt = match &row[4] {
+        CellValue::DateTime(s) | CellValue::Text(s) => s.clone(),
+        other => panic!("{other:?}"),
+    };
     assert_eq!(dt, "2024-02-29 23:59:59");
     assert_eq!(row[5], text(""));
 

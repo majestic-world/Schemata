@@ -1,12 +1,13 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use projectcat_core::{
-    AppError, ChangeError, HistoryEntry, QueryHistory, StatementOutcome, ObjectKind, RowChange, TableDesign, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, ObjectInfo, Page,
-    PageRequest, SaveOutcome, ScriptResult, Sessions, TableInfo, connect,
+    AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry, ObjectInfo,
+    ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, StatementOutcome, TableDesign, TableInfo,
+    connect,
 };
 use projectcat_core::{
-    CancellationToken, DumpOptions, DumpReport, CsvImport, CsvPreview, CsvReadOptions, ExportFormat, ExportReport, ExportSource, ImportReport, Progress,
-    ProgressFn, ScriptRunReport,
+    CancellationToken, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, ExportFormat, ExportReport, ExportSource,
+    ImportReport, Progress, ProgressFn, ScriptRunReport,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,7 +70,12 @@ pub async fn list_databases(sessions: State<'_, Sessions>, id: String) -> CmdRes
 
 #[tauri::command]
 pub async fn list_objects(sessions: State<'_, Sessions>, id: String, db: String) -> CmdResult<Vec<ObjectInfo>> {
-    sessions.with_driver(&id, |d| { let db = db.clone(); async move { d.list_objects(&db).await } }).await
+    sessions
+        .with_driver(&id, |d| {
+            let db = db.clone();
+            async move { d.list_objects(&db).await }
+        })
+        .await
 }
 
 /// Runs a script and records it in the query history.
@@ -103,7 +109,12 @@ pub async fn cancel_execution(sessions: State<'_, Sessions>, id: String, executi
 
 #[tauri::command]
 pub async fn table_info(sessions: State<'_, Sessions>, id: String, db: String, name: String) -> CmdResult<TableInfo> {
-    sessions.with_driver(&id, |d| { let (db, name) = (db.clone(), name.clone()); async move { d.table_info(&db, &name).await } }).await
+    sessions
+        .with_driver(&id, |d| {
+            let (db, name) = (db.clone(), name.clone());
+            async move { d.table_info(&db, &name).await }
+        })
+        .await
 }
 
 #[tauri::command]
@@ -129,30 +140,53 @@ pub async fn attach_database(sessions: State<'_, Sessions>, id: String, path: St
 #[tauri::command]
 pub async fn fetch_page(sessions: State<'_, Sessions>, id: String, db: String, table: String, req: PageRequest) -> CmdResult<Page> {
     sessions
-        .with_driver(&id, |d| { let (db, table, req) = (db.clone(), table.clone(), req.clone()); async move { d.fetch_page(&db, &table, &req).await } })
+        .with_driver(&id, |d| {
+            let (db, table, req) = (db.clone(), table.clone(), req.clone());
+            async move { d.fetch_page(&db, &table, &req).await }
+        })
         .await
 }
 
 #[tauri::command]
 pub async fn count_rows(sessions: State<'_, Sessions>, id: String, db: String, table: String, filters: Vec<Filter>) -> CmdResult<u64> {
     sessions
-        .with_driver(&id, |d| { let (db, table, filters) = (db.clone(), table.clone(), filters.clone()); async move { d.count_rows(&db, &table, &filters).await } })
+        .with_driver(&id, |d| {
+            let (db, table, filters) = (db.clone(), table.clone(), filters.clone());
+            async move { d.count_rows(&db, &table, &filters).await }
+        })
         .await
 }
 
 #[tauri::command]
-pub async fn apply_changes(sessions: State<'_, Sessions>, id: String, db: String, table: String, changes: Vec<RowChange>) -> Result<u64, ChangeError> {
+pub async fn apply_changes(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: String,
+    table: String,
+    changes: Vec<RowChange>,
+) -> Result<u64, ChangeError> {
     let driver = sessions.driver(&id).await?;
     driver.apply_changes(&db, &table, &changes).await
 }
 
 #[tauri::command]
 pub async fn table_design(sessions: State<'_, Sessions>, id: String, db: String, table: String) -> CmdResult<TableDesign> {
-    sessions.with_driver(&id, |d| { let (db, table) = (db.clone(), table.clone()); async move { d.table_design(&db, &table).await } }).await
+    sessions
+        .with_driver(&id, |d| {
+            let (db, table) = (db.clone(), table.clone());
+            async move { d.table_design(&db, &table).await }
+        })
+        .await
 }
 
 #[tauri::command]
-pub async fn plan_table(sessions: State<'_, Sessions>, id: String, db: String, original: Option<TableDesign>, design: TableDesign) -> CmdResult<Vec<String>> {
+pub async fn plan_table(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: String,
+    original: Option<TableDesign>,
+    design: TableDesign,
+) -> CmdResult<Vec<String>> {
     sessions.driver(&id).await?.plan_table(&db, original.as_ref(), &design).await
 }
 
@@ -177,13 +211,25 @@ pub async fn rename_table(sessions: State<'_, Sessions>, id: String, db: String,
 }
 
 #[tauri::command]
-pub async fn fetch_more(sessions: State<'_, Sessions>, id: String, db: Option<String>, statement: String, offset: u64, limit: u64) -> CmdResult<Page> {
+pub async fn fetch_more(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: Option<String>,
+    statement: String,
+    offset: u64,
+    limit: u64,
+) -> CmdResult<Page> {
     sessions.driver(&id).await?.fetch_more(db.as_deref(), &statement, offset, limit).await
 }
 
 #[tauri::command]
 pub async fn list_columns(sessions: State<'_, Sessions>, id: String, db: String) -> CmdResult<Vec<(String, Vec<String>)>> {
-    sessions.with_driver(&id, |d| { let db = db.clone(); async move { d.list_columns(&db).await } }).await
+    sessions
+        .with_driver(&id, |d| {
+            let db = db.clone();
+            async move { d.list_columns(&db).await }
+        })
+        .await
 }
 
 #[tauri::command]
@@ -260,9 +306,7 @@ pub async fn export_data(
 
 #[tauri::command]
 pub async fn preview_csv(path: PathBuf, options: CsvReadOptions) -> CmdResult<CsvPreview> {
-    tokio::task::spawn_blocking(move || projectcat_core::preview_csv(&path, &options, 20))
-        .await
-        .map_err(|e| AppError::io(e.to_string()))?
+    tokio::task::spawn_blocking(move || projectcat_core::preview_csv(&path, &options, 20)).await.map_err(|e| AppError::io(e.to_string()))?
 }
 
 #[tauri::command]

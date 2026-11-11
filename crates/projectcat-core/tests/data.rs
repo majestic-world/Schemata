@@ -47,7 +47,8 @@ async fn filters_combine_with_and(t: TestDb) {
         async move { driver.fetch_page(&db, "people", &req).await.unwrap() }
     };
 
-    let lisbon_over_20 = run(vec![filter("city", FilterOp::Eq, Some(text("Lisbon"))), filter("age", FilterOp::Gt, Some(CellValue::Int(20)))]).await;
+    let lisbon_over_20 =
+        run(vec![filter("city", FilterOp::Eq, Some(text("Lisbon"))), filter("age", FilterOp::Gt, Some(CellValue::Int(20)))]).await;
     assert_eq!(column(&lisbon_over_20, "name"), vec![text("Ana")]);
 
     let no_city = run(vec![filter("city", FilterOp::IsNull, None)]).await;
@@ -105,7 +106,9 @@ async fn values_keep_precision_and_null(t: TestDb) {
     assert_eq!(get("small"), CellValue::Int(42));
     assert_eq!(get("bits"), CellValue::Int(5));
     match get("js") {
-        CellValue::Json(j) | CellValue::Text(j) => assert_eq!(serde_json::from_str::<serde_json::Value>(&j).unwrap(), serde_json::json!({"a": 1})),
+        CellValue::Json(j) | CellValue::Text(j) => {
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&j).unwrap(), serde_json::json!({"a": 1}))
+        }
         other => panic!("{other:?}"),
     }
 }

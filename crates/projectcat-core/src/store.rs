@@ -66,10 +66,7 @@ impl ConnectionStore {
     }
 
     pub fn get(&self, id: &str) -> Result<ConnectionConfig> {
-        self.list()
-            .into_iter()
-            .find(|c| c.id == id)
-            .ok_or_else(|| AppError::validation(format!("Unknown connection {id}")))
+        self.list().into_iter().find(|c| c.id == id).ok_or_else(|| AppError::validation(format!("Unknown connection {id}")))
     }
 
     /// Inserts or updates a connection. With `save_password` and no new password, the stored one is kept.

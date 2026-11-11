@@ -2,7 +2,8 @@ mod common;
 
 use common::TestDb;
 use projectcat_core::{
-    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, connect, dump_database, run_sql_file,
+    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, connect, dump_database,
+    run_sql_file,
 };
 use std::sync::Arc;
 
@@ -57,9 +58,16 @@ async fn dump_restores_schema_and_data(t: TestDb) {
     seed(&t).await;
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("dump.sql");
-    let report = dump_database(t.driver.as_ref(), &t.db, &file, &DumpOptions { structure: true, data: true }, no_progress(), CancellationToken::new())
-        .await
-        .unwrap();
+    let report = dump_database(
+        t.driver.as_ref(),
+        &t.db,
+        &file,
+        &DumpOptions { structure: true, data: true },
+        no_progress(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(report.rows, 6);
 
     let (target, db) = empty_target(&t, &dir).await;

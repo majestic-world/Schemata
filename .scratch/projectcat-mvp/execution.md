@@ -21,6 +21,6 @@
 | 09 | Exportar e importar | 06, 08 | implemented | `ddb42d1` |
 | 10 | Backup e restore | 09 | implemented | `3e10471` |
 | 11 | Atalhos, estado persistido e erros | 06, 07, 08 | implemented | `8bf8475` |
-| 12 | CI e empacotamento | 10, 11 | ready-for-agent | |
+| 12 | CI e empacotamento | 10, 11 | implemented | `9a18695` |
 
 ## Log

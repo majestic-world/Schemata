@@ -1,22 +1,24 @@
 use crate::model::derive_identity;
-use crate::{
-    AppError, CellValue, ChangeError, RowChange, TableDesign, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver,
-    Engine, ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowIdentity,
-    ScriptResult, StatementError, StatementOutcome, TableInfo, Value, split_statements,
+use crate::transfer::{
+    DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem,
 };
+use crate::{
+    AppError, CellValue, ChangeError, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver, Engine,
+    ErrorKind, Filter, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowChange, RowIdentity, ScriptResult,
+    StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+};
+use async_trait::async_trait;
+use futures::TryStreamExt;
 use sqlx::MySql;
 use sqlx::mysql::MySqlArguments;
-use sqlx::query::Query;
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn, RowFailure, RowStream, ScriptRunReport, StreamItem};
-use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
-use futures::TryStreamExt;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
+use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Column, Either, Row, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 pub struct MySqlDriver {
     pool: MySqlPool,
@@ -152,7 +154,21 @@ fn plain_name(value: &str) -> Result<&str> {
 fn is_numeric_type(data_type: &str) -> bool {
     matches!(
         data_type,
-        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "float" | "double" | "real" | "bit" | "year" | "bool" | "boolean"
+        "tinyint"
+            | "smallint"
+            | "mediumint"
+            | "int"
+            | "integer"
+            | "bigint"
+            | "decimal"
+            | "numeric"
+            | "float"
+            | "double"
+            | "real"
+            | "bit"
+            | "year"
+            | "bool"
+            | "boolean"
     )
 }
 
@@ -186,7 +202,22 @@ fn returns_rows(sql: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_ascii_uppercase();
-    matches!(first.as_str(), "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "WITH" | "VALUES" | "TABLE" | "CHECKSUM" | "ANALYZE" | "CHECK" | "OPTIMIZE" | "REPAIR")
+    matches!(
+        first.as_str(),
+        "SELECT"
+            | "SHOW"
+            | "DESCRIBE"
+            | "DESC"
+            | "EXPLAIN"
+            | "WITH"
+            | "VALUES"
+            | "TABLE"
+            | "CHECKSUM"
+            | "ANALYZE"
+            | "CHECK"
+            | "OPTIMIZE"
+            | "REPAIR"
+    )
 }
 
 impl MySqlDriver {
@@ -248,16 +279,13 @@ impl MySqlDriver {
         let duration_ms = started.elapsed().as_millis() as u64;
         if columns.is_none() && returns_rows(sql) {
             // Empty result sets carry no rows to read column names from; prepare the statement instead.
-            columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql)))
-                .await
-                .ok()
-                .map(|st| {
-                    use sqlx::Statement;
-                    st.columns()
-                        .iter()
-                        .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
-                        .collect()
-                });
+            columns = sqlx::Executor::prepare(&mut *conn, sqlx::SqlSafeStr::into_sql_str(AssertSqlSafe(sql))).await.ok().map(|st| {
+                use sqlx::Statement;
+                st.columns()
+                    .iter()
+                    .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false })
+                    .collect()
+            });
         }
         if columns.is_some() || returns_rows(sql) {
             Ok(StatementOutcome::Rows { statement: sql.to_owned(), columns: columns.unwrap_or_default(), rows, has_more, duration_ms })
@@ -362,7 +390,14 @@ impl Driver for MySqlDriver {
                         .await
                         .map(|st| {
                             use sqlx::Statement;
-                            st.columns().iter().map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.type_info().name().to_owned(), hidden: false }).collect()
+                            st.columns()
+                                .iter()
+                                .map(|c| ColumnMeta {
+                                    name: c.name().to_owned(),
+                                    type_name: c.type_info().name().to_owned(),
+                                    hidden: false,
+                                })
+                                .collect()
                         })
                         .unwrap_or_default();
                     let _ = tx.send(Ok(StreamItem::Columns(columns))).await;
@@ -499,17 +534,29 @@ impl Driver for MySqlDriver {
                 .map_err(map_err)?;
             let create = text(&row, 1)?.unwrap_or_default();
             match o.kind {
-                ObjectKind::Table => tables.push((o.name.clone(), format!("DROP TABLE IF EXISTS {};
-{create};", quote_ident(&o.name)))),
+                ObjectKind::Table => tables.push((
+                    o.name.clone(),
+                    format!(
+                        "DROP TABLE IF EXISTS {};
+{create};",
+                        quote_ident(&o.name)
+                    ),
+                )),
                 ObjectKind::View => {
                     // Portable views: no DEFINER, no references to the source database name.
                     let create = strip_definer(&create).replace(&format!("{qdb}."), "");
-                    views.push((o.name.clone(), format!("DROP VIEW IF EXISTS {};
-{create};", quote_ident(&o.name))));
+                    views.push((
+                        o.name.clone(),
+                        format!(
+                            "DROP VIEW IF EXISTS {};
+{create};",
+                            quote_ident(&o.name)
+                        ),
+                    ));
                 }
             }
         }
-        let mut objects_sql: Vec<String> = crate::transfer::order_views(views, |name| quote_ident(name)).into_iter().map(|(_, sql)| sql).collect();
+        let mut objects_sql: Vec<String> = crate::transfer::order_views(views, quote_ident).into_iter().map(|(_, sql)| sql).collect();
         let triggers = sqlx::query(
             "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT \
              FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, ACTION_ORDER",
@@ -519,7 +566,13 @@ impl Driver for MySqlDriver {
         .await
         .map_err(map_err)?;
         for r in &triggers {
-            let (name, timing, event, table, body) = (text(r, 0)?.unwrap_or_default(), text(r, 1)?.unwrap_or_default(), text(r, 2)?.unwrap_or_default(), text(r, 3)?.unwrap_or_default(), text(r, 4)?.unwrap_or_default());
+            let (name, timing, event, table, body) = (
+                text(r, 0)?.unwrap_or_default(),
+                text(r, 1)?.unwrap_or_default(),
+                text(r, 2)?.unwrap_or_default(),
+                text(r, 3)?.unwrap_or_default(),
+                text(r, 4)?.unwrap_or_default(),
+            );
             objects_sql.push(format!(
                 "DROP TRIGGER IF EXISTS {0};
 DELIMITER ;;
@@ -558,11 +611,13 @@ DELIMITER ;",
     }
 
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
-        let rows = sqlx::query("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION")
-            .bind(db)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(map_err)?;
+        let rows = sqlx::query(
+            "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
+        )
+        .bind(db)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
         for r in &rows {
             let (table, column) = (text(r, 0)?.unwrap_or_default(), text(r, 1)?.unwrap_or_default());
@@ -622,7 +677,12 @@ DELIMITER ;",
             let index = text(r, 0)?.unwrap_or_default();
             let column = text(r, 2)?;
             if all_indexes.last().is_none_or(|i| i.name != index) {
-                all_indexes.push(IndexInfo { primary: index == "PRIMARY", unique: int(r, 1)? == Some(0), name: index, columns: Vec::new() });
+                all_indexes.push(IndexInfo {
+                    primary: index == "PRIMARY",
+                    unique: int(r, 1)? == Some(0),
+                    name: index,
+                    columns: Vec::new(),
+                });
             }
             all_indexes.last_mut().unwrap().columns.extend(column);
         }
