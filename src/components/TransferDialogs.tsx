@@ -350,7 +350,7 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
 function BackupDialog({ req }: { req: Extract<TransferRequest, { kind: "backup" }> }) {
   const close = () => useTransfer.getState().open(null);
   const [structure, setStructure] = useState(true);
-  const [data, setData] = useState(true);
+  const [data, setData] = useState(req.data);
   const op = useOperation<Awaited<ReturnType<typeof api.backupDatabase>>>();
   const start = async () => {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");

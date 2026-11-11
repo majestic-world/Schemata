@@ -10,6 +10,9 @@ import { useRefreshShortcut } from "../lib/refreshShortcut";
 import { ObjectContextMenu } from "./ObjectContextMenu";
 import { isMod } from "../lib/platform";
 import { dropObjects } from "../lib/objectActions";
+import { useTabs } from "../store/tabs";
+import { openTransfer } from "../store/transfer";
+import { Menu, type MenuItem } from "./Menu";
 
 type SortKey = "name" | "rows" | "modified" | "comment";
 
@@ -113,6 +116,12 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
       </span>
     </th>
   );
+  const backgroundItems: MenuItem[] = [
+    { label: "New Table", onSelect: () => useTabs.getState().newTable(connectionId, database) },
+    { label: "Execute Sql File", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
+    { label: "Dump Sql File", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: false }) },
+    { label: "Dump Sql With Data", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: true }) },
+  ];
 
   return (
     <>
@@ -123,61 +132,65 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           <RefreshCw size={15} className={objects.isFetching ? "spin" : undefined} />
         </button>
       </div>
-      <div className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
-        if (e.defaultPrevented || !e.currentTarget.contains(e.target as Node) || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"]'))) return;
-        if (isMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
-          e.preventDefault();
-          selectObjects({ connectionId, database, objects: rows.map(({ name, kind }) => ({ name, kind })) });
-        } else if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length > 0) {
-          e.preventDefault();
-          if (!e.repeat) void dropObjects({ connectionId, database }, selectedObjects, qc);
-        }
-      }} onClick={(e) => {
-        if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
-          select({ connectionId, database });
-        }
+      <Menu items={backgroundItems} onOpenChange={(opened) => {
+        if (opened) select({ connectionId, database });
       }}>
-        <table ref={tableRef} className="list-table">
-          <thead>
-            <tr>
-              {header("name", "Name")}
-              {header("rows", "Rows", "right")}
-              {header("modified", "Modified Date")}
-              {header("comment", "Comment")}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => {
-              const selected = selectedNames.has(o.name);
-              const Icon = o.kind === "table" ? TableIcon : ViewIcon;
-              return (
-                <ObjectContextMenu key={o.name} object={{ connectionId, database, name: o.name, kind: o.kind }}>
-                  <tr
-                    className={selected ? "selected" : undefined}
-                    aria-selected={selected}
-                    onClick={(e) => {
-                      if (isMod(e)) {
-                        const next = selected
-                          ? selectedObjects.filter((object) => object.name !== o.name)
-                          : [...selectedObjects, { name: o.name, kind: o.kind }];
-                        selectObjects({ connectionId, database, objects: next });
-                      } else select({ connectionId, database, object: { name: o.name, kind: o.kind } });
-                    }}
-                    onDoubleClick={() => onOpen(o)}
-                    data-object={o.name}
-                  >
-                    <td><span className="cell-name"><Icon size={16} />{o.name}</span></td>
-                    <td className="num">{formatCount(o.rows)}</td>
-                    <td>{orDash(o.modified)}</td>
-                    <td className="muted">{orDash(o.comment)}</td>
-                  </tr>
-                </ObjectContextMenu>
-              );
-            })}
-          </tbody>
-        </table>
-        {objects.isSuccess && rows.length === 0 && <div className="empty"><p>{search ? "No objects match the search." : "This database has no tables or views."}</p></div>}
-      </div>
+        <div className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
+          if (e.defaultPrevented || !e.currentTarget.contains(e.target as Node) || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"]'))) return;
+          if (isMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+            e.preventDefault();
+            selectObjects({ connectionId, database, objects: rows.map(({ name, kind }) => ({ name, kind })) });
+          } else if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length > 0) {
+            e.preventDefault();
+            if (!e.repeat) void dropObjects({ connectionId, database }, selectedObjects, qc);
+          }
+        }} onClick={(e) => {
+          if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
+            select({ connectionId, database });
+          }
+        }}>
+          <table ref={tableRef} className="list-table">
+            <thead>
+              <tr>
+                {header("name", "Name")}
+                {header("rows", "Rows", "right")}
+                {header("modified", "Modified Date")}
+                {header("comment", "Comment")}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((o) => {
+                const selected = selectedNames.has(o.name);
+                const Icon = o.kind === "table" ? TableIcon : ViewIcon;
+                return (
+                  <ObjectContextMenu key={o.name} object={{ connectionId, database, name: o.name, kind: o.kind }}>
+                    <tr
+                      className={selected ? "selected" : undefined}
+                      aria-selected={selected}
+                      onClick={(e) => {
+                        if (isMod(e)) {
+                          const next = selected
+                            ? selectedObjects.filter((object) => object.name !== o.name)
+                            : [...selectedObjects, { name: o.name, kind: o.kind }];
+                          selectObjects({ connectionId, database, objects: next });
+                        } else select({ connectionId, database, object: { name: o.name, kind: o.kind } });
+                      }}
+                      onDoubleClick={() => onOpen(o)}
+                      data-object={o.name}
+                    >
+                      <td><span className="cell-name"><Icon size={16} />{o.name}</span></td>
+                      <td className="num">{formatCount(o.rows)}</td>
+                      <td>{orDash(o.modified)}</td>
+                      <td className="muted">{orDash(o.comment)}</td>
+                    </tr>
+                  </ObjectContextMenu>
+                );
+              })}
+            </tbody>
+          </table>
+          {objects.isSuccess && rows.length === 0 && <div className="empty"><p>{search ? "No objects match the search." : "This database has no tables or views."}</p></div>}
+        </div>
+      </Menu>
     </>
   );
 }

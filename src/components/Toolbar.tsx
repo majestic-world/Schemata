@@ -59,7 +59,7 @@ export function Toolbar() {
         label="Backup"
         title="Back up the selected database"
         disabled={!db}
-        onClick={() => selection && db && openTransfer({ kind: "backup", connectionId: selection.connectionId, database: db })}
+        onClick={() => selection && db && openTransfer({ kind: "backup", connectionId: selection.connectionId, database: db, data: true })}
       />
       <ToolButton
         icon={<ImportIcon />}
