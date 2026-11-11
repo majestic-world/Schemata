@@ -13,6 +13,7 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 input, textarea, [contenteditable] { user-select: text; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus-visible { outline: none; }
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-thumb { background: #c7ced6; border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background-color: #aab4bf; }
