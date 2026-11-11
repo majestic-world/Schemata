@@ -22,6 +22,8 @@ type Props = {
   cellValue?: (row: number, column: string, original: CellValue) => CellValue;
   rowClass?: (row: number) => string | undefined;
   cellClass?: (row: number, column: string) => string | undefined;
+  /** Text shown instead of the value, dimmed like NULL (e.g. `(Default)` for unset new-row columns). */
+  cellPlaceholder?: (row: number, column: string) => string | undefined;
   /** Double-click or Enter on a cell. */
   onCellActivate?: (row: number, column: string) => void;
   renderEditor?: (row: number, column: string) => ReactNode | null;
@@ -207,7 +209,8 @@ export function GridView(props: Props) {
               {headers.map((h, c) => {
                 const name = visible[c].c.name;
                 const editor = props.renderEditor?.(r, name);
-                const d = displayCell(valueAt(r, c));
+                const placeholder = props.cellPlaceholder?.(r, name);
+                const d = placeholder !== undefined ? { text: placeholder, tone: "null" } : displayCell(valueAt(r, c));
                 const selected = rect && r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
                 return (
                   <div

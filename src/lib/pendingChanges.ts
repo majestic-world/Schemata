@@ -1,4 +1,4 @@
-import type { CellValue, ColumnMeta, RowChange } from "../api/types";
+import type { CellValue, ColumnInfo, ColumnMeta, RowChange } from "../api/types";
 
 /** A row of the grid: one already in the database (page index) or one being inserted. */
 export type RowRef = { kind: "existing"; index: number } | { kind: "new"; index: number };
@@ -28,9 +28,33 @@ export function setCell(p: Pending, row: RowRef, column: string, value: CellValu
   return { ...p, updates };
 }
 
-export function addRow(p: Pending): { pending: Pending; row: RowRef } {
-  return { pending: { ...p, inserts: [...p.inserts, {}] }, row: { kind: "new", index: p.inserts.length } };
+/**
+ * Value of a constant column default (`0`, `-1.5`, `'text'`), or null when the default is an expression
+ * (`CURRENT_TIMESTAMP`, `(uuid())`, …) only the database can evaluate.
+ */
+export function literalDefault(expr: string): CellValue | null {
+  const s = expr.trim();
+  if (/^[+-]?\d+$/.test(s)) {
+    const n = Number(s);
+    return Number.isSafeInteger(n) ? { type: "int", value: n } : { type: "bigInt", value: s.replace(/^\+/, "") };
+  }
+  if (/^[+-]?(\d+\.\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return { type: "decimal", value: s.replace(/^\+/, "") };
+  const quoted = /^'((?:[^']|'')*)'$/.exec(s);
+  return quoted ? { type: "text", value: quoted[1].replace(/''/g, "'") } : null;
 }
+
+/** New row prefilled with the constant defaults; other columns are left for the database to fill. */
+export function addRow(p: Pending, columns: ColumnInfo[]): { pending: Pending; row: RowRef } {
+  const values: Record<string, CellValue> = {};
+  for (const c of columns) {
+    const v = c.default === null || c.autoIncrement ? null : literalDefault(c.default);
+    if (v) values[c.name] = v;
+  }
+  return { pending: { ...p, inserts: [...p.inserts, values] }, row: { kind: "new", index: p.inserts.length } };
+}
+
+/** New-row columns with no value yet: the insert omits them, so the database applies their default. */
+export const isUnset = (p: Pending, row: RowRef, column: string) => row.kind === "new" && !(column in (p.inserts[row.index] ?? {}));
 
 /** Existing rows are marked for deletion (dropping their edits); new rows are simply removed. */
 export function deleteRows(p: Pending, rows: RowRef[]): Pending {

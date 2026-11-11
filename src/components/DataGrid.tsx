@@ -15,6 +15,7 @@ import { GridView, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import {
   addRow,
+  isUnset,
   buildChangeSet,
   cellValue,
   changeCount,
@@ -194,7 +195,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           info.data && <span className="badge"><Lock size={13} />Read-only — {info.data.kind === "view" ? "views are not editable" : "no primary or unique key"}</span>
         ) : (
           <>
-            <button className="obj-btn" onClick={() => { const r = addRow(pending); setPending(r.pending); setEditing({ row: saved + r.row.index, column: columns.find((c) => !c.hidden)?.name ?? "" }); }}>
+            <button className="obj-btn" onClick={() => { const r = addRow(pending, info.data?.columns ?? []); setPending(r.pending); setEditing({ row: saved + r.row.index, column: columns.find((c) => !c.hidden)?.name ?? "" }); }}>
               <Plus size={15} className="ob-new" />Add Row
             </button>
             <button className="obj-btn" disabled={selection.rows.length === 0} onClick={() => { setPending((p) => deleteRows(p, selection.rows.map(refOf))); setEditing(null); }}>
@@ -271,6 +272,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
             return isDeleted(pending, ref) ? "row-deleted" : undefined;
           }}
           cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
+          cellPlaceholder={(r, column) => (isUnset(pending, refOf(r), column) ? "(Default)" : undefined)}
           onCellActivate={startEdit}
           renderEditor={(r, column) =>
             editing?.row === r && editing.column === column ? (
