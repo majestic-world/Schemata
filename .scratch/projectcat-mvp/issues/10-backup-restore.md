@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 09
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Dump restaurado em banco vazio reproduz estrutura e dados nos 3 engines

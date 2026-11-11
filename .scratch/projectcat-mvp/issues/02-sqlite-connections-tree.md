@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 01
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Conexão SQLite (arquivo existente ou novo) criada, testada e persistida entre reinícios

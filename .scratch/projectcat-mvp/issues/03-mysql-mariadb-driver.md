@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 02
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Conectar, testar e navegar MySQL e MariaDB pela UI

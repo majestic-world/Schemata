@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 05
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Script com várias instruções gera um resultado por instrução

@@ -9,7 +9,7 @@
 **Status:** implemented
 
 ## Critérios de aceite
-- [x] Workflow válido gera .msi/.exe, .deb/.AppImage e .dmg
+- [ ] Workflow válido gera .msi/.exe, .deb/.AppImage e .dmg (workflow validado com actionlint; execução real depende de push)
 - [x] Build local do Windows gera instalador
 
 ## Evidências de implementação

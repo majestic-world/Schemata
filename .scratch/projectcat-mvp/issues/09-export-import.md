@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 06, 08
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Round-trip exportar → importar preserva contagens e valores

@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 05
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Edições pendentes destacadas, commit em uma transação e descarte

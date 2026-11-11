@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 04
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Grid pagina, ordena e filtra no servidor

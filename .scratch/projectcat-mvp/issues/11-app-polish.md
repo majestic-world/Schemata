@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 06, 07, 08
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Atalhos funcionam

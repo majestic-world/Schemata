@@ -6,7 +6,7 @@
 
 **Bloqueado por:** Nenhum
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] `pnpm tauri dev` abre a janela com decoração nativa

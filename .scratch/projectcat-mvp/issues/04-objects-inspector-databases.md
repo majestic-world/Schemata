@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 03
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Lista de objetos e inspector exibem metadados corretos nos 3 engines

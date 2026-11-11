@@ -6,7 +6,7 @@
 
 **Bloqueado por:** 05
 
-**Status:** implemented
+**Status:** done
 
 ## Critérios de aceite
 - [x] Criar e alterar tabelas nos 3 engines usando o DDL exibido
