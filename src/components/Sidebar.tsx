@@ -286,21 +286,16 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
 function GroupNode(props: { connectionId: string; database: string; kind: ObjectKind; objects: ObjectInfo[] }) {
   const { connectionId, database, kind } = props;
   const key = treeNodeKey.group(connectionId, database, kind);
-  const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
   const favorites = useFavorites((s) => s.favorites);
   const expandedFlag = useWorkspace((s) => !!s.expanded[key]);
   const setExpanded = useWorkspace((s) => s.setExpanded);
   const copied = useTableClipboard((s) => s.copied);
   const all = props.objects.filter((o) => o.kind === kind);
-  const shown = all.filter(
-    (o) =>
-      (!search || o.name.toLowerCase().includes(search)) &&
-      (!favoritesOnly || isFavorite(favorites, { connectionId, database, name: o.name })),
-  );
-  const filtering = search !== "" || favoritesOnly;
-  const expanded = expandedFlag || (filtering && shown.length > 0);
-  if (filtering && shown.length === 0) return null;
+  // The toolbar's "Search objects" filters only the object list; the tree is filtered by its footer and favorites.
+  const shown = favoritesOnly ? all.filter((o) => isFavorite(favorites, { connectionId, database, name: o.name })) : all;
+  const expanded = expandedFlag || (favoritesOnly && shown.length > 0);
+  if (favoritesOnly && shown.length === 0) return null;
   const Icon = kind === "table" ? TableIcon : ViewIcon;
   const groupItems: MenuItem[] =
     kind === "table"
@@ -320,7 +315,7 @@ function GroupNode(props: { connectionId: string; database: string; kind: Object
         expanded={expanded}
         icon={<Icon size={16} />}
         label={kind === "table" ? "Tables" : "Views"}
-        trailing={<span className="count">{filtering ? `${shown.length}/${all.length}` : all.length}</span>}
+        trailing={<span className="count">{favoritesOnly ? `${shown.length}/${all.length}` : all.length}</span>}
         onToggle={() => setExpanded(key, !expandedFlag)}
         onClick={() => {
           useWorkspace.getState().select({ connectionId, database });

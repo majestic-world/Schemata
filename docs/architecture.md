@@ -73,6 +73,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Null values and empty-row placeholders reserve 2 px inside their text clipping box for italic glyph overhang. Column clipping and ellipsis remain enabled for long values.
 - Successful object-list and data-grid refetches briefly fade the existing table and restore it, even when its rows have not changed. F5/Ctrl+R and the refresh button share this feedback without remounting rows or clearing selection. The pulse lasts 240 ms, reduced to 120 ms with a gentler opacity change when reduced motion is preferred; initial loads, failed fetches and switching to another page, sort, filter or database do not pulse.
 - The tree footer filters the schema tree, independently of the toolbar's object search: its search matches database names of loaded connections; the filter popover keeps only open connections ("Active Object") and/or chosen engines; the star shows only favorite tables/views and the connections and databases that contain them. Locate expands, selects and scrolls to the active tab's object (or the current selection), lifting tree filters that would hide it; collapse all clears the expanded-node state.
+- The toolbar's "Search objects" (Ctrl+K) filters only the central object list; it never hides tree nodes.
 
 ## Persistence
 
