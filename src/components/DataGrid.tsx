@@ -7,6 +7,7 @@ import { useTabs, type TableTab } from "../store/tabs";
 import { formatCount } from "../lib/format";
 import { notify, notifyError } from "../store/toasts";
 import { confirmAction } from "../store/confirm";
+import { useGridState, type DraftFilter } from "../store/gridState";
 import { openTransfer } from "../store/transfer";
 import { MOD, isMod } from "../lib/platform";
 import { GridView, type GridSelection } from "./GridView";
@@ -41,21 +42,21 @@ const OPS: { op: FilterOp; label: string; needsValue: boolean }[] = [
   { op: "isNotNull", label: "is not NULL", needsValue: false },
 ];
 
-type DraftFilter = { column: string; op: FilterOp; value: string };
-
 export function DataGrid({ tab }: { tab: TableTab }) {
   const qc = useQueryClient();
   const setRowCount = useTabs((s) => s.setRowCount);
-  const [pageSize, setPageSize] = useState(500);
-  const [offset, setOffset] = useState(0);
-  const [sort, setSort] = useState<SortSpec | null>(null);
-  const [filters, setFilters] = useState<Filter[]>([]);
-  const [drafts, setDrafts] = useState<DraftFilter[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
-  const [pending, setPending] = useState<Pending>(emptyPending);
+  const [grid, update] = useGridState(tab.id);
+  const { pageSize, offset, sort, filters, drafts, showFilters, pending, failedRow } = grid;
+  const setOffset = (offset: number) => update(() => ({ offset }));
+  const setPageSize = (pageSize: number) => update(() => ({ pageSize }));
+  const setSort = (f: (s: SortSpec | null) => SortSpec | null) => update((g) => ({ sort: f(g.sort) }));
+  const setFilters = (filters: Filter[]) => update(() => ({ filters }));
+  const setDrafts = (f: DraftFilter[] | ((d: DraftFilter[]) => DraftFilter[])) => update((g) => ({ drafts: typeof f === "function" ? f(g.drafts) : f }));
+  const setShowFilters = (f: (v: boolean) => boolean) => update((g) => ({ showFilters: f(g.showFilters) }));
+  const setPending = (f: Pending | ((p: Pending) => Pending)) => update((g) => ({ pending: typeof f === "function" ? f(g.pending) : f }));
+  const setFailedRow = (failedRow: RowRef | null) => update(() => ({ failedRow }));
   const [editing, setEditing] = useState<{ row: number; column: string } | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], columns: [] });
-  const [failedRow, setFailedRow] = useState<RowRef | null>(null);
   const [committing, setCommitting] = useState(false);
 
   const info = useTableInfo(tab);

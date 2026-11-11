@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ObjectKind } from "../api/types";
+import { useGridStates } from "./gridState";
 
 export type TableView = "data" | "structure" | "info";
 
@@ -94,6 +95,7 @@ export const useTabs = create<TabsState>((set) => ({
     }),
   close: (id) =>
     set((s) => {
+      useGridStates.getState().forget(id);
       const idx = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
       const active = s.active !== id ? s.active : (tabs[idx] ?? tabs[idx - 1])?.id ?? OBJECTS_TAB;

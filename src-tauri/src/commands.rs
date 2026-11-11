@@ -2,8 +2,7 @@
 
 use projectcat_core::{
     AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry, ObjectInfo,
-    ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, StatementOutcome, TableDesign, TableInfo,
-    connect,
+    ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, TableDesign, TableInfo, connect,
 };
 use projectcat_core::{
     CancellationToken, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, ExportFormat, ExportReport, ExportSource,

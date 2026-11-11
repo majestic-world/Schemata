@@ -10,6 +10,18 @@ import { useWorkspace } from "../store/workspace";
 import { useConnection } from "../lib/useConnection";
 import { copyCreateStatement, designTable, dropObject, renameTable, truncateTable } from "../lib/objectActions";
 import { openTransfer } from "../store/transfer";
+import { hasPendingEdits } from "../store/gridState";
+import { confirmAction } from "../store/confirm";
+
+/** Closes a tab, asking first when it holds uncommitted grid edits. */
+async function requestClose(id: string) {
+  if (
+    hasPendingEdits(id) &&
+    !(await confirmAction({ title: "Discard changes", message: "This tab has uncommitted changes. Close it and discard them?", confirmLabel: "Discard", danger: true }))
+  )
+    return;
+  useTabs.getState().close(id);
+}
 
 function tabLabel(t: Tab) {
   switch (t.kind) {
@@ -27,7 +39,7 @@ function tabLabel(t: Tab) {
 }
 
 export function Workspace() {
-  const { tabs, active, activate, close } = useTabs();
+  const { tabs, active, activate } = useTabs();
   const activeTab = tabs.find((t) => t.id === active);
   return (
     <>
@@ -48,12 +60,12 @@ export function Workspace() {
                 activate(t.id);
                 if (t.kind === "table") useWorkspace.getState().select({ connectionId: t.connectionId, database: t.database, object: { name: t.name, kind: t.objectKind } });
               }}
-              onAuxClick={(e) => e.button === 1 && close(t.id)}
+              onAuxClick={(e) => e.button === 1 && void requestClose(t.id)}
             >
               <Icon size={14} className="tree-icon obj" />
               <span className="title">{tabLabel(t)}</span>
               {t.kind === "query" && t.sql !== t.savedSql && <span className="dirty" title="Unsaved changes" />}
-              <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); close(t.id); }}>
+              <button className="icon-btn tab-close" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void requestClose(t.id); }}>
                 <X size={13} />
               </button>
             </div>
