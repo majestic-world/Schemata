@@ -410,7 +410,10 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .cell-input.narrow { width: 90px; }
 select.cell-input { padding: 0 4px; }
 .design-table input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
-.row-actions { white-space: nowrap; }
+/* Column rows are selected from their header cell (Move Up/Down, Delete act on the selection). */
+.design-table .row-header { cursor: pointer; user-select: none; }
+.design-table tbody tr.selected { background: var(--selection-quiet); color: var(--text); }
+.design-table tbody tr.selected .row-header { box-shadow: inset 3px 0 0 var(--accent); }
 .pk-icon { color: #d9a400; }
 .designer-add { padding: 8px 10px; }
 .designer-hint { padding: 0 12px; }

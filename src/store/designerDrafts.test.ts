@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { TableDesign } from "../api/types";
-import { hasDesignerEdits, removeColumn, renameColumn, setPrimaryKey, useDesignerDrafts } from "./designerDrafts";
+import { canMoveColumns, hasDesignerEdits, moveColumns, removeColumn, removeColumns, renameColumn, setPrimaryKey, useDesignerDrafts } from "./designerDrafts";
 
 const design: TableDesign = {
   name: "items",
@@ -109,6 +109,28 @@ describe("column edits keep the design consistent", () => {
     expect(d.indexes).toEqual([{ ...wide.indexes[0], columns: ["a"] }]);
     expect(d.foreignKeys).toEqual([]);
     expect(removeColumn(wide, 0).primaryKeyOrder).toEqual(["b"]);
+  });
+
+  it("removes several selected columns at once", () => {
+    const d = removeColumns(wide, [2, 0]);
+    expect(d.columns.map((c) => c.name)).toEqual(["b"]);
+    expect(d.indexes).toEqual([]);
+    expect(d.primaryKeyOrder).toEqual(["b"]);
+  });
+
+  it("moves selected columns as a block, stopping at the edges", () => {
+    const names = (d: TableDesign) => d.columns.map((c) => c.name);
+    const five = { ...wide, columns: ["a", "b", "c", "d", "e"].map(col) };
+    // Non-adjacent rows each move one step; a row blocked at the top keeps the next one in place.
+    let moved = moveColumns(five, [0, 1, 3], -1);
+    expect(names(moved.design)).toEqual(["a", "b", "d", "c", "e"]);
+    expect(moved.selected).toEqual([0, 1, 2]);
+    expect(canMoveColumns(moved.selected, 5, -1)).toBe(false);
+    moved = moveColumns(five, [1, 2], 1);
+    expect(names(moved.design)).toEqual(["a", "d", "b", "c", "e"]);
+    expect(moved.selected).toEqual([2, 3]);
+    expect(canMoveColumns([3, 4], 5, 1)).toBe(false);
+    expect(canMoveColumns([], 5, 1)).toBe(false);
   });
 
   it("follows renames in the key order, including buffered names flushed later", () => {

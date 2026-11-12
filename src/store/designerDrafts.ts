@@ -65,6 +65,37 @@ export function removeColumn(design: TableDesign, index: number): TableDesign {
   };
 }
 
+/** Removes several columns (see `removeColumn`). */
+export function removeColumns(design: TableDesign, indices: readonly number[]): TableDesign {
+  return [...new Set(indices)].sort((a, b) => b - a).reduce((d, i) => (i < d.columns.length ? removeColumn(d, i) : d), design);
+}
+
+/**
+ * Moves the selected columns one position up (`-1`) or down (`1`), keeping their order. A column already at the
+ * edge, or blocked by a selected column that could not move, stays. Returns the selection's new positions.
+ */
+export function moveColumns(design: TableDesign, selected: readonly number[], delta: -1 | 1): { design: TableDesign; selected: number[] } {
+  const columns = [...design.columns];
+  const order = [...new Set(selected)].filter((i) => i < columns.length).sort((a, b) => (a - b) * -delta);
+  const taken = new Set<number>();
+  for (const i of order) {
+    const j = i + delta;
+    if (j < 0 || j >= columns.length || taken.has(j)) {
+      taken.add(i);
+      continue;
+    }
+    [columns[i], columns[j]] = [columns[j], columns[i]];
+    taken.add(j);
+  }
+  return { design: { ...design, columns }, selected: [...taken].sort((a, b) => a - b) };
+}
+
+/** Whether `moveColumns` would move any selected column. */
+export function canMoveColumns(selected: readonly number[], count: number, delta: -1 | 1): boolean {
+  const chosen = new Set(selected);
+  return [...chosen].some((i) => i + delta >= 0 && i + delta < count && !chosen.has(i + delta));
+}
+
 /** Adds column `index` to the end of the primary key, or removes it; key columns are NOT NULL. */
 export function setPrimaryKey(design: TableDesign, index: number, on: boolean): TableDesign {
   const column = design.columns[index];

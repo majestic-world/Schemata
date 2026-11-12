@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
@@ -6,7 +6,7 @@ import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, In
 import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, parseType, retype, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
 import { useDesignerPrefs } from "../store/designerPrefs";
-import { removeColumn, renameColumn, setPrimaryKey, useDesignerDrafts } from "../store/designerDrafts";
+import { canMoveColumns, moveColumns, removeColumns, renameColumn, setPrimaryKey, useDesignerDrafts } from "../store/designerDrafts";
 import { confirmAction } from "../store/confirm";
 import { hasPendingEdits, useGridStates } from "../store/gridState";
 import { MOD, isMod } from "../lib/platform";
@@ -115,6 +115,8 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
     useDesignerDrafts.getState().update(tabId, (d) => typeof change === "function" ? change(d) : change);
   const restructure = (change: (d: TableDesign) => TableDesign) => useDesignerDrafts.getState().restructure(tabId, change);
   const [section, setSection] = useState<Section>("columns");
+  /** Selected column rows (by position) and the row Shift+click extends from. */
+  const [picked, setPicked] = useState<{ rows: number[]; anchor: number | null }>({ rows: [], anchor: null });
   /** Open review dialog. Existing tables: the planned statements. New tables: the name being entered (planned below). */
   const [review, setReview] = useState<{ statements: string[] } | { name: string } | null>(null);
   const busy = draft?.busy ?? false;
@@ -187,15 +189,35 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
   /** Changes column attributes other than its name and primary key flag (see `renameColumn`/`setPrimaryKey`). */
   const setColumn = (i: number, p: Partial<Omit<ColumnDesign, "name" | "primaryKey">>) =>
     setDesign((d) => (d ? { ...d, columns: d.columns.map((c, j) => (j === i ? { ...c, ...p } : c)) } : d));
-  const moveColumn = (i: number, delta: number) =>
+  const selectedColumns = picked.rows.filter((i) => i < design.columns.length);
+  /** Navicat-style row selection from the row header: click selects, Ctrl/⌘+click toggles, Shift+click extends. */
+  const pickColumn = (i: number, e: MouseEvent) => {
+    const anchor = picked.anchor !== null && picked.anchor < design.columns.length ? picked.anchor : null;
+    if (e.shiftKey && anchor !== null) {
+      const range = Array.from({ length: Math.abs(i - anchor) + 1 }, (_, k) => Math.min(i, anchor) + k);
+      setPicked({ rows: [...new Set([...(isMod(e) ? selectedColumns : []), ...range])], anchor });
+    } else if (isMod(e)) {
+      setPicked({ rows: selectedColumns.includes(i) ? selectedColumns.filter((r) => r !== i) : [...selectedColumns, i], anchor: i });
+    } else {
+      setPicked({ rows: [i], anchor: i });
+    }
+  };
+  const moveSelected = (delta: -1 | 1) => {
+    const before = [...selectedColumns].sort((a, b) => a - b);
+    let after = before;
     restructure((d) => {
-      if (!d) return d;
-      const j = i + delta;
-      if (j < 0 || j >= d.columns.length) return d;
-      const columns = [...d.columns];
-      [columns[i], columns[j]] = [columns[j], columns[i]];
-      return { ...d, columns };
+      const result = moveColumns(d, before, delta);
+      after = result.selected;
+      return result.design;
     });
+    // Moving keeps the selection's order, so the anchor row is at the same rank among the moved rows.
+    const rank = picked.anchor === null ? -1 : before.indexOf(picked.anchor);
+    setPicked({ rows: after, anchor: rank < 0 ? picked.anchor : after[rank] });
+  };
+  const deleteSelected = () => {
+    restructure((d) => removeColumns(d, selectedColumns));
+    setPicked({ rows: [], anchor: null });
+  };
   const setIndex = (i: number, p: Partial<IndexDesign>) => patch({ indexes: design.indexes.map((x, j) => (j === i ? { ...x, ...p } : x)) });
   const setFk = (i: number, p: Partial<ForeignKeyDesign>) => patch({ foreignKeys: design.foreignKeys.map((x, j) => (j === i ? { ...x, ...p } : x)) });
   const addColumn = () => setDesign((d) => (d ? { ...d, columns: [...d.columns, blankColumn()] } : d));
@@ -308,6 +330,14 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
             <input className="input" value={design.name} onChange={(e) => patch({ name: e.target.value })} aria-label="Table name" />
           </label>
         )}
+        {section === "columns" && (
+          <>
+            {table && <div className="toolbar-sep" />}
+            <button className="obj-btn" disabled={busy || !canMoveColumns(selectedColumns, design.columns.length, -1)} onClick={() => moveSelected(-1)}><ArrowUp size={15} />Move Up</button>
+            <button className="obj-btn" disabled={busy || !canMoveColumns(selectedColumns, design.columns.length, 1)} onClick={() => moveSelected(1)}><ArrowDown size={15} />Move Down</button>
+            <button className="obj-btn" disabled={busy || selectedColumns.length === 0} onClick={deleteSelected}><Trash2 size={15} className="ob-delete" />{selectedColumns.length > 1 ? `Delete ${selectedColumns.length} Columns` : "Delete Column"}</button>
+          </>
+        )}
         <div className="grow" />
         {table && <button className="btn" disabled={!dirty || busy} onClick={() => useDesignerDrafts.getState().revert(tabId)}><Undo2 size={15} />Revert</button>}
         <button className="btn primary" disabled={busy || !dirty || (!!table && !design.name.trim())} onClick={() => void startReview()} title={`${MOD}+S`}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
@@ -331,7 +361,6 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                   {!sqlite && <th title="Unsigned">Uns.</th>}
                   <th>Not Null</th><th>Default</th><th title="Auto increment">Auto Inc.</th><th title="Primary key">PK</th>
                   {!sqlite && <th>Comment</th>}
-                  <th style={{ width: 96 }} />
                 </tr>
               </thead>
               <tbody onKeyDown={rowArrowKeys((row) => { if (!hasText(row, "Column name")) return false; addColumn(); return true; })}>
@@ -340,8 +369,25 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                   const setType = (p: Partial<typeof t>) => setColumn(i, { dataType: composeType({ ...t, ...p }) });
                   const loaded = c.originalName === null ? null : baseline?.columns.find((o) => o.name === c.originalName)?.dataType ?? null;
                   return (
-                    <tr key={i}>
-                      <td className="center">{c.primaryKey && <KeyRound size={14} className="pk-icon" />}</td>
+                    <tr
+                      key={i}
+                      className={selectedColumns.includes(i) ? "selected" : undefined}
+                      aria-selected={selectedColumns.includes(i)}
+                      // Editing a field selects its row, unless it is already part of the selection.
+                      onFocus={() => !selectedColumns.includes(i) && setPicked({ rows: [i], anchor: i })}
+                    >
+                      <td
+                        className="center row-header"
+                        title={`Select column (${MOD}+click or Shift+click to select several)`}
+                        onMouseDown={(e) => {
+                          // No text selection on Shift+click; the edited field commits on blur.
+                          e.preventDefault();
+                          if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                          pickColumn(i, e);
+                        }}
+                      >
+                        {c.primaryKey && <KeyRound size={14} className="pk-icon" />}
+                      </td>
                       <td><CommitInput tabId={tabId} field={`column:${i}`} value={c.name} label="Column name" onCommit={(name) => setDesign((d) => renameColumn(d, i, name))} /></td>
                       <td><ComboInput value={t.base} options={typeOptions} label="Column type" onChange={(base) => setColumn(i, { dataType: retype(engine, c.dataType, loaded, base) })} /></td>
                       <td><input className="cell-input narrow" value={t.length} aria-label="Length" onChange={(e) => setType({ length: e.target.value })} /></td>
@@ -351,11 +397,6 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                       <td className="center"><input type="checkbox" checked={c.autoIncrement} aria-label="Auto increment" onChange={(e) => setColumn(i, { autoIncrement: e.target.checked })} /></td>
                       <td className="center"><input type="checkbox" checked={c.primaryKey} aria-label="Primary key" onChange={(e) => setDesign((d) => setPrimaryKey(d, i, e.target.checked))} /></td>
                       {!sqlite && <td><input className="cell-input" value={c.comment ?? ""} aria-label="Comment" onChange={(e) => setColumn(i, { comment: e.target.value || null })} /></td>}
-                      <td className="row-actions">
-                        <button className="icon-btn" title="Move up" disabled={i === 0} onClick={() => moveColumn(i, -1)}><ArrowUp size={14} /></button>
-                        <button className="icon-btn" title="Move down" disabled={i === design.columns.length - 1} onClick={() => moveColumn(i, 1)}><ArrowDown size={14} /></button>
-                        <button className="icon-btn danger" title="Delete column" onClick={() => restructure((d) => removeColumn(d, i))}><Trash2 size={14} /></button>
-                      </td>
                     </tr>
                   );
                 })}
