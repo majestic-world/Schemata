@@ -149,3 +149,33 @@ async fn non_transactional_generation_is_rejected_before_empty_first(t: TestDb) 
     assert_eq!(scalar(&t, "SELECT id FROM legacy_data").await, 99);
 }
 scenario!(non_transactional_generation_is_rejected_before_empty_first);
+
+async fn sequences_reject_overflow(t: TestDb) {
+    t.exec("CREATE TABLE big_seq (id BIGINT PRIMARY KEY); INSERT INTO big_seq VALUES (9223372036854775806)").await;
+    let columns = vec![ColumnGenerator { column: "id".into(), kind: GeneratorKind::Sequence }];
+    let error = preview_generated(t.driver.as_ref(), &t.db, "big_seq", &columns, 5).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    let spec = GenerateSpec { rows: 5, empty_first: false, columns };
+    let error = generate_data(t.driver.as_ref(), &t.db, "big_seq", &spec, no_progress(), CancellationToken::new()).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(scalar(&t, "SELECT COUNT(*) FROM big_seq").await, 1);
+}
+scenario!(sequences_reject_overflow);
+
+async fn sqlite_foreign_key_without_target_columns_uses_parent_primary_key(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO parent VALUES (7, 'a'), (8, 'b');
+         CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent);",
+    )
+    .await;
+    let info = t.driver.table_info(&t.db, "child").await.unwrap();
+    assert_eq!(info.foreign_keys[0].ref_columns, vec!["id".to_owned()]);
+    let spec = spec(&t, "child", 10, false).await;
+    assert_eq!(spec.columns.iter().find(|c| c.column == "parent_id").unwrap().kind, GeneratorKind::ForeignKey);
+    generate_data(t.driver.as_ref(), &t.db, "child", &spec, no_progress(), CancellationToken::new()).await.unwrap();
+    assert_eq!(scalar(&t, "SELECT COUNT(*) FROM child WHERE parent_id IN (7, 8)").await, 10);
+}
+scenario!(sqlite_foreign_key_without_target_columns_uses_parent_primary_key);

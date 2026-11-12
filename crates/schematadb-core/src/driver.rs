@@ -51,6 +51,27 @@ pub trait Driver: Send + Sync {
     async fn execute_script(&self, db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult>;
     /// Rows `offset..offset+limit` of a row-returning statement (for "load more").
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page>;
+    /// [`Driver::execute_script`] on the SQL editor session `session`: every run with the same key uses the same
+    /// server session, so transactions, user variables and temporary tables persist across runs until
+    /// [`Driver::close_editor_session`]. Single-connection drivers share their only session.
+    async fn execute_in_session(
+        &self,
+        _session: &str,
+        db: Option<&str>,
+        sql: &str,
+        row_limit: usize,
+        execution_id: Option<&str>,
+    ) -> Result<ScriptResult> {
+        self.execute_script(db, sql, row_limit, execution_id).await
+    }
+    /// [`Driver::fetch_more`] on the SQL editor session `session`, so continuations see that session's state.
+    async fn fetch_more_in_session(&self, _session: &str, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        self.fetch_more(db, statement, offset, limit).await
+    }
+    /// Ends an editor session; the server rolls back its open transaction. Unknown keys are ignored.
+    async fn close_editor_session(&self, _session: &str) -> Result<()> {
+        Ok(())
+    }
     /// Every table and view with its column names, for autocompletion.
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>>;
     /// Streams the rows of a statement in batches; the first item is the column list.

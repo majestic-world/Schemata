@@ -122,12 +122,21 @@ impl ConnectionStore {
         Ok(self.save(&copy, password.as_deref())?.config)
     }
 
+    /// Removes a connection and its stored password. When the connection had a saved password that the credential
+    /// store fails to remove, the connection is still deleted and the failure is returned as an error.
     pub fn delete(&self, id: &str) -> Result<()> {
         let mut configs = self.configs.lock().unwrap();
+        let had_password = configs.iter().any(|c| c.id == id && c.save_password);
         configs.retain(|c| c.id != id);
         self.persist(&configs)?;
-        let _ = self.secrets.delete(id);
-        Ok(())
+        drop(configs);
+        match self.secrets.delete(id) {
+            Err(error) if had_password => Err(AppError::io(format!(
+                "The connection was deleted, but its saved password could not be removed from the credential store: {}",
+                error.message
+            ))),
+            _ => Ok(()),
+        }
     }
 
     pub fn password(&self, id: &str) -> Result<Option<String>> {

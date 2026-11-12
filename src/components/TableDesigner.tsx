@@ -113,6 +113,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
   const baseline = draft?.original ?? null;
   const setDesign = (change: TableDesign | ((d: TableDesign) => TableDesign)) =>
     useDesignerDrafts.getState().update(tabId, (d) => typeof change === "function" ? change(d) : change);
+  const restructure = (change: (d: TableDesign) => TableDesign) => useDesignerDrafts.getState().restructure(tabId, change);
   const [section, setSection] = useState<Section>("columns");
   /** Open review dialog. Existing tables: the planned statements. New tables: the name being entered (planned below). */
   const [review, setReview] = useState<{ statements: string[] } | { name: string } | null>(null);
@@ -198,7 +199,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
       };
     });
   const moveColumn = (i: number, delta: number) =>
-    setDesign((d) => {
+    restructure((d) => {
       if (!d) return d;
       const j = i + delta;
       if (j < 0 || j >= d.columns.length) return d;
@@ -360,7 +361,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                       <td className="row-actions">
                         <button className="icon-btn" title="Move up" disabled={i === 0} onClick={() => moveColumn(i, -1)}><ArrowUp size={14} /></button>
                         <button className="icon-btn" title="Move down" disabled={i === design.columns.length - 1} onClick={() => moveColumn(i, 1)}><ArrowDown size={14} /></button>
-                        <button className="icon-btn danger" title="Delete column" onClick={() => patch({ columns: design.columns.filter((_, j) => j !== i) })}><Trash2 size={14} /></button>
+                        <button className="icon-btn danger" title="Delete column" onClick={() => restructure((d) => ({ ...d, columns: d.columns.filter((_, j) => j !== i) }))}><Trash2 size={14} /></button>
                       </td>
                     </tr>
                   );
@@ -415,7 +416,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                         <td><input className="cell-input" value={x.comment ?? ""} aria-label="Index comment" onChange={(e) => setIndex(i, { comment: e.target.value || null })} /></td>
                       </>
                     )}
-                    <td><button className="icon-btn danger" title="Delete index" onClick={() => patch({ indexes: design.indexes.filter((_, j) => j !== i) })}><Trash2 size={14} /></button></td>
+                    <td><button className="icon-btn danger" title="Delete index" onClick={() => restructure((d) => ({ ...d, indexes: d.indexes.filter((_, j) => j !== i) }))}><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
                 {design.indexes.length === 0 && <tr><td colSpan={sqlite ? 4 : 6} className="muted">No indexes</td></tr>}
@@ -446,7 +447,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                     <td><ColumnList tabId={tabId} field={`fk:${i}:references`} value={f.refColumns} onChange={(refColumns) => setFk(i, { refColumns })} /></td>
                     <td><select className="cell-input" value={f.onUpdate} aria-label="On update" onChange={(e) => setFk(i, { onUpdate: e.target.value })}>{FK_ACTIONS.map((a) => <option key={a}>{a}</option>)}</select></td>
                     <td><select className="cell-input" value={f.onDelete} aria-label="On delete" onChange={(e) => setFk(i, { onDelete: e.target.value })}>{FK_ACTIONS.map((a) => <option key={a}>{a}</option>)}</select></td>
-                    <td><button className="icon-btn danger" title="Delete foreign key" onClick={() => patch({ foreignKeys: design.foreignKeys.filter((_, j) => j !== i) })}><Trash2 size={14} /></button></td>
+                    <td><button className="icon-btn danger" title="Delete foreign key" onClick={() => restructure((d) => ({ ...d, foreignKeys: d.foreignKeys.filter((_, j) => j !== i) }))}><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
                 {design.foreignKeys.length === 0 && <tr><td colSpan={7} className="muted">No foreign keys</td></tr>}

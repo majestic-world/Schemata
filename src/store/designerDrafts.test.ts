@@ -13,6 +13,26 @@ const design: TableDesign = {
 beforeEach(() => useDesignerDrafts.setState(useDesignerDrafts.getInitialState(), true));
 
 describe("per-tab table designs", () => {
+  it("commits buffered text to its own row before rows are deleted or reordered", () => {
+    const name = { ...design.columns[0], originalName: "name", name: "name", primaryKey: false };
+    const qty = { ...name, originalName: "qty", name: "qty" };
+    const wide = { ...design, columns: [design.columns[0], name, qty] };
+    const store = useDesignerDrafts.getState();
+    store.initialize("one", wide, wide);
+    store.input("one", "column:1", "title");
+    store.input("one", "index:0", "id, title");
+    store.restructure("one", (d) => ({ ...d, columns: d.columns.filter((_, j) => j !== 0), indexes: [] }));
+    let draft = useDesignerDrafts.getState().drafts.one;
+    expect(draft?.inputs).toEqual({});
+    expect(draft?.design.columns.map((c) => c.name)).toEqual(["title", "qty"]);
+
+    store.input("one", "column:0", "label");
+    store.restructure("one", (d) => ({ ...d, columns: [d.columns[1], d.columns[0]] }));
+    store.flush("one");
+    draft = useDesignerDrafts.getState().drafts.one;
+    expect(draft?.design.columns.map((c) => c.name)).toEqual(["qty", "label"]);
+  });
+
   it("keeps the original and edited design across remounts and metadata refreshes", () => {
     const store = useDesignerDrafts.getState();
     store.initialize("one", design, design);

@@ -1,7 +1,9 @@
 import { create } from "zustand";
+import { api } from "../api/client";
 import type { ObjectKind } from "../api/types";
 import { useGridStates } from "./gridState";
 import { useDesignerDrafts } from "./designerDrafts";
+import { useQueryResults } from "./queryResults";
 import { useWorkspace } from "./workspace";
 
 export type TableView = "data" | "structure" | "info";
@@ -64,7 +66,7 @@ function selectTable(tab: Tab | undefined) {
   });
 }
 
-export const useTabs = create<TabsState>((set) => ({
+export const useTabs = create<TabsState>((set, get) => ({
   tabs: [],
   active: OBJECTS_TAB,
   rowCounts: {},
@@ -109,7 +111,13 @@ export const useTabs = create<TabsState>((set) => ({
       selectTable(tab);
       return { tabs: s.tabs.filter((x) => x.id !== nid).map((x) => (x.id === id ? tab : x)), active: nid };
     }),
-  close: (id) =>
+  close: (id) => {
+    const closing = get().tabs.find((t) => t.id === id);
+    if (closing?.kind === "query") {
+      useQueryResults.getState().set(id, undefined);
+      // Best-effort: the server rolls back the tab's open transaction; a lost connection has no session left.
+      void api.closeEditorSession(closing.connectionId, id).catch(() => undefined);
+    }
     set((s) => {
       useGridStates.getState().forget(id);
       useDesignerDrafts.getState().forget(id);
@@ -120,7 +128,8 @@ export const useTabs = create<TabsState>((set) => ({
       const rowCounts = { ...s.rowCounts };
       delete rowCounts[id];
       return { tabs, active, rowCounts };
-    }),
+    });
+  },
   activate: (active) => set((s) => {
     selectTable(s.tabs.find((tab) => tab.id === active));
     return { active };

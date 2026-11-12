@@ -7,46 +7,77 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { AlertCircle, Check, CheckCircle2, ChevronDown, FolderOpen } from "lucide-react";
 import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
-import type { AppError, ColumnGenerator, CsvPreview, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
+import type { AppError, ColumnGenerator, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
 import { useOperationActivity } from "../store/operationActivity";
 import { Dialog } from "./Dialog";
 import { formatCount, plural } from "../lib/format";
-import { assign, autoMap, toMapping, type MappingDraft } from "../lib/importMapping";
+import { assign, toMapping } from "../lib/importMapping";
+import { csvSource, loadingPreview, previewFor, settlePreview, type CsvPreviewState } from "../lib/csvPreview";
+import { operationGate, type OperationGate } from "../lib/operationGate";
 import { displayCell } from "../lib/cells";
 
 type Phase<R> = { state: "form" } | { state: "running"; done: number; total: number | null } | { state: "done"; report: R } | { state: "failed"; error: AppError };
 
-/** Runs a long operation, tracking its progress events; returns controls for the dialog. */
+/**
+ * Runs a long operation, tracking its progress events; returns controls for the dialog. `start` receives the
+ * operation id and a checkpoint it must call before each further native call, so a cancel requested before that
+ * call registers with the backend (or a dismissed dialog) prevents it from starting.
+ */
 function useOperation<R>() {
   const [phase, setPhase] = useState<Phase<R>>({ state: "form" });
-  const opId = useRef<string | null>(null);
+  const current = useRef<OperationGate | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const progress = useRef<{ done: number; total: number | null }>({ done: 0, total: null });
-  const run = async (start: (operationId: string) => Promise<R>) => {
-    if (opId.current) return;
-    const id = crypto.randomUUID();
-    opId.current = id;
+  const run = async (start: (operationId: string, checkpoint: () => void) => Promise<R>) => {
+    if (current.current) return;
+    const gate = operationGate(crypto.randomUUID());
+    const id = gate.id;
+    current.current = gate;
+    // A dismissed dialog can neither show nor cancel the operation, so it must not start further native calls.
+    const checkpoint = () => {
+      if (!mounted.current) gate.cancel();
+      gate.checkpoint();
+    };
     progress.current = { done: 0, total: null };
     setPhase({ state: "running", ...progress.current });
     useOperationActivity.getState().begin(id);
     let unlisten: (() => void) | undefined;
+    let cancelResent = false;
     try {
       unlisten = await listen<OperationProgress>("operation-progress", (e) => {
         if (e.payload.operationId === id) {
+          // Progress proves the native call is registered; repeat a cancel that may have arrived before it was.
+          if (gate.cancelled && !cancelResent) {
+            cancelResent = true;
+            void api.cancelOperation(id);
+          }
           progress.current = { done: e.payload.done, total: e.payload.total };
           setPhase({ state: "running", ...progress.current });
         }
       });
-      setPhase({ state: "done", report: await start(id) });
+      checkpoint();
+      setPhase({ state: "done", report: await start(id, checkpoint) });
     } catch (e) {
       setPhase({ state: "failed", error: e as AppError });
     } finally {
-      opId.current = null;
+      current.current = null;
       useOperationActivity.getState().end(id);
       unlisten?.();
     }
   };
-  const cancel = () => opId.current && void api.cancelOperation(opId.current);
+  const cancel = () => {
+    const gate = current.current;
+    if (!gate) return;
+    gate.cancel();
+    void api.cancelOperation(gate.id);
+  };
   return { phase, progress: progress.current, run, cancel, reset: () => setPhase({ state: "form" }) };
 }
 
@@ -193,28 +224,31 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
   const close = () => useTransfer.getState().open(null);
   const [path, setPath] = useState("");
   const [options, setOptions] = useState<CsvReadOptions>({ delimiter: ",", quote: '"', hasHeader: true, encoding: "utf8" });
-  const [preview, setPreview] = useState<CsvPreview | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<MappingDraft>([]);
+  const [previewState, setPreviewState] = useState<CsvPreviewState>({ status: "idle" });
+  const previewRequest = useRef(0);
   const [emptyAsNull, setEmptyAsNull] = useState(true);
   const [skipErrors, setSkipErrors] = useState(false);
   const info = useQuery({ queryKey: ["tableInfo", req.connectionId, req.database, req.table], queryFn: () => api.tableInfo(req.connectionId, req.database, req.table) });
   const targets = info.data?.columns.map((c) => c.name) ?? [];
   const op = useOperation<Awaited<ReturnType<typeof api.importCsv>>>();
+  // Only a preview read from the current file and options is shown or imported with.
+  const source = csvSource(path, options);
+  const ready = previewFor(previewState, source);
+  const preview = ready?.preview ?? null;
+  const draft = ready?.draft ?? [];
+  const previewError = previewState.status === "failed" && previewState.source === source ? previewState.error : null;
 
   useEffect(() => {
-    if (!path) return;
+    const request = ++previewRequest.current;
+    if (!path) {
+      setPreviewState({ status: "idle" });
+      return;
+    }
+    setPreviewState(loadingPreview(request, csvSource(path, options)));
     api
       .previewCsv(path, options)
-      .then((p) => {
-        setPreview(p);
-        setPreviewError(null);
-        setDraft(autoMap(p.headers, targets));
-      })
-      .catch((e) => {
-        setPreview(null);
-        setPreviewError((e as AppError).message);
-      });
+      .then((p) => setPreviewState((s) => settlePreview(s, request, { preview: p, targets })))
+      .catch((e) => setPreviewState((s) => settlePreview(s, request, { error: (e as AppError).message })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, options, info.data]);
 
@@ -222,14 +256,17 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
     const p = await openDialog({ multiple: false, directory: false, filters: [{ name: "CSV", extensions: ["csv", "txt", "tsv"] }] });
     if (typeof p === "string") setPath(p);
   };
-  const start = () =>
-    op.run(async (id) => {
-      const report = await api.importCsv(req.connectionId, req.database, req.table, path, { options, mapping: toMapping(draft), emptyAsNull, skipErrors }, id);
+  const start = () => {
+    if (!ready) return;
+    const spec = { options, mapping: toMapping(ready.draft), emptyAsNull, skipErrors };
+    return op.run(async (id) => {
+      const report = await api.importCsv(req.connectionId, req.database, req.table, path, spec, id);
       void qc.invalidateQueries({ queryKey: ["page", req.connectionId, req.database, req.table] });
       void qc.invalidateQueries({ queryKey: ["count", req.connectionId, req.database, req.table] });
       void qc.invalidateQueries({ queryKey: ["objects", req.connectionId, req.database] });
       return report;
     });
+  };
   const mapped = toMapping(draft).length;
 
   return (
@@ -276,7 +313,7 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
                     <th key={i}>
                       <div className="map-head">
                         <span className="muted">{h}</span>
-                        <select className="input sm" aria-label={`Target for ${h}`} value={draft[i] ?? ""} onChange={(e) => setDraft((d) => assign(d, i, e.target.value || null))}>
+                        <select className="input sm" aria-label={`Target for ${h}`} value={draft[i] ?? ""} onChange={(e) => setPreviewState((s) => (s.status === "ready" ? { ...s, draft: assign(s.draft, i, e.target.value || null) } : s))}>
                           <option value="">(skip)</option>
                           {targets.map((t) => <option key={t} value={t}>{t}</option>)}
                         </select>
@@ -487,12 +524,13 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
     if (p) setPath(p);
   };
   const start = () =>
-    op.run(async (id) => {
+    op.run(async (id, checkpoint) => {
       const db = createNew ? newName.trim() : target;
       if (createNew) {
         await api.createDatabase(req.connectionId, { name: db, charset: "utf8mb4", collation: null });
         void qc.invalidateQueries({ queryKey: ["databases", req.connectionId] });
       }
+      checkpoint();
       const report = await api.runSqlFile(req.connectionId, db, path, true, id);
       void qc.invalidateQueries({ queryKey: ["objects", req.connectionId] });
       return report;
@@ -562,10 +600,14 @@ function CopyTableDialog({ req }: { req: Extract<TransferRequest, { kind: "copyT
     if (started.current) return;
     started.current = true;
     void (async () => {
-      const objects = await api.listObjects(target.connectionId, target.database).catch(() => []);
-      const to = copyName(source.name, objects.map((o) => o.name));
-      setName(to);
-      await op.run((id) => api.copyTable(source.connectionId, source.database, source.name, target.connectionId, { db: target.database, name: to, data: true }, id));
+      // Choosing the name is part of the operation, so Cancel or dismissing the dialog meanwhile prevents the copy.
+      await op.run(async (id, checkpoint) => {
+        const objects = await api.listObjects(target.connectionId, target.database).catch(() => []);
+        const to = copyName(source.name, objects.map((o) => o.name));
+        setName(to);
+        checkpoint();
+        return api.copyTable(source.connectionId, source.database, source.name, target.connectionId, { db: target.database, name: to, data: true }, id);
+      });
       void qc.invalidateQueries({ queryKey: ["objects", target.connectionId, target.database] });
     })();
   }, [op, qc, source, target]);

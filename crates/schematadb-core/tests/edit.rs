@@ -272,3 +272,48 @@ async fn sqlite_reserved_rowid_alias_without_key_is_read_only(t: TestDb) {
     );
 }
 scenario!(sqlite_reserved_rowid_alias_without_key_is_read_only);
+
+async fn keyless_text_is_matched_byte_exactly(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE ci (v VARCHAR(5) COLLATE utf8mb4_general_ci, n INT) ENGINE=InnoDB; \
+            INSERT INTO ci VALUES ('a', 1), ('A', 2), ('b ', 3), ('b', 4)",
+    )
+    .await;
+    let changes = [
+        RowChange::Update { key: vec![text("A"), int(2)], values: vec![set("n", int(20))] },
+        RowChange::Update { key: vec![text("b"), int(4)], values: vec![set("v", text("c"))] },
+    ];
+    t.driver.apply_changes(&t.db, "ci", &[changes[0].clone()]).await.unwrap();
+    // A key that matches only under the collation must not touch another row.
+    t.driver.apply_changes(&t.db, "ci", &[RowChange::Delete { key: vec![text("A"), int(1)] }]).await.unwrap_err();
+    t.driver.apply_changes(&t.db, "ci", &[changes[1].clone()]).await.unwrap();
+    let mut values = t.driver.fetch_page(&t.db, "ci", &page_request()).await.unwrap().rows;
+    values.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(values, vec![vec![text("A"), int(20)], vec![text("a"), int(1)], vec![text("b "), int(3)], vec![text("c"), int(4)]]);
+    // Columns in another charset still match their own non-ASCII text.
+    t.exec("CREATE TABLE l1 (v VARCHAR(5) CHARACTER SET latin1, n INT) ENGINE=InnoDB; INSERT INTO l1 VALUES ('ação', 1)").await;
+    t.driver.apply_changes(&t.db, "l1", &[RowChange::Update { key: vec![text("ação"), int(1)], values: vec![set("n", int(2))] }]).await.unwrap();
+    assert_eq!(t.driver.fetch_page(&t.db, "l1", &page_request()).await.unwrap().rows, vec![vec![text("ação"), int(2)]]);
+}
+scenario!(keyless_text_is_matched_byte_exactly);
+
+async fn mysql_functional_unique_index_never_identifies_rows(t: TestDb) {
+    if t.engine != Engine::MySql {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE fx (a INT NOT NULL, b INT NOT NULL, UNIQUE KEY u (a, (ABS(b)))) ENGINE=InnoDB; \
+            INSERT INTO fx VALUES (1, 2), (1, 3)",
+    )
+    .await;
+    let info = t.driver.table_info(&t.db, "fx").await.unwrap();
+    assert!(info.indexes.iter().any(|i| i.name == "u"), "the index is still shown");
+    assert!(matches!(info.row_identity, schematadb_core::RowIdentity::AllColumns { .. }), "{:?}", info.row_identity);
+    t.driver.apply_changes(&t.db, "fx", &[RowChange::Delete { key: vec![int(1), int(2)] }]).await.unwrap();
+    let rows = t.driver.fetch_page(&t.db, "fx", &page_request()).await.unwrap().rows;
+    assert_eq!(rows, vec![vec![int(1), int(3)]]);
+}
+scenario!(mysql_functional_unique_index_never_identifies_rows);

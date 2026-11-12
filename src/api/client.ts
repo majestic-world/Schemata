@@ -60,8 +60,8 @@ export const api = {
   openConnectionIds: () => call<string[]>("open_connection_ids"),
   listDatabases: (id: string) => call<DatabaseInfo[]>("list_databases", { id }),
   listObjects: (id: string, db: string) => call<ObjectInfo[]>("list_objects", { id, db }),
-  executeScript: (id: string, db: string | null, sql: string, rowLimit: number, executionId: string | null) =>
-    call<ScriptResult>("execute_script", { id, db, sql, rowLimit, executionId }),
+  executeScript: (id: string, session: string, db: string | null, sql: string, rowLimit: number, executionId: string | null) =>
+    call<ScriptResult>("execute_script", { id, session, db, sql, rowLimit, executionId }),
   cancelExecution: (id: string, executionId: string) => call<void>("cancel_execution", { id, executionId }),
   tableInfo: (id: string, db: string, name: string) => call<TableInfo>("table_info", { id, db, name }),
   createDatabase: (id: string, spec: CreateDatabase) => call<void>("create_database", { id, spec }),
@@ -77,8 +77,10 @@ export const api = {
   dropObject: (id: string, db: string, name: string, kind: ObjectKind) => call<void>("drop_object", { id, db, name, kind }),
   truncateTable: (id: string, db: string, name: string) => call<void>("truncate_table", { id, db, name }),
   renameTable: (id: string, db: string, from: string, to: string) => call<void>("rename_table", { id, db, from, to }),
-  fetchMore: (id: string, db: string | null, statement: string, offset: number, limit: number) =>
-    call<Page>("fetch_more", { id, db, statement, offset, limit }),
+  fetchMore: (id: string, session: string, db: string | null, statement: string, offset: number, limit: number) =>
+    call<Page>("fetch_more", { id, session, db, statement, offset, limit }),
+  /** Ends a query tab's server session; the server rolls back its open transaction. */
+  closeEditorSession: (id: string, session: string) => call<void>("close_editor_session", { id, session }),
   listColumns: (id: string, db: string) => call<[string, string[]][]>("list_columns", { id, db }),
   listHistory: (id: string) => call<HistoryEntry[]>("list_history", { id }),
   readTextFile: (path: string) => call<string>("read_text_file", { path }),

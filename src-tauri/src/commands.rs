@@ -93,19 +93,21 @@ pub async fn list_objects(sessions: State<'_, Sessions>, id: String, db: String)
         .await
 }
 
-/// Runs a script and records it in the query history.
+/// Runs a script on the editor session `session` (the query tab) and records it in the query history.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_script(
     sessions: State<'_, Sessions>,
     history: State<'_, QueryHistory>,
     id: String,
+    session: String,
     db: Option<String>,
     sql: String,
     row_limit: usize,
     execution_id: Option<String>,
 ) -> CmdResult<ScriptResult> {
     let driver = sessions.driver(&id).await?;
-    let result = driver.execute_script(db.as_deref(), &sql, row_limit, execution_id.as_deref()).await?;
+    let result = driver.execute_in_session(&session, db.as_deref(), &sql, row_limit, execution_id.as_deref()).await?;
     // History is best-effort: failing to record it must not hide the results of statements that already ran.
     let _ = history.record_script(&id, &sql, &result);
     Ok(result)
@@ -223,12 +225,22 @@ pub async fn rename_table(sessions: State<'_, Sessions>, id: String, db: String,
 pub async fn fetch_more(
     sessions: State<'_, Sessions>,
     id: String,
+    session: String,
     db: Option<String>,
     statement: String,
     offset: u64,
     limit: u64,
 ) -> CmdResult<Page> {
-    sessions.driver(&id).await?.fetch_more(db.as_deref(), &statement, offset, limit).await
+    sessions.driver(&id).await?.fetch_more_in_session(&session, db.as_deref(), &statement, offset, limit).await
+}
+
+/// Ends a SQL editor tab's server session; its open transaction is rolled back. A closed connection has none.
+#[tauri::command]
+pub async fn close_editor_session(sessions: State<'_, Sessions>, id: String, session: String) -> CmdResult<()> {
+    match sessions.driver(&id).await {
+        Ok(driver) => driver.close_editor_session(&session).await,
+        Err(_) => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -248,12 +260,12 @@ pub fn list_history(history: State<'_, QueryHistory>, id: String) -> Vec<History
 
 #[tauri::command]
 pub async fn read_text_file(path: String) -> CmdResult<String> {
-    Ok(tokio::fs::read_to_string(&path).await?)
+    schematadb_core::read_sql_text(std::path::Path::new(&path)).await
 }
 
 #[tauri::command]
 pub async fn write_text_file(path: String, contents: String) -> CmdResult<()> {
-    Ok(tokio::fs::write(&path, contents).await?)
+    schematadb_core::write_text_atomic(std::path::Path::new(&path), &contents).await
 }
 
 /// Cancellation tokens of running long operations, keyed by operation id.
@@ -269,9 +281,10 @@ struct OperationProgress {
 }
 
 /// Registers an operation and returns its progress reporter (as `operation-progress` events) and cancel token.
+/// A cancel that arrived before registration (the command was still awaiting its driver) is kept: the operation
+/// starts already cancelled.
 fn begin(app: &AppHandle, ops: &Operations, operation_id: &str) -> (ProgressFn, CancellationToken) {
-    let token = CancellationToken::new();
-    ops.0.lock().unwrap().insert(operation_id.to_owned(), token.clone());
+    let token = ops.0.lock().unwrap().entry(operation_id.to_owned()).or_default().clone();
     let (app, id) = (app.clone(), operation_id.to_owned());
     let progress: ProgressFn = Arc::new(move |progress| {
         let _ = app.emit("operation-progress", OperationProgress { operation_id: id.clone(), progress });
@@ -283,11 +296,11 @@ fn end(ops: &Operations, operation_id: &str) {
     ops.0.lock().unwrap().remove(operation_id);
 }
 
+/// Cancels a running operation, or records the cancel for one not registered yet. Operation ids are unique per run,
+/// so a cancel racing the operation's end leaves at most one stale entry behind.
 #[tauri::command]
 pub fn cancel_operation(ops: State<'_, Operations>, operation_id: String) {
-    if let Some(token) = ops.0.lock().unwrap().get(&operation_id) {
-        token.cancel();
-    }
+    ops.0.lock().unwrap().entry(operation_id).or_default().cancel();
 }
 
 #[tauri::command]

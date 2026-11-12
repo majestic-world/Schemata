@@ -516,6 +516,17 @@ pub(crate) mod sqlite {
             }
             return Ok(out);
         }
+        if kept.is_empty() && !original.columns.is_empty() {
+            return Err(crate::AppError::validation(
+                "Keep at least one existing column: replacing every column would drop all rows. Save the new columns first, then remove the old ones.",
+            ));
+        }
+        let renames = d.name != original.name || kept.iter().any(|c| c.original_name.as_deref() != Some(c.name.as_str()));
+        if renames && (!deps.triggers.is_empty() || !deps.views.is_empty()) {
+            return Err(crate::AppError::validation(
+                "This change rebuilds the table, which has dependent triggers or views that would keep the old names. Save the rename separately first, then apply the other changes.",
+            ));
+        }
 
         // Rebuild, following https://www.sqlite.org/lang_altertable.html#otheralter
         let tmp = format!("_schematadb_new_{}", d.name);

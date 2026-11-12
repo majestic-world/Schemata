@@ -138,6 +138,29 @@ async fn sql_export_recreates_table_elsewhere(t: TestDb) {
 }
 scenario!(sql_export_recreates_table_elsewhere);
 
+async fn sql_export_renames_only_the_created_table(t: TestDb) {
+    // The source name is a keyword that also occurs earlier in the CREATE statement and as a column name.
+    let quote = if t.driver.engine() == Engine::Sqlite { '"' } else { '`' };
+    let ident = |name: &str| format!("{quote}{name}{quote}");
+    t.exec(&format!(
+        "CREATE TABLE {table} (id INT PRIMARY KEY, {table} VARCHAR(20)); INSERT INTO {table} VALUES (1, 'kept'), (2, NULL);",
+        table = ident("table")
+    ))
+    .await;
+    let original = rows(&t, "table").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("renamed.sql");
+    let format = ExportFormat::Sql(SqlExportOptions { include_create: true, table_name: Some("table copy".into()) });
+    export(t.driver.as_ref(), &t.db, &ExportSource::Table { table: "table".into() }, &format, &file, no_progress(), CancellationToken::new())
+        .await
+        .unwrap();
+    let report = run_sql_file(t.driver.as_ref(), &t.db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(rows(&t, "table copy").await, original);
+    assert_eq!(rows(&t, "table").await, original, "the source table must be untouched");
+}
+scenario!(sql_export_renames_only_the_created_table);
+
 async fn cancelled_export_reports_cancellation(t: TestDb) {
     seed(&t).await;
     let dir = tempfile::tempdir().unwrap();

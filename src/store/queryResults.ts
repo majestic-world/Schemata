@@ -21,7 +21,12 @@ type QueryResultsState = {
 
 export const useQueryResults = create<QueryResultsState>((set) => ({
   runs: {},
-  set: (tabId, run) => set((s) => ({ runs: { ...s.runs, [tabId]: run } })),
+  set: (tabId, run) => set((s) => {
+    const runs = { ...s.runs, [tabId]: run };
+    // A cleared run (closed tab) leaves no entry behind; late patches for it are then no-ops.
+    if (!run) delete runs[tabId];
+    return { runs };
+  }),
   patch: (tabId, p, executionId) => set((s) => {
     const run = s.runs[tabId];
     if (!run || (executionId !== undefined && run.executionId !== executionId)) return s;

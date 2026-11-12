@@ -15,7 +15,7 @@ use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Column, Connection, Either, Row, Statement, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,9 @@ struct RunningQuery {
     cancel_complete: Option<oneshot::Receiver<()>>,
 }
 
+/// A SQL editor tab's dedicated server connection, opened lazily outside the pool. The async mutex serializes runs.
+type EditorSession = Arc<tokio::sync::Mutex<Option<sqlx::MySqlConnection>>>;
+
 pub struct MySqlDriver {
     pool: MySqlPool,
     connect_options: MySqlConnectOptions,
@@ -34,10 +37,23 @@ pub struct MySqlDriver {
     uncached_statistics: bool,
     /// Server thread id per running execution, used by `KILL QUERY`.
     running: Mutex<HashMap<String, RunningQuery>>,
+    /// Editor sessions by key; dropping the driver closes them, and the server rolls back their transactions.
+    editor_sessions: Mutex<HashMap<String, EditorSession>>,
 }
 
 pub(crate) fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// Deadlocks (1213) and lock wait timeouts (1205) may roll back the whole transaction, so later statements would
+/// autocommit: treat them as fatal instead of retrying row by row.
+pub(crate) fn aborts_transaction(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(db) => {
+            matches!(db.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>().map(|d| d.number()), Some(1205 | 1213))
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn map_err(e: sqlx::Error) -> AppError {
@@ -269,7 +285,15 @@ impl MySqlDriver {
         let engine = if version.to_ascii_lowercase().contains("mariadb") { Engine::MariaDb } else { Engine::MySql };
         let uncached_statistics = engine == Engine::MySql
             && version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 8);
-        Ok(Self { pool, connect_options: opts, engine, version, uncached_statistics, running: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            pool,
+            connect_options: opts,
+            engine,
+            version,
+            uncached_statistics,
+            running: Mutex::new(HashMap::new()),
+            editor_sessions: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Read current engine statistics rather than MySQL 8's day-old INFORMATION_SCHEMA cache.
@@ -279,6 +303,90 @@ impl MySqlDriver {
             sqlx::query("SET SESSION information_schema_stats_expiry = 0").execute(&mut *conn).await.map_err(map_err)?;
         }
         Ok(conn)
+    }
+
+    /// Takes the connection of the editor session `key`, opening it if needed. The returned guard serializes runs
+    /// of that session; the caller puts the connection back unless it failed at the connection level, so the next
+    /// run opens a fresh one (the failed statement is not retried).
+    async fn checkout_editor_session(
+        &self,
+        key: &str,
+    ) -> Result<(tokio::sync::OwnedMutexGuard<Option<sqlx::MySqlConnection>>, sqlx::MySqlConnection)> {
+        let slot = self.editor_sessions.lock().unwrap().entry(key.to_owned()).or_default().clone();
+        let mut guard = slot.lock_owned().await;
+        let conn = match guard.take() {
+            Some(mut conn) => {
+                // The server may have closed it meanwhile (wait_timeout, KILL, restart). Reconnecting silently would hide
+                // the rolled-back transaction, so this run fails and the next one opens a fresh session.
+                if conn.ping().await.is_err() {
+                    return Err(AppError::connection(
+                        "The server closed this editor session; any open transaction was rolled back. Run again to reconnect.",
+                    ));
+                }
+                conn
+            }
+            None => sqlx::MySqlConnection::connect_with(&self.connect_options).await.map_err(map_err)?,
+        };
+        Ok((guard, conn))
+    }
+
+    async fn run_script(
+        &self,
+        conn: &mut sqlx::MySqlConnection,
+        db: Option<&str>,
+        sql: &str,
+        row_limit: usize,
+        execution_id: Option<&str>,
+    ) -> Result<ScriptResult> {
+        let statements = split_statements(sql, self.engine);
+        if let Some(db) = db {
+            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        if let Some(id) = execution_id {
+            let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
+            self.running.lock().unwrap().insert(id.to_owned(), RunningQuery { thread, cancelled: false, cancel_complete: None });
+        }
+        let mut outcomes = Vec::new();
+        let mut error = None;
+        let cancelled = || execution_id.is_some_and(|id| self.running.lock().unwrap().get(id).is_some_and(|query| query.cancelled));
+        for (index, statement) in statements.into_iter().enumerate() {
+            let result = if cancelled() { Err(AppError::cancelled()) } else { Self::run_statement(conn, &statement, row_limit).await };
+            // MySQL may return a successful SLEEP result when KILL QUERY interrupts it.
+            let result = if cancelled() { Err(AppError::cancelled()) } else { result };
+            match result {
+                Ok(o) => outcomes.push(o),
+                Err(e) => {
+                    error = Some(StatementError { index, statement, error: e });
+                    break;
+                }
+            }
+        }
+        if let Some(id) = execution_id {
+            let running = self.running.lock().unwrap().remove(id);
+            if let Some(complete) = running.and_then(|query| query.cancel_complete) {
+                // Do not reuse this server thread before its pending KILL has finished.
+                let _ = complete.await;
+            }
+        }
+        Ok(ScriptResult { outcomes, error })
+    }
+
+    async fn more_rows(conn: &mut sqlx::MySqlConnection, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        if let Some(db) = db {
+            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        }
+        let rows = sqlx::query(AssertSqlSafe(crate::sql::more_rows(statement)))
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_err)?;
+        let columns = rows.first().map(column_meta).unwrap_or_default();
+        let rows = rows
+            .iter()
+            .map(|r| (0..columns.len()).map(|i| read_value(r, i).map(|v| v.to_cell())).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Page { columns, rows })
     }
 
     /// Cancellation must not queue behind the very queries occupying every pooled connection.
@@ -400,38 +508,28 @@ impl Driver for MySqlDriver {
     }
 
     async fn execute_script(&self, db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult> {
-        let statements = split_statements(sql, self.engine);
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        self.run_script(&mut conn, db, sql, row_limit, execution_id).await
+    }
+
+    async fn execute_in_session(
+        &self,
+        session: &str,
+        db: Option<&str>,
+        sql: &str,
+        row_limit: usize,
+        execution_id: Option<&str>,
+    ) -> Result<ScriptResult> {
+        let (mut guard, mut conn) = self.checkout_editor_session(session).await?;
+        let result = self.run_script(&mut conn, db, sql, row_limit, execution_id).await;
+        let lost = match &result {
+            Ok(r) => r.error.as_ref().is_some_and(|e| e.error.kind == ErrorKind::Connection),
+            Err(e) => e.kind == ErrorKind::Connection,
+        };
+        if !lost {
+            *guard = Some(conn);
         }
-        if let Some(id) = execution_id {
-            let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
-            self.running.lock().unwrap().insert(id.to_owned(), RunningQuery { thread, cancelled: false, cancel_complete: None });
-        }
-        let mut outcomes = Vec::new();
-        let mut error = None;
-        let cancelled = || execution_id.is_some_and(|id| self.running.lock().unwrap().get(id).is_some_and(|query| query.cancelled));
-        for (index, statement) in statements.into_iter().enumerate() {
-            let result = if cancelled() { Err(AppError::cancelled()) } else { Self::run_statement(&mut conn, &statement, row_limit).await };
-            // MySQL may return a successful SLEEP result when KILL QUERY interrupts it.
-            let result = if cancelled() { Err(AppError::cancelled()) } else { result };
-            match result {
-                Ok(o) => outcomes.push(o),
-                Err(e) => {
-                    error = Some(StatementError { index, statement, error: e });
-                    break;
-                }
-            }
-        }
-        if let Some(id) = execution_id {
-            let running = self.running.lock().unwrap().remove(id);
-            if let Some(complete) = running.and_then(|query| query.cancel_complete) {
-                // Do not return this server thread to the pool before its pending KILL has finished.
-                let _ = complete.await;
-            }
-        }
-        Ok(ScriptResult { outcomes, error })
+        result
     }
 
     async fn stream_query(&self, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
@@ -510,9 +608,16 @@ impl Driver for MySqlDriver {
                         q = bind(q, v);
                     }
                 }
-                if q.execute(&mut *tx).await.is_ok() {
-                    report.inserted += chunk.len() as u64;
-                    continue;
+                match q.execute(&mut *tx).await {
+                    Ok(_) => {
+                        report.inserted += chunk.len() as u64;
+                        continue;
+                    }
+                    Err(e) if aborts_transaction(&e) => {
+                        let _ = tx.rollback().await;
+                        return Err(map_err(e));
+                    }
+                    Err(_) => {}
                 }
                 // Find the failing rows one by one (a failed statement leaves the transaction usable).
                 for (line, values) in chunk {
@@ -522,6 +627,10 @@ impl Driver for MySqlDriver {
                     }
                     match q.execute(&mut *tx).await {
                         Ok(_) => report.inserted += 1,
+                        Err(e) if aborts_transaction(&e) => {
+                            let _ = tx.rollback().await;
+                            return Err(map_err(e));
+                        }
                         Err(e) => {
                             report.failed_count += 1;
                             if report.failed.len() < MAX_REPORTED_FAILURES {
@@ -678,21 +787,29 @@ DELIMITER ;",
 
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+        Self::more_rows(&mut conn, db, statement, offset, limit).await
+    }
+
+    async fn fetch_more_in_session(&self, session: &str, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        let (mut guard, mut conn) = self.checkout_editor_session(session).await?;
+        let result = Self::more_rows(&mut conn, db, statement, offset, limit).await;
+        if !result.as_ref().is_err_and(|e| e.kind == ErrorKind::Connection) {
+            *guard = Some(conn);
         }
-        let rows = sqlx::query(AssertSqlSafe(crate::sql::more_rows(statement)))
-            .bind(limit as i64)
-            .bind(offset as i64)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_err)?;
-        let columns = rows.first().map(column_meta).unwrap_or_default();
-        let rows = rows
-            .iter()
-            .map(|r| (0..columns.len()).map(|i| read_value(r, i).map(|v| v.to_cell())).collect::<Result<Vec<_>>>())
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Page { columns, rows })
+        result
+    }
+
+    async fn close_editor_session(&self, session: &str) -> Result<()> {
+        let Some(slot) = self.editor_sessions.lock().unwrap().remove(session) else { return Ok(()) };
+        // A run still in progress holds the lock; its connection is dropped when that run finishes.
+        let conn = match slot.try_lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => None,
+        };
+        if let Some(conn) = conn {
+            let _ = conn.close().await;
+        }
+        Ok(())
     }
 
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
@@ -771,9 +888,14 @@ DELIMITER ;",
         .await
         .map_err(map_err)?;
         let mut all_indexes: Vec<IndexInfo> = Vec::new();
+        // MySQL 8 functional key parts have a NULL column name: such indexes cannot identify rows.
+        let mut expression_indexes: Vec<String> = Vec::new();
         for r in &index_rows {
             let index = text(r, 0)?.unwrap_or_default();
             let column = text(r, 2)?;
+            if column.is_none() && !expression_indexes.contains(&index) {
+                expression_indexes.push(index.clone());
+            }
             if all_indexes.last().is_none_or(|i| i.name != index) {
                 let index_type = text(r, 3)?.unwrap_or_default().to_ascii_uppercase();
                 let (kind, method) = match index_type.as_str() {
@@ -868,7 +990,11 @@ DELIMITER ;",
             .map_err(map_err)?;
         let create_sql = text(&create, 1)?.unwrap_or_default();
         let row_identity = match kind {
-            ObjectKind::Table => derive_identity(&columns, &indexes, false),
+            ObjectKind::Table => {
+                let identity_indexes: Vec<IndexInfo> =
+                    indexes.iter().filter(|i| !expression_indexes.contains(&i.name)).cloned().collect();
+                derive_identity(&columns, &identity_indexes, false)
+            }
             ObjectKind::View => RowIdentity::None,
         };
         Ok(TableInfo {
@@ -926,7 +1052,11 @@ DELIMITER ;",
         info.validate_changes(changes)?;
         let table_ref = format!("{}.{}", quote_ident(db), quote_ident(table));
         let dialect = crate::sql::ChangeDialect { empty_insert: "() VALUES ()", null_safe_eq: "<=>", single_row: "LIMIT 1" };
-        let statements = crate::sql::change_statements(changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
+        // Matching by value must be byte-exact: case-insensitive or PAD SPACE collations would match other rows.
+        let byte_exact: Vec<String> =
+            info.columns.iter().filter(|c| crate::model::is_text_type(&c.data_type)).map(|c| c.name.clone()).collect();
+        let statements =
+            crate::sql::change_statements_byte_exact(changes, &table_ref, &info.row_identity, quote_ident, &dialect, &byte_exact)?;
         let mut tx = self.pool.begin().await.map_err(map_err)?;
         for (index, st) in statements.iter().enumerate() {
             let at = |e: sqlx::Error| ChangeError { index: Some(index), error: map_err(e) };

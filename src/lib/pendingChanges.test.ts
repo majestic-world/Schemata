@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CellValue, ColumnInfo, ColumnMeta } from "../api/types";
 import { hasPendingEdits, useGridStates } from "../store/gridState";
-import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isUnset, literalDefault, setCell } from "./pendingChanges";
+import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isEdited, isUnset, literalDefault, setCell } from "./pendingChanges";
 
 const t = (value: string): CellValue => ({ type: "text", value });
 const n = (value: number): CellValue => ({ type: "int", value });
@@ -105,6 +105,45 @@ describe("new row defaults", () => {
     expect(buildChangeSet(pending, page, columns, ["id"]).changes).toEqual([
       { kind: "insert", values: [{ column: "name", value: t("new") }] },
     ]);
+  });
+});
+
+describe("columns named like Object.prototype members", () => {
+  const protoColumns = [col("id"), col("constructor"), col("__proto__")];
+  const protoPage: CellValue[][] = [[n(1), t("c"), t("p")]];
+
+  it("new rows treat them as unset and show NULL until typed", () => {
+    const { pending, row } = addRow(emptyPending(), [info("constructor", null), info("toString", null), info("__proto__", null)]);
+    for (const name of ["constructor", "toString", "valueOf", "__proto__"]) {
+      expect(isUnset(pending, row, name)).toBe(true);
+      expect(cellValue(pending, row, name, undefined)).toEqual(NULL);
+    }
+    expect(buildChangeSet(pending, protoPage, protoColumns, ["id"]).changes).toEqual([{ kind: "insert", values: [] }]);
+  });
+
+  it("records defaults and edits on them as own values", () => {
+    const added = addRow(emptyPending(), [info("__proto__", "'d'")]);
+    expect(isUnset(added.pending, added.row, "__proto__")).toBe(false);
+    const p = setCell(added.pending, added.row, "constructor", t("x"), NULL);
+    expect(cellValue(p, added.row, "__proto__", undefined)).toEqual(t("d"));
+    expect(buildChangeSet(p, protoPage, protoColumns, ["id"]).changes).toEqual([
+      { kind: "insert", values: [{ column: "__proto__", value: t("d") }, { column: "constructor", value: t("x") }] },
+    ]);
+  });
+
+  it("existing-row edits are tracked and committed", () => {
+    expect(isEdited(emptyPending(), existing(0), "constructor")).toBe(false);
+    expect(cellValue(emptyPending(), existing(0), "constructor", t("c"))).toEqual(t("c"));
+    let p = setCell(emptyPending(), existing(0), "__proto__", t("q"), t("p"));
+    p = setCell(p, existing(0), "constructor", t("k"), t("c"));
+    expect(isEdited(p, existing(0), "__proto__")).toBe(true);
+    expect(isEdited(p, existing(0), "toString")).toBe(false);
+    expect(cellValue(p, existing(0), "__proto__", t("p"))).toEqual(t("q"));
+    expect(buildChangeSet(p, protoPage, protoColumns, ["id"]).changes).toEqual([
+      { kind: "update", key: [n(1)], values: [{ column: "__proto__", value: t("q") }, { column: "constructor", value: t("k") }] },
+    ]);
+    p = setCell(p, existing(0), "__proto__", t("p"), t("p"));
+    expect(isEdited(p, existing(0), "__proto__")).toBe(false);
   });
 });
 

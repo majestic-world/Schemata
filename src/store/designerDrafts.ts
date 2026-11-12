@@ -15,6 +15,11 @@ type Store = {
   initialize: (id: string, original: TableDesign | null, design: TableDesign) => void;
   flush: (id: string) => void;
   update: (id: string, change: (design: TableDesign) => TableDesign) => void;
+  /**
+   * Reorders or removes columns, indexes or foreign keys. Buffered input text is keyed by row position,
+   * so it is flushed into the design first; otherwise it would land on whichever row takes that position.
+   */
+  restructure: (id: string, change: (design: TableDesign) => TableDesign) => void;
   input: (id: string, field: string, text: string | null) => void;
   setBusy: (id: string, busy: boolean) => void;
   saved: (id: string, design: TableDesign) => void;
@@ -25,7 +30,7 @@ type Store = {
 const isDirty = (draft: Pick<DesignerDraft, "original" | "design" | "inputs">) =>
   draft.original === null || Object.keys(draft.inputs).length > 0 || JSON.stringify(draft.original) !== JSON.stringify(draft.design);
 
-export const useDesignerDrafts = create<Store>((set) => ({
+export const useDesignerDrafts = create<Store>((set, get) => ({
   drafts: {},
   initialize: (id, original, design) => set((s) => {
     const current = s.drafts[id];
@@ -66,6 +71,10 @@ export const useDesignerDrafts = create<Store>((set) => ({
     const next = { ...draft, design: change(draft.design) };
     return { drafts: { ...s.drafts, [id]: { ...next, dirty: isDirty(next) } } };
   }),
+  restructure: (id, change) => {
+    get().flush(id);
+    get().update(id, change);
+  },
   input: (id, field, text) => set((s) => {
     const draft = s.drafts[id];
     if (!draft || draft.busy) return s;

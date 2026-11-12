@@ -110,6 +110,26 @@ async fn disabling_password_ignores_retained_credentials_and_reports_failed_dele
     assert_eq!(secrets.reads.load(Ordering::SeqCst), 0, "disabled passwords must never even read the credential store");
 }
 
+#[tokio::test]
+async fn deleting_a_connection_reports_a_credential_that_could_not_be_removed() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.json");
+    let secrets = DeleteFailingSecrets::default();
+    let store = ConnectionStore::open(&path, Box::new(secrets.clone())).unwrap();
+    let mut config = ConnectionConfig::new("Saved password", Engine::MySql);
+    config.save_password = true;
+    store.save(&config, Some("retained-secret")).unwrap();
+    let without_password = ConnectionConfig::new("No password", Engine::MySql);
+    store.save(&without_password, None).unwrap();
+
+    let error = store.delete(&config.id).unwrap_err();
+    assert!(error.message.contains("could not be removed"));
+    store.delete(&without_password.id).expect("a connection without a saved password has nothing to report");
+    assert!(store.list().is_empty());
+    let reopened = ConnectionStore::open(&path, Box::new(secrets.clone())).unwrap();
+    assert!(reopened.list().is_empty(), "the connection itself must still be deleted");
+}
+
 #[test]
 fn connection_snapshots_replace_atomically_without_overwriting_an_unrelated_temporary_file() {
     let directory = tempfile::tempdir().unwrap();

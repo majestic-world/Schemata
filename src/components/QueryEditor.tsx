@@ -57,7 +57,8 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
       const database = tab.database;
       setRun(tab.id, { connectionId, database, result: null, failure: null, running: true, executionId, startedAt: Date.now(), finishedAt: null });
       try {
-        const result = await api.executeScript(connectionId, database, text, ROW_LIMIT, executionId);
+        // The tab id names its server session, so transactions and session state persist across runs.
+        const result = await api.executeScript(connectionId, tab.id, database, text, ROW_LIMIT, executionId);
         patchRun(tab.id, { result, running: false, finishedAt: Date.now() }, executionId);
       } catch (e) {
         patchRun(tab.id, { failure: toAppError(e), running: false, finishedAt: Date.now() }, executionId);
@@ -195,7 +196,8 @@ function Results({ tabId }: { tabId: string }) {
     if (o.kind !== "rows" || !run.result) return;
     setLoading(true);
     try {
-      const page = await api.fetchMore(run.connectionId, run.database, o.statement, o.rows.length, ROW_LIMIT);
+      // Continue on the run's own connection and editor session, which may hold the statement's temp tables.
+      const page = await api.fetchMore(run.connectionId, tabId, run.database, o.statement, o.rows.length, ROW_LIMIT);
       const updated: StatementOutcome = { ...o, rows: [...o.rows, ...page.rows], hasMore: page.rows.length === ROW_LIMIT };
       patch(tabId, { result: { ...run.result, outcomes: outcomes.map((x, i) => (i === index ? updated : x)) } }, run.executionId);
     } catch (e) {

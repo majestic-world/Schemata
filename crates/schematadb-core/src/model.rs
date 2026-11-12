@@ -256,6 +256,12 @@ fn matchable(data_type: &str) -> bool {
     !UNMATCHABLE.iter().any(|u| t.contains(u))
 }
 
+/// Whether a MySQL/MariaDB column type compares under a collation (CHAR/VARCHAR/TEXT family, ENUM, SET).
+pub(crate) fn is_text_type(data_type: &str) -> bool {
+    let t = data_type.to_ascii_lowercase();
+    (t.contains("char") || t.contains("text") || t.starts_with("enum") || t.starts_with("set")) && !t.contains("binary")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SortSpec {

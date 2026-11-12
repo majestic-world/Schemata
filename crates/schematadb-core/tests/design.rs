@@ -308,6 +308,50 @@ async fn sqlite_unrepresentable_rebuilds_are_rejected_without_changes(t: TestDb)
 }
 scenario!(sqlite_unrepresentable_rebuilds_are_rejected_without_changes);
 
+async fn sqlite_rebuild_replacing_every_column_is_rejected(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE swap (a INTEGER, b TEXT); INSERT INTO swap VALUES (1, 'x'), (2, 'y');").await;
+    let original = t.driver.table_design(&t.db, "swap").await.unwrap();
+    let mut replaced = original.clone();
+    replaced.columns = vec![col("c", "INTEGER"), col("d", "TEXT")];
+    let error = t.driver.plan_table(&t.db, Some(&original), &replaced).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(names(&t, "swap").await, vec!["a", "b"]);
+    assert_eq!(all_rows(&t, "swap", "a").await.len(), 2);
+}
+scenario!(sqlite_rebuild_replacing_every_column_is_rejected);
+
+async fn sqlite_rebuild_with_rename_and_dependents_is_rejected(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE item (id INTEGER PRIMARY KEY, label TEXT, weight TEXT);
+         CREATE TABLE audit (msg TEXT);
+         CREATE TRIGGER item_ins AFTER INSERT ON item BEGIN INSERT INTO audit VALUES (NEW.label); END;
+         INSERT INTO item VALUES (1, 'a', '1');",
+    )
+    .await;
+    let original = t.driver.table_design(&t.db, "item").await.unwrap();
+    let mut both = original.clone();
+    both.columns.iter_mut().find(|c| c.name == "label").unwrap().name = "title".into();
+    both.columns.iter_mut().find(|c| c.name == "weight").unwrap().data_type = "REAL".into();
+    let error = t.driver.plan_table(&t.db, Some(&original), &both).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(names(&t, "item").await, vec!["id", "label", "weight"]);
+
+    // A rename on its own uses ALTER TABLE, which rewrites the trigger.
+    let mut rename = original.clone();
+    rename.columns.iter_mut().find(|c| c.name == "label").unwrap().name = "title".into();
+    apply(&t, Some(&original), &rename).await;
+    t.exec("INSERT INTO item (title, weight) VALUES ('b', '2')").await;
+    // 'a' came from the original insert; 'b' proves the trigger now reads the renamed column.
+    assert_eq!(all_rows(&t, "audit", "msg").await, vec![vec![CellValue::Text("a".into())], vec![CellValue::Text("b".into())]]);
+}
+scenario!(sqlite_rebuild_with_rename_and_dependents_is_rejected);
+
 async fn sqlite_rebuild_preserves_autoincrement_high_water_mark(t: TestDb) {
     if t.engine != Engine::Sqlite {
         return;

@@ -135,6 +135,103 @@ impl PendingFile {
     }
 }
 
+/// Reads a SQL text file. It must be UTF-8; a leading byte-order mark is dropped so it never reaches the server.
+pub async fn read_sql_text(path: &Path) -> Result<String> {
+    let bytes = tokio::fs::read(path).await?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        AppError::validation(format!("{} is not a UTF-8 text file; convert it to UTF-8 to open it", path.display()))
+    })?;
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_owned(),
+        None => text,
+    })
+}
+
+/// Writes `contents` to a temporary file next to `path`, flushes it to disk and then replaces `path`, so a
+/// failed write leaves any existing file untouched.
+pub async fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {
+    let path = path.to_owned();
+    let contents = contents.to_owned();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let (pending, mut file) = PendingFile::create(&path)?;
+        file.write_all(contents.as_bytes())?;
+        file.into_inner().map_err(|e| AppError::io(e.to_string()))?.sync_all()?;
+        pending.commit()
+    })
+    .await
+    .map_err(|e| AppError::io(e.to_string()))?
+}
+
+/// Rewrites the table-name token of a `CREATE [TEMP|TEMPORARY] TABLE [IF NOT EXISTS] [schema.]name ...`
+/// statement to `quoted` (an already-quoted identifier). Returns `None` when the statement has another shape.
+pub(crate) fn rename_create_table(create_sql: &str, quoted: &str) -> Option<String> {
+    let bytes = create_sql.as_bytes();
+    let mut pos = 0usize;
+    let skip_ws = |mut p: usize| {
+        while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        p
+    };
+    // Reads one identifier (quoted or bare) at `p` and returns its end.
+    let ident_end = |p: usize| -> Option<usize> {
+        let close = match *bytes.get(p)? {
+            b'`' => b'`',
+            b'"' => b'"',
+            b'[' => b']',
+            c if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80 => {
+                let mut e = p;
+                while e < bytes.len() && (bytes[e].is_ascii_alphanumeric() || bytes[e] == b'_' || bytes[e] == b'$' || bytes[e] >= 0x80) {
+                    e += 1;
+                }
+                return Some(e);
+            }
+            _ => return None,
+        };
+        let mut e = p + 1;
+        loop {
+            if *bytes.get(e)? == close {
+                // A doubled closing quote is an escaped quote (not for brackets).
+                if close != b']' && bytes.get(e + 1) == Some(&close) {
+                    e += 2;
+                    continue;
+                }
+                return Some(e + 1);
+            }
+            e += 1;
+        }
+    };
+    let keyword = |pos: &mut usize, word: &str| -> bool {
+        let p = skip_ws(*pos);
+        let end = p + word.len();
+        let matches = create_sql.get(p..end).is_some_and(|w| w.eq_ignore_ascii_case(word))
+            && bytes.get(end).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'));
+        if matches {
+            *pos = end;
+        }
+        matches
+    };
+    if !keyword(&mut pos, "CREATE") {
+        return None;
+    }
+    let _ = keyword(&mut pos, "TEMPORARY") || keyword(&mut pos, "TEMP");
+    if !keyword(&mut pos, "TABLE") {
+        return None;
+    }
+    let before_if = pos;
+    if !(keyword(&mut pos, "IF") && keyword(&mut pos, "NOT") && keyword(&mut pos, "EXISTS")) {
+        pos = before_if;
+    }
+    let start = skip_ws(pos);
+    let mut end = ident_end(start)?;
+    // `schema.name`: replace both, the export targets the destination's current database.
+    let after = skip_ws(end);
+    if bytes.get(after) == Some(&b'.') {
+        end = ident_end(skip_ws(after + 1))?;
+    }
+    Some(format!("{}{}{}", &create_sql[..start], quoted, &create_sql[end..]))
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02X}")).collect()
 }
@@ -294,7 +391,13 @@ pub async fn export(
                 && let ExportSource::Table { table } = source
                 && let Some(info) = &table_info
             {
-                let renamed = (name != *table).then(|| info.create_sql.replacen(table.as_str(), &name, 1));
+                let renamed = if name != *table {
+                    Some(rename_create_table(&info.create_sql, &q(&name)).ok_or_else(|| {
+                        AppError::validation("Cannot rename the table in its CREATE statement; export it under its own name")
+                    })?)
+                } else {
+                    None
+                };
                 let create = renamed.as_deref().unwrap_or(&info.create_sql);
                 writeln!(f, "{};\n", create.trim_end_matches(';'))?;
             }

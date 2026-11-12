@@ -398,6 +398,13 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         fk.columns.push(from);
         fk.ref_columns.extend(to);
     }
+    // `REFERENCES parent` without columns targets the parent's primary key.
+    for (_, fk) in &mut foreign_keys {
+        if fk.ref_columns.is_empty() {
+            let mut stmt = c.prepare("SELECT name FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk").map_err(map_err)?;
+            fk.ref_columns = collect(&mut stmt, [fk.ref_table.as_str(), db], |r| r.get::<_, String>(0))?;
+        }
+    }
 
     let row_identity = match kind {
         ObjectKind::Table => {

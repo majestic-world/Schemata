@@ -116,11 +116,19 @@ export function App() {
       }
       if (!isMod(e)) return;
       const key = e.key.toLowerCase();
+      // Ctrl+T/N/D switch tab or view, unmounting the grid/designer before its editor's blur commit runs:
+      // they never act behind a dialog or on key repeat, and blur the focused editor first so its value commits.
+      const blocked = e.defaultPrevented || e.repeat || document.querySelector('[role="dialog"]') !== null;
+      const blurFocused = () => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      };
       if (key === "k") {
         e.preventDefault();
         document.getElementById("global-search")?.focus();
       } else if (key === "t") {
         e.preventDefault();
+        if (blocked) return;
+        blurFocused();
         const sel = useWorkspace.getState().selection;
         const open = Object.keys(useConnections.getState().open);
         const connectionId = sel && sel.connectionId in useConnections.getState().open ? sel.connectionId : open[0];
@@ -129,20 +137,23 @@ export function App() {
       } else if (key === "n" && !e.shiftKey && !e.altKey) {
         // Navicat: Ctrl+N designs a new table in the selected database (same as the toolbar's Table button).
         e.preventDefault();
-        if (e.repeat || document.querySelector('[role="dialog"]')) return;
+        if (blocked) return;
+        blurFocused();
         const sel = useWorkspace.getState().selection;
         if (sel?.database) useTabs.getState().newTable(sel.connectionId, sel.database);
         else notifyError("No database selected", { message: "Select a database in the tree to create a table in it." });
-      } else if (key === "d" && !e.shiftKey) {
+      } else if (key === "d" && !e.shiftKey && !blocked) {
         // Navicat: Ctrl+D designs the open table, or the table selected in the tree / object list.
         const tabs = useTabs.getState();
         const tab = tabs.tabs.find((t) => t.id === tabs.active);
         const sel = useWorkspace.getState().selection;
         if (tab?.kind === "table") {
           e.preventDefault();
+          blurFocused();
           tabs.setView(tab.id, "structure");
         } else if (!tab && sel?.database && sel.object?.kind === "table" && useWorkspace.getState().selectedObjects.length === 1) {
           e.preventDefault();
+          blurFocused();
           designTable({ connectionId: sel.connectionId, database: sel.database, name: sel.object.name, kind: "table" });
         }
       } else if (

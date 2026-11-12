@@ -169,6 +169,9 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
       await qc.invalidateQueries({ queryKey: ["connections"] });
     } catch (e) {
       notifyError("Could not delete connection", e);
+      // The connection may be gone even though its saved password could not be removed: show the real list.
+      useConnections.getState().markClosed(config.id);
+      await qc.invalidateQueries({ queryKey: ["connections"] });
     }
   };
 

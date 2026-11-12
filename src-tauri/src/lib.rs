@@ -55,6 +55,15 @@ pub fn run() {
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = runtime_identifier(&context.config().identifier, DEV_BUILD);
     tauri::Builder::default()
+        // Registered first: a second launch (keyed on the runtime identifier, so dev and release stay apart) exits
+        // and brings the running window forward. The instance lock in setup still guards the data directory.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // The frontend owns initial visibility; restoring it would reveal an unfinished webview.
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::all() & !StateFlags::VISIBLE).build())
@@ -83,12 +92,15 @@ pub fn run() {
                         webview.controller().CoreWebView2().and_then(|core| core.Settings()).and_then(|settings| {
                             settings.SetAreDefaultContextMenusEnabled(false)?;
                             settings.cast::<ICoreWebView2Settings3>()?.SetAreBrowserAcceleratorKeysEnabled(false)?;
-                            let autofill = settings.cast::<ICoreWebView2Settings4>()?;
-                            autofill.SetIsGeneralAutofillEnabled(false)?;
-                            autofill.SetIsPasswordAutosaveEnabled(false)
+                            // Runtimes without ICoreWebView2Settings4 keep autofill; Wry skips it there too.
+                            if let Ok(autofill) = settings.cast::<ICoreWebView2Settings4>() {
+                                autofill.SetIsGeneralAutofillEnabled(false)?;
+                                autofill.SetIsPasswordAutosaveEnabled(false)?;
+                            }
+                            Ok(())
                         })
                     }
-                    .expect("Failed to disable the WebView2 default menus, shortcuts and autofill");
+                    .expect("Failed to disable the WebView2 default menus and shortcuts");
                 })?;
                 window_chrome::apply(&window)?;
                 // Window-state restores the last size first; always start maximized on top of it so un-maximizing
@@ -127,6 +139,7 @@ pub fn run() {
             commands::truncate_table,
             commands::rename_table,
             commands::fetch_more,
+            commands::close_editor_session,
             commands::list_columns,
             commands::list_history,
             commands::read_text_file,

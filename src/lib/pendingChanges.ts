@@ -14,6 +14,10 @@ export const emptyPending = (): Pending => ({ updates: {}, inserts: [], deletes:
 
 const sameValue = (a: CellValue, b: CellValue) => JSON.stringify(a) === JSON.stringify(b);
 
+/** Column maps are keyed by arbitrary column names (`constructor`, `__proto__`): read own properties only. */
+const ownValue = (values: Record<string, CellValue> | undefined, column: string): CellValue | undefined =>
+  values !== undefined && Object.hasOwn(values, column) ? values[column] : undefined;
+
 export function setCell(p: Pending, row: RowRef, column: string, value: CellValue, original: CellValue): Pending {
   if (row.kind === "new") {
     const inserts = p.inserts.map((r, i) => (i === row.index ? { ...r, [column]: value } : r));
@@ -21,7 +25,7 @@ export function setCell(p: Pending, row: RowRef, column: string, value: CellValu
   }
   const current = { ...(p.updates[row.index] ?? {}) };
   if (sameValue(value, original)) delete current[column];
-  else current[column] = value;
+  else Object.defineProperty(current, column, { value, enumerable: true, writable: true, configurable: true });
   const updates = { ...p.updates };
   if (Object.keys(current).length) updates[row.index] = current;
   else delete updates[row.index];
@@ -49,13 +53,14 @@ export function addRow(p: Pending, columns: ColumnInfo[]): { pending: Pending; r
   for (const c of columns) {
     if (c.generated) continue;
     const v = c.default === null || c.autoIncrement ? null : literalDefault(c.default);
-    if (v) values[c.name] = v;
+    if (v) Object.defineProperty(values, c.name, { value: v, enumerable: true, writable: true, configurable: true });
   }
   return { pending: { ...p, inserts: [...p.inserts, values] }, row: { kind: "new", index: p.inserts.length } };
 }
 
 /** New-row columns with no value yet: the insert omits them, so the database applies their default. */
-export const isUnset = (p: Pending, row: RowRef, column: string) => row.kind === "new" && !(column in (p.inserts[row.index] ?? {}));
+export const isUnset = (p: Pending, row: RowRef, column: string) =>
+  row.kind === "new" && !Object.hasOwn(p.inserts[row.index] ?? {}, column);
 
 /** Existing rows are marked for deletion (dropping their edits); new rows are simply removed. */
 export function deleteRows(p: Pending, rows: RowRef[]): Pending {
@@ -75,12 +80,12 @@ export const isDirty = (p: Pending) => changeCount(p) > 0;
 
 export const isDeleted = (p: Pending, row: RowRef) => row.kind === "existing" && p.deletes.includes(row.index);
 export const isEdited = (p: Pending, row: RowRef, column: string) =>
-  row.kind === "existing" && p.updates[row.index] !== undefined && column in p.updates[row.index];
+  row.kind === "existing" && p.updates[row.index] !== undefined && Object.hasOwn(p.updates[row.index], column);
 
 /** Value shown for a cell, taking pending edits into account. New rows show their typed values or NULL. */
 export function cellValue(p: Pending, row: RowRef, column: string, original: CellValue | undefined): CellValue {
-  if (row.kind === "new") return p.inserts[row.index]?.[column] ?? { type: "null" };
-  return p.updates[row.index]?.[column] ?? original ?? { type: "null" };
+  if (row.kind === "new") return ownValue(p.inserts[row.index], column) ?? { type: "null" };
+  return ownValue(p.updates[row.index], column) ?? original ?? { type: "null" };
 }
 
 /**

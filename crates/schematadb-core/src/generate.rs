@@ -698,7 +698,14 @@ async fn scalar_values(driver: &dyn Driver, db: &str, sql: &str) -> Result<Vec<V
 
 /// Resolves every chosen generator against the table: limits from the column type, the next sequence value,
 /// existing values of referenced columns.
-async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[ColumnGenerator], empty_first: bool) -> Result<Vec<ColumnPlan>> {
+async fn plan(
+    driver: &dyn Driver,
+    db: &str,
+    info: &TableInfo,
+    columns: &[ColumnGenerator],
+    empty_first: bool,
+    rows: u64,
+) -> Result<Vec<ColumnPlan>> {
     let q = quote_for(driver.engine());
     let single_pk: Vec<&ColumnInfo> = info.columns.iter().filter(|c| c.primary_key).collect();
     let mut plans = Vec::new();
@@ -713,16 +720,25 @@ async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[Column
         let lower = c.name.to_ascii_lowercase();
         let unique = (single_pk.len() == 1 && single_pk[0].name == c.name)
             || info.indexes.iter().any(|i| i.kind == crate::IndexKind::Unique && i.columns.len() == 1 && i.columns[0] == c.name);
-        let mut next_seq = 1;
+        let mut next_seq: Option<i64> = Some(1);
         if !empty_first && (g.kind == GeneratorKind::Sequence || (unique && g.kind == GeneratorKind::Integer)) {
             let max = scalar_values(driver, db, &format!("SELECT MAX({}) FROM {}.{}", q(&c.name), q(db), q(&info.name))).await?;
             next_seq = match max.first() {
-                Some(Value::Int(i)) => i + 1,
-                Some(Value::UInt(u)) => *u as i64 + 1,
-                Some(v) => v.as_text().and_then(|t| t.parse::<f64>().ok()).map_or(1, |f| f as i64 + 1),
-                None => 1,
+                Some(Value::Int(i)) => i.checked_add(1),
+                Some(Value::UInt(u)) => i64::try_from(*u).ok().and_then(|i| i.checked_add(1)),
+                Some(v) => match v.as_text().and_then(|t| t.parse::<f64>().ok()) {
+                    // `as` saturates; values at the i64 limits cannot continue a sequence.
+                    Some(f) if f >= i64::MAX as f64 || f < i64::MIN as f64 => None,
+                    Some(f) => (f as i64).checked_add(1),
+                    None => Some(1),
+                },
+                None => Some(1),
             };
         }
+        // Every generated row takes the next value; the last one must still fit.
+        let next_seq = next_seq.filter(|n| i64::try_from(rows).ok().and_then(|r| n.checked_add(r)).is_some()).ok_or_else(|| {
+            AppError::validation(format!("The sequence for {} would exceed the largest integer value", c.name))
+        })?;
         let mut references = Vec::new();
         if g.kind == GeneratorKind::ForeignKey {
             let fk = single_column_fk(info, &c.name)
@@ -733,7 +749,9 @@ async fn plan(driver: &dyn Driver, db: &str, info: &TableInfo, columns: &[Column
                     db,
                     &format!(
                         "SELECT DISTINCT {} FROM {}.{} WHERE {0} IS NOT NULL LIMIT 1000",
-                        q(&fk.ref_columns[0]),
+                        q(fk.ref_columns.first().filter(|_| fk.ref_columns.len() == 1).ok_or_else(|| {
+                            AppError::validation(format!("The foreign key on {} has no single referenced column", c.name))
+                        })?),
                         q(db),
                         q(&fk.ref_table)
                     ),
@@ -926,7 +944,7 @@ fn new_gen() -> Gen {
 /// A few generated rows, not inserted, so the user can check the choices.
 pub async fn preview_generated(driver: &dyn Driver, db: &str, table: &str, columns: &[ColumnGenerator], rows: usize) -> Result<Page> {
     let info = driver.table_info(db, table).await?;
-    let mut plans = plan(driver, db, &info, columns, false).await?;
+    let mut plans = plan(driver, db, &info, columns, false, rows as u64).await?;
     let mut g = new_gen();
     let metas = plans
         .iter()
@@ -956,7 +974,7 @@ pub async fn generate_data(
         return Err(AppError::cancelled());
     }
     let info = driver.table_info(db, table).await?;
-    let mut plans = plan(driver, db, &info, &spec.columns, spec.empty_first).await?;
+    let mut plans = plan(driver, db, &info, &spec.columns, spec.empty_first, spec.rows).await?;
     if cancel.is_cancelled() {
         return Err(AppError::cancelled());
     }

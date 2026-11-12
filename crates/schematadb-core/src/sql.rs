@@ -85,10 +85,25 @@ pub(crate) fn change_statements(
     quote: fn(&str) -> String,
     dialect: &ChangeDialect,
 ) -> Result<Vec<ChangeStatement>, ChangeError> {
+    change_statements_byte_exact(changes, table_ref, identity, quote, dialect, &[])
+}
+
+/// Like [`change_statements`], but when rows are matched by value, the `byte_exact` columns are compared as UTF-8
+/// bytes (MySQL/MariaDB), so case-insensitive or PAD SPACE collations cannot match another row. Converting the column
+/// first keeps non-UTF-8 charsets (latin1, …) comparable with the UTF-8 parameter.
+pub(crate) fn change_statements_byte_exact(
+    changes: &[RowChange],
+    table_ref: &str,
+    identity: &RowIdentity,
+    quote: fn(&str) -> String,
+    dialect: &ChangeDialect,
+    byte_exact: &[String],
+) -> Result<Vec<ChangeStatement>, ChangeError> {
+    let key_names: Vec<String> = if matches!(identity, RowIdentity::RowId) { vec!["rowid".to_owned()] } else { identity.columns() };
     let key_columns: Vec<String> = if matches!(identity, RowIdentity::RowId) {
-        vec!["rowid".to_owned()]
+        key_names.clone()
     } else {
-        identity.columns().into_iter().map(|c| quote(&c)).collect()
+        key_names.iter().map(|c| quote(c)).collect()
     };
     let needs_key = changes.iter().any(|c| !matches!(c, RowChange::Insert { .. }));
     if needs_key && key_columns.is_empty() {
@@ -98,7 +113,18 @@ pub(crate) fn change_statements(
     let by_value = matches!(identity, RowIdentity::AllColumns { .. });
     let eq = if by_value { dialect.null_safe_eq } else { "=" };
     let limit = if by_value && !dialect.single_row.is_empty() { format!(" {}", dialect.single_row) } else { String::new() };
-    let where_key = key_columns.iter().map(|c| format!("{c} {eq} ?")).collect::<Vec<_>>().join(" AND ");
+    let where_key = key_names
+        .iter()
+        .zip(&key_columns)
+        .map(|(name, c)| {
+            if by_value && byte_exact.contains(name) {
+                format!("CAST(CONVERT({c} USING utf8mb4) AS BINARY) {eq} CAST(? AS BINARY)")
+            } else {
+                format!("{c} {eq} ?")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
     changes
         .iter()
         .enumerate()
