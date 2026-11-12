@@ -51,6 +51,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
   const tableRef = useRef<HTMLTableElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [typeahead] = useState(createTypeahead);
   const connectionId = selection?.connectionId;
   const database = selection?.database;
@@ -80,6 +81,13 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
     const kept = selectedObjects.filter((object) => visibleNames.has(object.name));
     if (kept.length !== selectedObjects.length) selectObjects({ connectionId, database, objects: kept });
   }, [connectionId, database, objects.isSuccess, rows, selectedObjects, selectObjects]);
+  const hasList = !!connectionId && !!database;
+  useEffect(() => {
+    // Returning to Objects (closing or switching tabs) leaves focus on the body or the tab strip;
+    // hand it to the list so its keys keep working. Focus elsewhere (tree, search) is left alone.
+    const focused = document.activeElement;
+    if (hasList && (!focused || focused === document.body || focused.closest(".tabs"))) listRef.current?.focus({ preventScroll: true });
+  }, [hasList]);
 
   if (!connectionId || !database) {
     return (
@@ -122,7 +130,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
       <Menu items={backgroundItems} onOpenChange={(opened) => {
         if (opened) select({ connectionId, database });
       }}>
-        <div className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
+        <div ref={listRef} className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
           if (e.defaultPrevented || !e.currentTarget.contains(e.target as Node) || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"]'))) return;
           const current = rows.findIndex((o) => o.name === selection?.object?.name);
           const selectRow = (index: number) => {
