@@ -146,7 +146,7 @@ export function TransferDialogs() {
 
 function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" }> }) {
   const close = () => useTransfer.getState().open(null);
-  const [format, setFormat] = useState<"csv" | "json" | "sql">("csv");
+  const [format, setFormat] = useState<"csv" | "json" | "sql">("sql");
   const [delimiter, setDelimiter] = useState(",");
   const [header, setHeader] = useState(true);
   const [encoding, setEncoding] = useState<TextEncoding>("utf8");
@@ -188,7 +188,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
       {op.phase.state === "form" && (
         <div className="form">
           <div className="segmented engine-picker">
-            {(["csv", "json", "sql"] as const).map((f) => <button key={f} className={format === f ? "on" : ""} onClick={() => setFormat(f)}>{f.toUpperCase()}</button>)}
+            {(["sql", "csv", "json"] as const).map((f) => <button key={f} className={format === f ? "on" : ""} onClick={() => setFormat(f)}>{f.toUpperCase()}</button>)}
           </div>
           {format === "csv" && (
             <>
