@@ -6,7 +6,7 @@ import type { CellValue, ColumnMeta, SortSpec } from "../api/types";
 import { displayCell, toTsv } from "../lib/cells";
 import { notify } from "../store/toasts";
 
-const ROW_HEIGHT = 26;
+export const ROW_HEIGHT = 26;
 const HEADER_HEIGHT = 28;
 
 export type GridSelection = { rows: number[]; columns: string[] };
@@ -179,8 +179,9 @@ export function GridView(props: Props) {
           return;
         }
         if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) {
-          // Closing the cell editor removes the focused input; give focus back so navigation continues.
-          if (e.key === "Enter" || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
+          // Closing the cell editor removes the focused input; give focus back so navigation continues. Modified
+          // Enter keeps the editor open (Shift+Enter and Alt+Enter add a line break).
+          if ((e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
           return;
         }
         if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {

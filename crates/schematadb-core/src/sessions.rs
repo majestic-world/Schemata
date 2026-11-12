@@ -4,6 +4,10 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// SQLSTATE of a timeout waiting for a pooled connection ("timeout expired"): the server is busy or unreachable, but
+/// the session's connections are not lost, so it is not reconnected (which would drop its editor sessions).
+pub(crate) const POOL_TIMEOUT_SQL_STATE: &str = "HYT00";
+
 struct Session {
     identity: Arc<()>,
     driver: Arc<dyn Driver>,
@@ -14,6 +18,8 @@ struct Session {
 struct SessionState {
     open: HashMap<String, Session>,
     pending: HashMap<String, Arc<()>>,
+    /// Editor sessions of closed connections, by connection id: the reopened connection reports each one lost once.
+    lost_editor_sessions: HashMap<String, Vec<String>>,
 }
 
 /// Open sessions keyed by saved-connection id, with transparent reconnection.
@@ -84,6 +90,12 @@ impl Sessions {
             return Err(AppError::connection("Connection destination changed while opening"));
         }
         let version = driver.server_version();
+        // Editor sessions of the connection this one replaces (or of its last close) are gone with their transactions.
+        let mut lost = state.lost_editor_sessions.remove(id).unwrap_or_default();
+        if let Some(replaced) = state.open.get(id) {
+            lost.extend(replaced.driver.live_editor_sessions());
+        }
+        driver.adopt_lost_editor_sessions(lost);
         state.open.insert(id.to_owned(), Session { identity, driver, params });
         Ok(version)
     }
@@ -91,7 +103,10 @@ impl Sessions {
     pub async fn close(&self, id: &str) {
         let mut state = self.state.lock().await;
         state.pending.remove(id);
-        state.open.remove(id);
+        if let Some(session) = state.open.remove(id) {
+            let lost = session.driver.live_editor_sessions();
+            state.lost_editor_sessions.entry(id.to_owned()).or_default().extend(lost);
+        }
     }
 
     pub async fn open_ids(&self) -> Vec<String> {
@@ -117,6 +132,7 @@ impl Sessions {
         let original = state.open.get_mut(id).filter(|session| Arc::ptr_eq(&session.identity, identity));
         let session = original.ok_or_else(|| AppError::connection("Connection was closed or replaced"))?;
         if Arc::ptr_eq(&session.driver, failed) {
+            driver.adopt_lost_editor_sessions(failed.live_editor_sessions());
             session.driver = driver;
         }
         Ok(session.driver.clone())
@@ -134,10 +150,15 @@ impl Sessions {
             (session.driver.clone(), session.identity.clone())
         };
         match op(driver.clone()).await {
-            Err(e) if e.kind == ErrorKind::Connection => op(self.reconnect(id, &identity, &driver).await?).await,
+            Err(e) if connection_lost(&e) => op(self.reconnect(id, &identity, &driver).await?).await,
             other => other,
         }
     }
+}
+
+/// A connection-level failure that a new driver may fix; a pool timeout is not one.
+fn connection_lost(e: &AppError) -> bool {
+    e.kind == ErrorKind::Connection && e.sql_state.as_deref() != Some(POOL_TIMEOUT_SQL_STATE)
 }
 
 fn same_target(left: &ConnectionConfig, right: &ConnectionConfig) -> bool {

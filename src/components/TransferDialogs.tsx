@@ -7,7 +7,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { AlertCircle, Check, CheckCircle2, ChevronDown, FolderOpen } from "lucide-react";
 import { api } from "../api/client";
 import { ENGINE_LABEL } from "../api/types";
-import type { AppError, ColumnGenerator, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, TextEncoding } from "../api/types";
+import type { AppError, ColumnGenerator, CsvReadOptions, ExportFormat, GeneratorKind, OperationProgress, ScriptRunReport, SqlFileScan, TextEncoding } from "../api/types";
 import { useTransfer, type TransferRequest } from "../store/transfer";
 import { useOperationActivity } from "../store/operationActivity";
 import { Dialog } from "./Dialog";
@@ -16,6 +16,8 @@ import { assign, toMapping } from "../lib/importMapping";
 import { csvSource, loadingPreview, previewFor, settlePreview, type CsvPreviewState } from "../lib/csvPreview";
 import { operationGate, type OperationGate } from "../lib/operationGate";
 import { displayCell } from "../lib/cells";
+import { DEFAULT_NULL_TEXT, emptyFirstConfirmation, restoreConfirmation, scriptSummary } from "../lib/transferMessages";
+import { confirmAction } from "../store/confirm";
 
 type Phase<R> = { state: "form" } | { state: "running"; done: number; total: number | null } | { state: "done"; report: R } | { state: "failed"; error: AppError };
 
@@ -105,6 +107,12 @@ const pickSqlFile = async (): Promise<string | null> => {
   return typeof p === "string" ? p : null;
 };
 
+/** Encodings a `.sql` file can be read in (a UTF-8 byte-order mark always means UTF-8). */
+const SQL_ENCODINGS: { value: TextEncoding; label: string }[] = [
+  { value: "utf8", label: "65001 (UTF-8)" },
+  { value: "windows1252", label: "1252 (Windows Latin 1)" },
+];
+
 const ENCODINGS: { value: TextEncoding; label: string }[] = [
   { value: "utf8", label: "UTF-8" },
   { value: "utf8Bom", label: "UTF-8 with BOM" },
@@ -142,7 +150,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
   const [delimiter, setDelimiter] = useState(",");
   const [header, setHeader] = useState(true);
   const [encoding, setEncoding] = useState<TextEncoding>("utf8");
-  const [nullText, setNullText] = useState("");
+  const [nullText, setNullText] = useState(DEFAULT_NULL_TEXT);
   const [quote, setQuote] = useState('"');
   const [includeCreate, setIncludeCreate] = useState(true);
   const [tableName, setTableName] = useState(req.source.kind === "table" ? req.source.table : "query_result");
@@ -200,6 +208,7 @@ function ExportDialog({ req }: { req: Extract<TransferRequest, { kind: "export" 
                 </label>
               </div>
               <label className="field"><span>Write NULL as</span><input value={nullText} placeholder="(empty)" onChange={(e) => setNullText(e.target.value)} /></label>
+              {nullText === "" && <p className="hint">NULL and empty text are both written as an empty field, so an import cannot tell them apart.</p>}
               <label className="check"><input type="checkbox" checked={header} onChange={(e) => setHeader(e.target.checked)} />Include a header row</label>
             </>
           )}
@@ -226,7 +235,8 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
   const [options, setOptions] = useState<CsvReadOptions>({ delimiter: ",", quote: '"', hasHeader: true, encoding: "utf8" });
   const [previewState, setPreviewState] = useState<CsvPreviewState>({ status: "idle" });
   const previewRequest = useRef(0);
-  const [emptyAsNull, setEmptyAsNull] = useState(true);
+  const [emptyAsNull, setEmptyAsNull] = useState(false);
+  const [nullText, setNullText] = useState(DEFAULT_NULL_TEXT);
   const [skipErrors, setSkipErrors] = useState(false);
   const info = useQuery({ queryKey: ["tableInfo", req.connectionId, req.database, req.table], queryFn: () => api.tableInfo(req.connectionId, req.database, req.table) });
   const targets = info.data?.columns.map((c) => c.name) ?? [];
@@ -258,7 +268,7 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
   };
   const start = () => {
     if (!ready) return;
-    const spec = { options, mapping: toMapping(ready.draft), emptyAsNull, skipErrors };
+    const spec = { options, mapping: toMapping(ready.draft), emptyAsNull, nullText, skipErrors };
     return op.run(async (id) => {
       const report = await api.importCsv(req.connectionId, req.database, req.table, path, spec, id);
       void qc.invalidateQueries({ queryKey: ["page", req.connectionId, req.database, req.table] });
@@ -327,6 +337,7 @@ function ImportDialog({ req }: { req: Extract<TransferRequest, { kind: "import" 
               </table>
             </div>
           )}
+          <label className="field"><span>Read as NULL</span><input value={nullText} placeholder="(none)" aria-label="NULL text" onChange={(e) => setNullText(e.target.value)} /></label>
           <label className="check"><input type="checkbox" checked={emptyAsNull} onChange={(e) => setEmptyAsNull(e.target.checked)} />Import empty fields as NULL</label>
           <label className="check"><input type="checkbox" checked={skipErrors} onChange={(e) => setSkipErrors(e.target.checked)} />Skip rows that fail (otherwise the first failure rolls back the whole import)</label>
         </div>
@@ -351,13 +362,15 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
   const [tab, setTab] = useState("general");
   const [path, setPath] = useState("");
   const [stopOnError, setStopOnError] = useState(true);
+  const [encoding, setEncoding] = useState<TextEncoding>("utf8");
   const [execution, setExecution] = useState<{ file: string; stopOnError: boolean } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef(0);
   const op = useOperation<ScriptRunReport>();
   const running = op.phase.state === "running";
   const report = op.phase.state === "done" ? op.phase.report : null;
-  const failed = op.phase.state === "failed" || (report !== null && report.failed.length > 0);
+  const summary = report && scriptSummary(report, execution?.stopOnError ?? stopOnError);
+  const failed = op.phase.state === "failed" || (summary !== null && !summary.ok);
   const succeeded = report !== null && !failed;
   const initial = op.phase.state === "form";
   const percent = succeeded ? 100 : op.progress.total
@@ -379,7 +392,7 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
     setExecution({ file: path.split(/[\\/]/).pop() ?? path, stopOnError });
     setTab("log");
     await op.run(async (operationId) => {
-      const result = await api.runSqlFile(req.connectionId, req.database, path, stopOnError, operationId);
+      const result = await api.runSqlFile(req.connectionId, req.database, path, encoding, stopOnError, operationId);
       void qc.invalidateQueries({ queryKey: ["objects", req.connectionId] });
       void qc.invalidateQueries({ queryKey: ["databases", req.connectionId] });
       return result;
@@ -416,8 +429,8 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
               <button className="btn" onClick={pick} aria-label="Browse SQL file" title="Browse SQL file"><FolderOpen size={15} /></button>
             </div>
             <label className="sql-file-label" htmlFor={`${id}-encoding`}>Encoding</label>
-            <select id={`${id}-encoding`} className="input" disabled title="SQL files currently use UTF-8, with an optional BOM.">
-              <option>65001 (UTF-8)</option>
+            <select id={`${id}-encoding`} className="input" value={encoding} title="A file starting with a UTF-8 byte-order mark is always read as UTF-8." onChange={(e) => setEncoding(e.target.value as TextEncoding)}>
+              {SQL_ENCODINGS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
             </select>
             <div className="sql-file-options">
               <label className="check"><input type="checkbox" checked={!stopOnError} onChange={(e) => setStopOnError(!e.target.checked)} />Continue on error</label>
@@ -440,7 +453,7 @@ function RunSqlDialog({ req }: { req: Extract<TransferRequest, { kind: "runSql" 
               <div className="error-text" key={error.index}>[ERR] Query #{error.index + 1}: {error.message}{"\n"}{error.statement}</div>
             ))}
             {report && report.failed.length > 20 && <div>[ERR] {plural(report.failed.length - 20, "additional error")}.</div>}
-            {report && <div className={failed ? "error-text" : undefined}>[SQL] {failed ? execution?.stopOnError ? "Stopped at the first error." : "Finished with errors." : "Finished successfully."}</div>}
+            {summary && <div className={summary.ok ? undefined : "error-text"}>[SQL] {summary.text}</div>}
             {op.phase.state === "failed" && (
               <div className="error-text">{op.phase.error.kind === "cancelled" ? "[SQL] Stopped by user. Completed statements may already be committed." : `[ERR] ${op.phase.error.message}`}</div>
             )}
@@ -512,29 +525,46 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
   const sqlite = conn?.engine === "sqlite";
   const databases = useQuery({ queryKey: ["databases", req.connectionId], queryFn: () => api.listDatabases(req.connectionId) });
   const [path, setPath] = useState("");
+  const [encoding, setEncoding] = useState<TextEncoding>("utf8");
   const [target, setTarget] = useState(req.database ?? "");
   useEffect(() => {
     if (sqlite && !target) setTarget("main");
   }, [sqlite, target]);
   const [newName, setNewName] = useState("");
+  const [checkError, setCheckError] = useState<string | null>(null);
   const createNew = !sqlite && target === "";
   const op = useOperation<Awaited<ReturnType<typeof api.runSqlFile>>>();
   const pick = async () => {
     const p = await pickSqlFile();
     if (p) setPath(p);
   };
-  const start = () =>
-    op.run(async (id, checkpoint) => {
-      const db = createNew ? newName.trim() : target;
+  const start = async () => {
+    if (!conn) return;
+    const db = createNew ? newName.trim() : target;
+    setCheckError(null);
+    // The whole file is checked (and its USE / CREATE DATABASE statements listed) before anything is created or run.
+    let scan: SqlFileScan;
+    try {
+      scan = await api.scanSqlFile(path, encoding, conn.engine);
+    } catch (e) {
+      setCheckError((e as AppError).message);
+      return;
+    }
+    const confirmation = restoreConfirmation(db, !createNew, scan);
+    if (confirmation && !(await confirmAction(confirmation))) return;
+    await op.run(async (id, checkpoint) => {
       if (createNew) {
         await api.createDatabase(req.connectionId, { name: db, charset: "utf8mb4", collation: null });
         void qc.invalidateQueries({ queryKey: ["databases", req.connectionId] });
       }
       checkpoint();
-      const report = await api.runSqlFile(req.connectionId, db, path, true, id);
+      const report = await api.runSqlFile(req.connectionId, db, path, encoding, true, id);
       void qc.invalidateQueries({ queryKey: ["objects", req.connectionId] });
       return report;
     });
+  };
+  const report = op.phase.state === "done" ? op.phase.report : null;
+  const summary = report && scriptSummary(report, true);
   return (
     <Dialog
       open
@@ -545,7 +575,7 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
         op.phase.state === "running" ? (
           <button className="btn danger" onClick={op.cancel}>Cancel</button>
         ) : op.phase.state === "form" ? (
-          <><button className="btn" onClick={close}>Cancel</button><button className="btn primary" disabled={!path || (createNew ? !newName.trim() : !target)} onClick={start}>Restore</button></>
+          <><button className="btn" onClick={close}>Cancel</button><button className="btn primary" disabled={!conn || !path || (createNew ? !newName.trim() : !target)} onClick={() => void start()}>Restore…</button></>
         ) : (
           <button className="btn primary" onClick={close}>Close</button>
         )
@@ -557,20 +587,29 @@ function RestoreDialog({ req }: { req: Extract<TransferRequest, { kind: "restore
             <label className="field grow"><span>Backup file (.sql)</span><input value={path} onChange={(e) => setPath(e.target.value)} aria-label="Backup file" /></label>
             <button className="btn" onClick={pick}><FolderOpen size={15} />Browse…</button>
           </div>
-          <label className="field"><span>Restore into</span>
-            <select value={target} aria-label="Target database" onChange={(e) => setTarget(e.target.value)}>
-              {!sqlite && <option value="">New database…</option>}
-              {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
-            </select>
-          </label>
+          <div className="row">
+            <label className="field grow"><span>Restore into</span>
+              <select value={target} aria-label="Target database" onChange={(e) => setTarget(e.target.value)}>
+                {!sqlite && <option value="">New database…</option>}
+                {databases.data?.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+              </select>
+            </label>
+            <label className="field grow"><span>Encoding</span>
+              <select value={encoding} aria-label="Encoding" onChange={(e) => setEncoding(e.target.value as TextEncoding)}>
+                {SQL_ENCODINGS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+              </select>
+            </label>
+          </div>
           {createNew && <label className="field"><span>New database name</span><input value={newName} aria-label="New database name" onChange={(e) => setNewName(e.target.value)} /></label>}
-          {!createNew && <p className="hint">Tables in the backup replace tables with the same name in the target.</p>}
+          {!createNew && <p className="hint">Tables in the backup replace tables with the same name in the target. You will be asked to confirm.</p>}
+          {checkError && <p className="error-text">{checkError}</p>}
         </div>
       )}
       {op.phase.state === "running" && <ProgressView done={op.phase.done} total={op.phase.total} unit="bytes read" />}
-      {op.phase.state === "done" && (
-        <Outcome ok={op.phase.report.failed.length === 0} title={op.phase.report.failed.length ? "Restore stopped at an error" : `Restored (${plural(op.phase.report.executed, "statement")})`}>
-          {op.phase.report.failed.map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
+      {report && summary && (
+        <Outcome ok={summary.ok} title={report.failed.length ? "Restore stopped at an error" : summary.ok ? `Restored (${plural(report.executed, "statement")})` : "Restore rolled back"}>
+          {report.failed.map((f) => <span key={f.index}>#{f.index + 1}: {f.message} — <code>{f.statement}</code></span>)}
+          {report.openTransactionRolledBack && <span>{summary.text}</span>}
         </Outcome>
       )}
       {op.phase.state === "failed" && <Outcome ok={false} title={op.phase.error.kind === "cancelled" ? "Restore cancelled" : "Restore failed"}>{op.phase.error.kind !== "cancelled" && <span>{op.phase.error.message}</span>}</Outcome>}
@@ -730,8 +769,21 @@ function GenerateDialog({ req }: { req: Extract<TransferRequest, { kind: "genera
   });
   const op = useOperation<Awaited<ReturnType<typeof api.generateData>>>();
   const validRows = Number.isInteger(rows) && rows >= 1 && rows <= 1_000_000;
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const start = async () => {
     if (!columns) return;
+    if (emptyFirst) {
+      // Deleting the rows also reaches every table whose foreign keys reference this one.
+      setConfirmError(null);
+      let incoming;
+      try {
+        incoming = await api.incomingForeignKeys(connectionId, database, table);
+      } catch (e) {
+        setConfirmError((e as AppError).message);
+        return;
+      }
+      if (!(await confirmAction(emptyFirstConfirmation(table, incoming)))) return;
+    }
     await op.run((id) => api.generateData(connectionId, database, table, { rows, columns, emptyFirst }, id));
     for (const key of [["page", connectionId, database, table], ["count", connectionId, database, table], ["objects", connectionId, database], ["tableInfo", connectionId, database, table]]) {
       void qc.invalidateQueries({ queryKey: key });
@@ -766,6 +818,7 @@ function GenerateDialog({ req }: { req: Extract<TransferRequest, { kind: "genera
             </label>
             <label className="check"><input type="checkbox" checked={emptyFirst} onChange={(e) => setEmptyFirst(e.target.checked)} />Delete existing rows first</label>
           </div>
+          {confirmError && <p className="error-text">{confirmError}</p>}
           {suggested.isError && <p className="error-text">{(suggested.error as { message: string }).message}</p>}
           {columns && (
             <div className="gen-columns">

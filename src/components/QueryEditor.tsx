@@ -18,6 +18,7 @@ import { useConnection } from "../lib/useConnection";
 import { notify, notifyError } from "../store/toasts";
 import { GridView } from "./GridView";
 import { plural } from "../lib/format";
+import { isReadOnlyQuery, statementAt } from "../lib/statements";
 
 export const ROW_LIMIT = 1000;
 const SQL_FILTERS = [{ name: "SQL script", extensions: ["sql"] }];
@@ -29,6 +30,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
   const qc = useQueryClient();
   const theme = useAppearance((s) => s.theme);
   const conn = useConnection(tab.connectionId);
+  const engine = conn?.engine;
   const update = useTabs((s) => s.updateQuery);
   const run = useQueryResults((s) => s.runs[tab.id]);
   const { set: setRun, patch: patchRun } = useQueryResults();
@@ -47,11 +49,28 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
 
   const execute = useCallback(
     async (onlySelection: boolean) => {
+      if (useQueryResults.getState().runs[tab.id]?.running) return;
       const view = editor.current?.view;
       const state = view?.state;
-      const selection = state ? state.sliceDoc(state.selection.main.from, state.selection.main.to) : "";
-      const text = onlySelection && selection.trim() ? selection : (state?.doc.toString() ?? tab.sql);
-      if (!text.trim() || useQueryResults.getState().runs[tab.id]?.running) return;
+      let text = state?.doc.toString() ?? tab.sql;
+      if (onlySelection) {
+        if (!view || !state) return;
+        const { from, to, head } = state.selection.main;
+        const selection = state.sliceDoc(from, to);
+        if (selection.trim()) {
+          text = selection;
+        } else {
+          // No selection: only the statement at the cursor, never the whole script.
+          const statement = engine ? statementAt(text, head, engine) : null;
+          if (!statement) {
+            notify("Nothing to run", "Place the cursor in a statement or select the SQL to run.");
+            return;
+          }
+          view.dispatch({ selection: { anchor: statement.from, head: statement.to } });
+          text = statement.script;
+        }
+      }
+      if (!text.trim()) return;
       const executionId = crypto.randomUUID();
       const connectionId = tab.connectionId;
       const database = tab.database;
@@ -69,7 +88,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
         }
       }
     },
-    [tab.connectionId, tab.database, tab.id, tab.sql, qc, setRun, patchRun],
+    [tab.connectionId, tab.database, tab.id, tab.sql, engine, qc, setRun, patchRun],
   );
 
   const stop = () => run?.executionId && void api.cancelExecution(run.connectionId, run.executionId).catch((e) => notifyError("Could not cancel", e));
@@ -115,7 +134,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
     <div className="query-editor">
       <div className="action-bar">
         <button className="obj-btn run" disabled={run?.running} onClick={() => void execute(false)} title={`Run (${MOD}+Enter)`}><Play size={15} className="ob-new" />Run</button>
-        <button className="obj-btn" disabled={run?.running} onClick={() => void execute(true)} title={`Run selection (${MOD}+Shift+Enter)`}><TextSelect size={15} className="ob-new" />Run Selection</button>
+        <button className="obj-btn" disabled={run?.running} onClick={() => void execute(true)} title={`Run the selection, or the statement at the cursor (${MOD}+Shift+Enter)`}><TextSelect size={15} className="ob-new" />Run Selection</button>
         <button className="obj-btn" disabled={!run?.running} onClick={stop}><Square size={14} className="ob-delete" />Stop</button>
         <div className="toolbar-sep" />
         <label className="inline-field" title="Database the script runs in">
@@ -188,12 +207,12 @@ function Results({ tabId }: { tabId: string }) {
     if (next !== selected) setSelected(next);
   }
 
-  if (!run) return <div className="empty"><p>Run a query to see results here. {MOD}+Enter runs the script; {MOD}+Shift+Enter runs the selection.</p></div>;
+  if (!run) return <div className="empty"><p>Run a query to see results here. {MOD}+Enter runs the script; {MOD}+Shift+Enter runs the selection, or the statement at the cursor.</p></div>;
   if (run.running) return <div className="empty"><p>Running… <span className="muted">({((Date.now() - run.startedAt) / 1000).toFixed(0)}s)</span></p></div>;
 
   const loadMore = async (index: number) => {
     const o = outcomes[index];
-    if (o.kind !== "rows" || !run.result) return;
+    if (o.kind !== "rows" || !run.result || !isReadOnlyQuery(o.statement)) return;
     setLoading(true);
     try {
       // Continue on the run's own connection and editor session, which may hold the statement's temp tables.
@@ -208,6 +227,9 @@ function Results({ tabId }: { tabId: string }) {
   };
 
   const current = typeof selected === "number" ? outcomes[selected] : undefined;
+  // Loading more rows or exporting runs the statement again: only for statements that cannot write.
+  const rerunnable = current?.kind === "rows" && isReadOnlyQuery(current.statement);
+  const notRerunnable = "This statement may change data, so it is not run again; run a plain SELECT to load or export more rows";
   return (
     <div className="results">
       <div className="result-tabs">
@@ -223,13 +245,13 @@ function Results({ tabId }: { tabId: string }) {
           <GridView columns={current.columns} rows={current.rows} resetKey={current} emptyText="The query returned no rows." />
           <div className="result-footer">
             <span>{plural(current.rows.length, "row")}{current.hasMore ? " (more available)" : ""} · {current.durationMs} ms</span>
-            {current.hasMore && <button className="btn sm" disabled={loading} onClick={() => void loadMore(selected as number)}>Load {ROW_LIMIT} more</button>}
+            {current.hasMore && <button className="btn sm" disabled={loading || !rerunnable} title={rerunnable ? undefined : notRerunnable} onClick={() => void loadMore(selected as number)}>Load {ROW_LIMIT} more</button>}
             <div className="grow" />
             <button
               className="btn sm"
-              disabled={!run.database}
-              title={run.database ? "Export every row of this result" : "This result was run without a database; run it again with a database to export"}
-              onClick={() => run.database && openTransfer({ kind: "export", connectionId: run.connectionId, database: run.database, source: { kind: "query", sql: current.statement }, label: "query_result" })}
+              disabled={!run.database || !rerunnable}
+              title={!rerunnable ? notRerunnable : run.database ? "Export every row of this result" : "This result was run without a database; run it again with a database to export"}
+              onClick={() => run.database && rerunnable && openTransfer({ kind: "export", connectionId: run.connectionId, database: run.database, source: { kind: "query", sql: current.statement }, label: "query_result" })}
             >
               <Upload size={13} />Export
             </button>

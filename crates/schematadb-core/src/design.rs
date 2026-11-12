@@ -37,6 +37,9 @@ pub struct ForeignKeyDesign {
     pub name: String,
     pub columns: Vec<String>,
     pub ref_table: String,
+    /// Database of the referenced table when it is not this table's database (MySQL/MariaDB).
+    #[serde(default)]
+    pub ref_schema: Option<String>,
     pub ref_columns: Vec<String>,
     pub on_update: String,
     pub on_delete: String,
@@ -61,6 +64,9 @@ pub struct TableDesign {
     pub indexes: Vec<IndexDesign>,
     pub foreign_keys: Vec<ForeignKeyDesign>,
     pub options: TableOptions,
+    /// Primary key columns in key order. Columns flagged `primary_key` but missing here follow in column order.
+    #[serde(default)]
+    pub primary_key_order: Vec<String>,
 }
 
 impl TableDesign {
@@ -100,6 +106,7 @@ impl TableDesign {
                     name: f.name.clone(),
                     columns: f.columns.clone(),
                     ref_table: f.ref_table.clone(),
+                    ref_schema: f.ref_schema.clone(),
                     ref_columns: f.ref_columns.clone(),
                     on_update: f.on_update.clone(),
                     on_delete: f.on_delete.clone(),
@@ -111,11 +118,28 @@ impl TableDesign {
                 collation: info.collation.clone(),
                 comment: info.comment.clone(),
             },
+            primary_key_order: info.primary_key.clone(),
         }
     }
 
+    /// Primary key columns in key order. Entries of `primary_key_order` that still use a column's original name
+    /// follow its rename.
     fn primary_key(&self) -> Vec<String> {
-        self.columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect()
+        let map = rename_map(self);
+        let flagged: Vec<&str> = self.columns.iter().filter(|c| c.primary_key).map(|c| c.name.as_str()).collect();
+        let mut key: Vec<String> = Vec::new();
+        for name in &self.primary_key_order {
+            let name = if flagged.contains(&name.as_str()) { name.as_str() } else { map.get(name).map_or("", String::as_str) };
+            if flagged.contains(&name) && !key.iter().any(|k| k == name) {
+                key.push(name.to_owned());
+            }
+        }
+        for name in flagged {
+            if !key.iter().any(|k| k == name) {
+                key.push(name.to_owned());
+            }
+        }
+        key
     }
 }
 
@@ -128,8 +152,21 @@ fn renamed(cols: &[String], map: &HashMap<String, String>) -> Vec<String> {
     cols.iter().map(|c| map.get(c).cloned().unwrap_or_else(|| c.clone())).collect()
 }
 
+/// Whether two column types are equal: keywords compare case-insensitively, but the text between the outer
+/// parentheses compares exactly, since ENUM/SET values are case-sensitive (`enum('a')` ≠ `enum('A')`).
+fn same_type(a: &str, b: &str) -> bool {
+    fn split(t: &str) -> (&str, &str, &str) {
+        match (t.find('('), t.rfind(')')) {
+            (Some(open), Some(close)) if open < close => (&t[..open], &t[open..=close], &t[close + 1..]),
+            _ => (t, "", ""),
+        }
+    }
+    let ((a1, a2, a3), (b1, b2, b3)) = (split(a), split(b));
+    a1.eq_ignore_ascii_case(b1) && a2 == b2 && a3.eq_ignore_ascii_case(b3)
+}
+
 fn same_definition(a: &ColumnDesign, b: &ColumnDesign) -> bool {
-    a.data_type.eq_ignore_ascii_case(&b.data_type)
+    same_type(&a.data_type, &b.data_type)
         && a.nullable == b.nullable
         && a.default == b.default
         && a.auto_increment == b.auto_increment
@@ -154,11 +191,14 @@ fn list(cols: &[String], quote: fn(&str) -> String) -> String {
 }
 
 fn fk_clause(fk: &ForeignKeyDesign, quote: fn(&str) -> String) -> String {
+    let target = match fk.ref_schema.as_deref().filter(|s| !s.is_empty()) {
+        Some(schema) => format!("{}.{}", quote(schema), quote(&fk.ref_table)),
+        None => quote(&fk.ref_table),
+    };
     let mut s = format!(
-        "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
+        "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {target} ({})",
         quote(&fk.name),
         list(&fk.columns, quote),
-        quote(&fk.ref_table),
         list(&fk.ref_columns, quote)
     );
     if !fk.on_delete.is_empty() {
@@ -309,6 +349,7 @@ pub(crate) mod mysql {
         let fk_same = |o: &ForeignKeyDesign, n: &ForeignKeyDesign| {
             renamed(&o.columns, &map) == n.columns
                 && o.ref_table == n.ref_table
+                && o.ref_schema == n.ref_schema
                 && o.ref_columns == n.ref_columns
                 && o.on_update == n.on_update
                 && o.on_delete == n.on_delete
@@ -455,7 +496,9 @@ pub(crate) mod sqlite {
         Ok(out)
     }
 
-    pub fn alter(db: &str, original: &TableDesign, d: &TableDesign, deps: Dependents) -> crate::Result<Vec<String>> {
+    /// `rowid`: an unshadowed rowid alias when the table has a rowid that no INTEGER PRIMARY KEY column carries. A
+    /// rebuild then copies it, so rows keep their rowids (grids and external references address rows by them).
+    pub fn alter(db: &str, original: &TableDesign, d: &TableDesign, deps: Dependents, rowid: Option<&str>) -> crate::Result<Vec<String>> {
         let d = &prepare(d)?;
         let map = rename_map(d);
         let orig_cols: HashMap<&str, &ColumnDesign> = original.columns.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -528,8 +571,10 @@ pub(crate) mod sqlite {
             ));
         }
 
-        // Rebuild, following https://www.sqlite.org/lang_altertable.html#otheralter
-        let tmp = format!("_schematadb_new_{}", d.name);
+        // Rebuild, following https://www.sqlite.org/lang_altertable.html#otheralter. The rebuilt table takes the
+        // original name and is renamed last: `RENAME TO` (SQLite ≥ 3.26) rewrites the foreign keys of other tables
+        // and the table's own self-references, which a rebuild directly under the new name would leave dangling.
+        let tmp = format!("_schematadb_new_{}", original.name);
         out.push(FK_OFF.to_owned());
         for (name, _) in &deps.views {
             out.push(format!("DROP VIEW {schema}.{}", q(name)));
@@ -538,15 +583,22 @@ pub(crate) mod sqlite {
         let new_cols: Vec<String> = kept.iter().map(|c| c.name.clone()).collect();
         let old_cols: Vec<String> = kept.iter().map(|c| c.original_name.clone().unwrap()).collect();
         if !kept.is_empty() {
+            let (rowid_into, rowid_from) = match rowid {
+                Some(alias) => (format!("{alias}, "), format!("{alias}, ")),
+                None => (String::new(), String::new()),
+            };
             out.push(format!(
-                "INSERT INTO {schema}.{} ({}) SELECT {} FROM {schema}.{table}",
+                "INSERT INTO {schema}.{} ({rowid_into}{}) SELECT {rowid_from}{} FROM {schema}.{table}",
                 q(&tmp),
                 list(&new_cols, q),
                 list(&old_cols, q)
             ));
         }
         out.push(format!("DROP TABLE {schema}.{table}"));
-        out.push(format!("ALTER TABLE {schema}.{} RENAME TO {}", q(&tmp), q(&d.name)));
+        out.push(format!("ALTER TABLE {schema}.{} RENAME TO {table}", q(&tmp)));
+        if d.name != original.name {
+            out.push(format!("ALTER TABLE {schema}.{table} RENAME TO {}", q(&d.name)));
+        }
         for i in &d.indexes {
             out.push(create_index(db, &d.name, i)?);
         }

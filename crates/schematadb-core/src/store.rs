@@ -89,9 +89,10 @@ impl ConnectionStore {
                 None => match self.secrets.get(&config.id) {
                     Ok(Some(_)) => password_saved = true,
                     Ok(None) => config.save_password = false,
+                    // A locked or briefly unavailable credential store says nothing about whether a password is
+                    // stored, so password saving stays enabled rather than dropping the saved credential for good.
                     Err(error) => {
-                        config.save_password = false;
-                        password_warning = Some(format!("The saved password could not be read: {}", error.message));
+                        password_warning = Some(format!("The saved password could not be checked: {}", error.message));
                     }
                 },
             }

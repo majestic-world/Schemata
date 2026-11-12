@@ -1,7 +1,7 @@
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, RowStream, ScriptRunReport};
+use crate::transfer::{DumpScript, ImportBatch, ImportOptions, ImportReport, RowStream, ScriptRunReport};
 use crate::{
-    AppError, ChangeError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, ObjectInfo, ObjectKind, Page, PageRequest, Result,
-    RowChange, ScriptResult, TableDesign, TableInfo,
+    AppError, ChangeError, CharsetInfo, CreateDatabase, DatabaseInfo, Engine, Filter, IncomingForeignKey, ObjectInfo, ObjectKind, Page,
+    PageRequest, Result, RowChange, RowIdentity, ScriptResult, TableDesign, TableInfo,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -72,11 +72,23 @@ pub trait Driver: Send + Sync {
     async fn close_editor_session(&self, _session: &str) -> Result<()> {
         Ok(())
     }
+    /// Editor sessions that hold a server session (transaction, variables, temporary tables) lost with this driver.
+    fn live_editor_sessions(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Marks editor sessions of a replaced driver as lost: the next run of each fails once with a connection error
+    /// instead of silently opening a fresh session.
+    fn adopt_lost_editor_sessions(&self, _keys: Vec<String>) {}
     /// Every table and view with its column names, for autocompletion.
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>>;
     /// Streams the rows of a statement in batches; the first item is the column list.
     async fn stream_query(&self, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream>;
-    /// Inserts rows from `rows` in one transaction. Without `skip_errors`, the first failing row rolls back
+    /// [`Driver::stream_query`] on the session `session` (see [`Driver::execute_in_session`]), so a series of reads
+    /// shares that session's transaction snapshot and settings.
+    async fn stream_query_in_session(&self, _session: &str, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
+        self.stream_query(db, sql, batch).await
+    }
+    /// Inserts rows from `rows` in one transaction. Without `options.skip_errors`, the first failing row rolls back
     /// everything and is reported; an `Err` item on the channel (e.g. cancellation) rolls back and is returned.
     async fn import_rows(
         &self,
@@ -84,8 +96,7 @@ pub trait Driver: Send + Sync {
         table: &str,
         columns: &[String],
         rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
-        skip_errors: bool,
-        empty_first: bool,
+        options: ImportOptions,
     ) -> Result<ImportReport>;
     /// Runs streamed statements on one session. Cancellation interrupts the active statement.
     /// Reader errors and cancellation roll back open transactions and restore foreign-key enforcement.
@@ -111,7 +122,8 @@ pub trait Driver: Send + Sync {
         }
         Ok(TableDesign::from_info(&info))
     }
-    /// DDL that creates `design` (no `original`) or alters `original` into it. Empty when nothing changes.
+    /// DDL that creates `design` (no `original`) or alters `original` into it. Empty when nothing changes. Refused when
+    /// `original` no longer matches the table as it is now (it changed since the designer loaded it).
     async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>>;
     /// Runs DDL produced by [`Driver::plan_table`]; a failure leaves the table as it was.
     async fn apply_ddl(&self, db: &str, statements: &[String]) -> Result<()>;
@@ -119,8 +131,11 @@ pub trait Driver: Send + Sync {
     /// Deletes every row, keeping the structure.
     async fn truncate_table(&self, db: &str, name: &str) -> Result<()>;
     async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()>;
-    /// Applies grid changes in one transaction; returns the number of applied changes.
-    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError>;
+    /// Applies grid changes in one transaction; returns the number of applied changes. `identity` is the row identity
+    /// the change keys were taken from; the changes are refused when the table's identity is no longer the same.
+    async fn apply_changes(&self, db: &str, table: &str, identity: &RowIdentity, changes: &[RowChange]) -> Result<u64, ChangeError>;
+    /// Foreign keys of other tables that reference `table`: deleting its rows or dropping it triggers their actions.
+    async fn incoming_foreign_keys(&self, db: &str, table: &str) -> Result<Vec<IncomingForeignKey>>;
     async fn create_database(&self, spec: &CreateDatabase) -> Result<()>;
     /// Drops a database (detaches it on SQLite).
     async fn drop_database(&self, name: &str) -> Result<()>;

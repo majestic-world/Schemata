@@ -42,6 +42,8 @@ type Store = {
   update: (tabId: string, f: (s: GridState) => Partial<GridState>) => void;
   beginCommit: (tabId: string) => GridState | null;
   finishCommit: (tabId: string, submitted: Pending, saved: boolean, failedRow?: RowRef | null) => void;
+  /** Drops the tab's pending edits and their frozen page; false (nothing dropped) while a commit is running. */
+  discard: (tabId: string) => boolean;
   forget: (tabId: string) => void;
 };
 
@@ -74,6 +76,12 @@ export const useGridStates = create<Store>((set, get) => ({
       },
     };
   }),
+  discard: (tabId) => {
+    const current = get().states[tabId];
+    if (current?.committing) return false;
+    if (current) set((s) => ({ states: { ...s.states, [tabId]: { ...current, pending: emptyPending(), snapshot: null, snapshotInfo: null, failedRow: null } } }));
+    return true;
+  },
   forget: (tabId) => set((s) => {
     const states = { ...s.states };
     delete states[tabId];
@@ -93,3 +101,21 @@ export const hasPendingEdits = (tabId: string) => {
   const s = useGridStates.getState().states[tabId];
   return !!s && isDirty(s.pending);
 };
+
+export type CommitOutcome = { saved: boolean; failedRow: RowRef | null };
+
+/**
+ * Locks the tab and submits its pending edits through `save`. The tab is unlocked when `save` settles, also when it
+ * throws (e.g. while building the change set), which then counts as not saved and is rethrown.
+ */
+export async function commitPending(tabId: string, save: (submitted: GridState) => Promise<CommitOutcome>): Promise<void> {
+  const { beginCommit, finishCommit } = useGridStates.getState();
+  const submitted = beginCommit(tabId);
+  if (!submitted) return;
+  let outcome: CommitOutcome = { saved: false, failedRow: null };
+  try {
+    outcome = await save(submitted);
+  } finally {
+    finishCommit(tabId, submitted.pending, outcome.saved, outcome.failedRow);
+  }
+}

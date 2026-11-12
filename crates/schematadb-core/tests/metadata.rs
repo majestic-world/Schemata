@@ -117,7 +117,9 @@ async fn row_identity_falls_back_to_unique_key(t: TestDb) {
     )
     .await;
     let coded = t.driver.table_info(&t.db, "coded").await.unwrap();
-    assert_eq!(coded.row_identity, RowIdentity::UniqueKey { columns: vec!["code".into()] });
+    // SQLite prefers the rowid: a unique index may compare under another collation than its column.
+    let expected = if t.engine == Engine::Sqlite { RowIdentity::RowId } else { RowIdentity::UniqueKey { columns: vec!["code".into()] } };
+    assert_eq!(coded.row_identity, expected);
     let loose = t.driver.table_info(&t.db, "loose").await.unwrap();
     let expected =
         if t.engine == Engine::Sqlite { RowIdentity::RowId } else { RowIdentity::AllColumns { columns: vec!["a".into(), "b".into()] } };
@@ -164,3 +166,48 @@ async fn creates_and_drops_databases(t: TestDb) {
     assert!(!t.driver.list_databases().await.unwrap().iter().any(|d| d.name == name));
 }
 scenario!(creates_and_drops_databases);
+
+/// SQLite reports keys, nullability and defaults as the database enforces them, not as the CREATE text reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn sqlite_describes_keys_nullability_and_defaults_exactly() {
+    let t = TestDb::sqlite().await;
+    t.exec(
+        "CREATE TABLE tagged (code TEXT PRIMARY KEY, note TEXT DEFAULT 'WITHOUT ROWID');
+         CREATE TABLE strict_code (code TEXT NOT NULL PRIMARY KEY);
+         CREATE TABLE numbered (id INTEGER PRIMARY KEY, at TEXT DEFAULT (datetime('now')), n INT DEFAULT (1 + 2), s TEXT DEFAULT 'it''s',
+                                neg INT DEFAULT -1, b BLOB DEFAULT x'00ff', t TEXT DEFAULT CURRENT_TIMESTAMP, word TEXT DEFAULT abc,
+                                joined TEXT DEFAULT ('a' || 'b'));
+         CREATE TABLE kv (k TEXT PRIMARY KEY, v) WITHOUT ROWID;",
+    )
+    .await;
+    let nullable = |info: &schematadb_core::TableInfo, column: &str| info.columns.iter().find(|c| c.name == column).unwrap().nullable;
+
+    let tagged = t.driver.table_info(&t.db, "tagged").await.unwrap();
+    assert!(nullable(&tagged, "code"), "rowid tables accept NULL in a TEXT primary key");
+    assert_eq!(tagged.row_identity, RowIdentity::PrimaryKey { columns: vec!["code".into()] });
+    let strict = t.driver.table_info(&t.db, "strict_code").await.unwrap();
+    assert!(!nullable(&strict, "code"));
+    let kv = t.driver.table_info(&t.db, "kv").await.unwrap();
+    assert!(!nullable(&kv, "k"), "WITHOUT ROWID primary keys are NOT NULL");
+    // A default mentioning WITHOUT ROWID does not hide the rowid.
+    t.exec("CREATE TABLE plain (body TEXT DEFAULT 'WITHOUT ROWID')").await;
+    assert_eq!(t.driver.table_info(&t.db, "plain").await.unwrap().row_identity, RowIdentity::RowId);
+
+    let numbered = t.driver.table_info(&t.db, "numbered").await.unwrap();
+    assert!(!nullable(&numbered, "id"), "an INTEGER PRIMARY KEY is the rowid");
+    let defaults: Vec<_> = numbered.columns.iter().map(|c| c.default.as_deref()).collect();
+    assert_eq!(
+        defaults,
+        [
+            None,
+            Some("(datetime('now'))"),
+            Some("(1 + 2)"),
+            Some("'it''s'"),
+            Some("-1"),
+            Some("x'00ff'"),
+            Some("CURRENT_TIMESTAMP"),
+            Some("abc"),
+            Some("('a' || 'b')")
+        ]
+    );
+}

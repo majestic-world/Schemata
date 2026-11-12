@@ -54,7 +54,9 @@ type TabsState = {
   setRowCount: (id: string, n: number | undefined) => void;
 };
 
-export const tableTabId = (connectionId: string, database: string, name: string) => `table:${connectionId}/${database}/${name}`;
+/** Each part is encoded, so names containing `/` (`a/b` + `c` vs `a` + `b/c`) never share an id. */
+export const tableTabId = (connectionId: string, database: string, name: string) =>
+  `table:${[connectionId, database, name].map(encodeURIComponent).join("/")}`;
 
 /** Table-tab activation updates the tree, inspector and object actions to the same object. */
 function selectTable(tab: Tab | undefined) {

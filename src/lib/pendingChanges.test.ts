@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CellValue, ColumnInfo, ColumnMeta } from "../api/types";
-import { hasPendingEdits, useGridStates } from "../store/gridState";
+import { commitPending, hasPendingEdits, useGridStates } from "../store/gridState";
 import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isEdited, isUnset, literalDefault, setCell } from "./pendingChanges";
 
 const t = (value: string): CellValue => ({ type: "text", value });
@@ -32,25 +32,30 @@ describe("pending grid changes", () => {
 
   it("builds updates, inserts and deletes keyed by the row identity", () => {
     let p = setCell(emptyPending(), existing(2), "qty", n(31), n(30));
-    const added = addRow(p, []);
+    const added = addRow(p, [], "mySql");
     p = setCell(added.pending, added.row, "id", n(4), NULL);
     p = setCell(p, added.row, "name", t("d"), NULL);
     p = deleteRows(p, [existing(0)]);
     const { changes, rowOf } = buildChangeSet(p, page, columns, ["id"]);
     expect(changes).toEqual([
-      { kind: "update", key: [n(3)], values: [{ column: "qty", value: n(31) }] },
+      {
+        kind: "update",
+        key: [n(3)],
+        values: [{ column: "qty", value: n(31) }],
+        expected: [{ column: "id", value: n(3) }, { column: "name", value: t("c") }, { column: "qty", value: n(30) }],
+      },
       { kind: "insert", values: [{ column: "id", value: n(4) }, { column: "name", value: t("d") }] },
-      { kind: "delete", key: [n(1)] },
+      { kind: "delete", key: [n(1)], expected: [{ column: "id", value: n(1) }, { column: "name", value: t("a") }, { column: "qty", value: n(10) }] },
     ]);
     expect(rowOf).toEqual([existing(2), { kind: "new", index: 0 }, existing(0)]);
   });
 
   it("deleting an edited row drops its edits; deleting a new row discards it", () => {
     let p = setCell(emptyPending(), existing(1), "name", t("zz"), t("b"));
-    const added = addRow(p, []);
+    const added = addRow(p, [], "mySql");
     p = deleteRows(added.pending, [existing(1), added.row]);
     const { changes } = buildChangeSet(p, page, columns, ["id"]);
-    expect(changes).toEqual([{ kind: "delete", key: [n(2)] }]);
+    expect(changes).toEqual([{ kind: "delete", key: [n(2)], expected: expect.any(Array) }]);
   });
 
   it("uses hidden identity columns such as the SQLite rowid", () => {
@@ -58,7 +63,8 @@ describe("pending grid changes", () => {
     const rows: CellValue[][] = [[n(7), t("x")]];
     const p = setCell(emptyPending(), existing(0), "name", t("y"), t("x"));
     expect(buildChangeSet(p, rows, withRowid, ["__rowid__"]).changes).toEqual([
-      { kind: "update", key: [n(7)], values: [{ column: "name", value: t("y") }] },
+      // The hidden rowid is the key; the loaded row is the visible columns.
+      { kind: "update", key: [n(7)], values: [{ column: "name", value: t("y") }], expected: [{ column: "name", value: t("x") }] },
     ]);
   });
 });
@@ -69,16 +75,30 @@ const info = (name: string, def: string | null, autoIncrement = false, generated
 
 describe("new row defaults", () => {
   it("reads constant defaults and leaves expressions to the database", () => {
-    expect(literalDefault("0")).toEqual(n(0));
-    expect(literalDefault("-12")).toEqual(n(-12));
-    expect(literalDefault("18446744073709551615")).toEqual({ type: "bigInt", value: "18446744073709551615" });
-    expect(literalDefault("1.50")).toEqual({ type: "decimal", value: "1.50" });
-    expect(literalDefault("'it''s'")).toEqual(t("it's"));
-    expect(literalDefault("''")).toEqual(t(""));
-    expect(literalDefault("CURRENT_TIMESTAMP")).toBeNull();
-    expect(literalDefault("current_timestamp()")).toBeNull();
-    expect(literalDefault("(uuid())")).toBeNull();
-    expect(literalDefault("'a' || 'b'")).toBeNull();
+    for (const engine of ["mySql", "mariaDb", "sqlite"] as const) {
+      expect(literalDefault("0", engine)).toEqual(n(0));
+      expect(literalDefault("-12", engine)).toEqual(n(-12));
+      expect(literalDefault("18446744073709551615", engine)).toEqual({ type: "bigInt", value: "18446744073709551615" });
+      expect(literalDefault("1.50", engine)).toEqual({ type: "decimal", value: "1.50" });
+      expect(literalDefault("'it''s'", engine)).toEqual(t("it's"));
+      expect(literalDefault("''", engine)).toEqual(t(""));
+      expect(literalDefault("CURRENT_TIMESTAMP", engine)).toBeNull();
+      expect(literalDefault("current_timestamp()", engine)).toBeNull();
+      expect(literalDefault("(uuid())", engine)).toBeNull();
+      expect(literalDefault("'a' || 'b'", engine)).toBeNull();
+    }
+  });
+
+  it("decodes MySQL backslash escapes but keeps SQLite backslashes literal", () => {
+    for (const engine of ["mySql", "mariaDb"] as const) {
+      expect(literalDefault("'C:\\\\temp'", engine)).toEqual(t("C:\\temp"));
+      expect(literalDefault("'it\\'s'", engine)).toEqual(t("it's"));
+      expect(literalDefault("'a\\nb\\tc\\0'", engine)).toEqual(t("a\nb\tc\0"));
+      expect(literalDefault("'50\\%'", engine)).toEqual(t("50\\%"));
+      expect(literalDefault("'\\q'", engine)).toEqual(t("q"));
+    }
+    expect(literalDefault("'C:\\temp'", "sqlite")).toEqual(t("C:\\temp"));
+    expect(literalDefault("'C:\\\\temp'", "sqlite")).toEqual(t("C:\\\\temp"));
   });
 
   it("prefills constant defaults; other columns stay unset and are omitted from the insert", () => {
@@ -87,7 +107,7 @@ describe("new row defaults", () => {
       info("success", "0"),
       info("status", "'new'"),
       info("created_at", "CURRENT_TIMESTAMP"),
-    ]);
+    ], "mySql");
     expect(isUnset(pending, row, "id")).toBe(true);
     expect(isUnset(pending, row, "created_at")).toBe(true);
     expect(isUnset(pending, row, "success")).toBe(false);
@@ -100,7 +120,7 @@ describe("new row defaults", () => {
     const { pending, row } = addRow(emptyPending(), [
       info("name", "'new'"),
       info("computed", "'generated'", false, true),
-    ]);
+    ], "mySql");
     expect(isUnset(pending, row, "computed")).toBe(true);
     expect(buildChangeSet(pending, page, columns, ["id"]).changes).toEqual([
       { kind: "insert", values: [{ column: "name", value: t("new") }] },
@@ -113,7 +133,7 @@ describe("columns named like Object.prototype members", () => {
   const protoPage: CellValue[][] = [[n(1), t("c"), t("p")]];
 
   it("new rows treat them as unset and show NULL until typed", () => {
-    const { pending, row } = addRow(emptyPending(), [info("constructor", null), info("toString", null), info("__proto__", null)]);
+    const { pending, row } = addRow(emptyPending(), [info("constructor", null), info("toString", null), info("__proto__", null)], "mySql");
     for (const name of ["constructor", "toString", "valueOf", "__proto__"]) {
       expect(isUnset(pending, row, name)).toBe(true);
       expect(cellValue(pending, row, name, undefined)).toEqual(NULL);
@@ -122,7 +142,7 @@ describe("columns named like Object.prototype members", () => {
   });
 
   it("records defaults and edits on them as own values", () => {
-    const added = addRow(emptyPending(), [info("__proto__", "'d'")]);
+    const added = addRow(emptyPending(), [info("__proto__", "'d'")], "mySql");
     expect(isUnset(added.pending, added.row, "__proto__")).toBe(false);
     const p = setCell(added.pending, added.row, "constructor", t("x"), NULL);
     expect(cellValue(p, added.row, "__proto__", undefined)).toEqual(t("d"));
@@ -140,7 +160,7 @@ describe("columns named like Object.prototype members", () => {
     expect(isEdited(p, existing(0), "toString")).toBe(false);
     expect(cellValue(p, existing(0), "__proto__", t("p"))).toEqual(t("q"));
     expect(buildChangeSet(p, protoPage, protoColumns, ["id"]).changes).toEqual([
-      { kind: "update", key: [n(1)], values: [{ column: "__proto__", value: t("q") }, { column: "constructor", value: t("k") }] },
+      { kind: "update", key: [n(1)], values: [{ column: "__proto__", value: t("q") }, { column: "constructor", value: t("k") }], expected: expect.any(Array) },
     ]);
     p = setCell(p, existing(0), "__proto__", t("p"), t("p"));
     expect(isEdited(p, existing(0), "__proto__")).toBe(false);
@@ -160,7 +180,7 @@ describe("saving grid changes", () => {
     }));
     const submitted = useGridStates.getState().beginCommit(id)!;
     expect(buildChangeSet(submitted.pending, submitted.snapshot!.rows, submitted.snapshot!.columns, ["id"]).changes).toEqual([
-      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("latest") }] },
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("latest") }], expected: expect.any(Array) },
     ]);
     expect(useGridStates.getState().beginCommit(id)).toBeNull();
   });
@@ -174,7 +194,7 @@ describe("saving grid changes", () => {
     useGridStates.getState().update(id, (state) => ({
       pending: setCell(state.pending, existing(1), "name", t("unsent"), t("b")),
     }));
-    useGridStates.getState().update(id, (state) => ({ pending: addRow(state.pending, []).pending }));
+    useGridStates.getState().update(id, (state) => ({ pending: addRow(state.pending, [], "mySql").pending }));
     useGridStates.getState().update(id, (state) => ({ pending: deleteRows(state.pending, [existing(2)]) }));
     useGridStates.getState().update(id, () => ({ pending: emptyPending(), snapshot: null, offset: 500 }));
     const locked = useGridStates.getState().states[id];
@@ -182,7 +202,7 @@ describe("saving grid changes", () => {
     expect(locked.offset).toBe(0);
     expect(locked.snapshot).toBe(snapshot);
     expect(buildChangeSet(locked.pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
-      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("submitted") }] },
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("submitted") }], expected: expect.any(Array) },
     ]);
 
     useGridStates.getState().finishCommit(id, submitted.pending, true);
@@ -209,8 +229,33 @@ describe("saving grid changes", () => {
     }));
     const retried = useGridStates.getState().beginCommit(id)!;
     expect(buildChangeSet(retried.pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
-      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("corrected") }] },
+      { kind: "update", key: [n(1)], values: [{ column: "name", value: t("corrected") }], expected: expect.any(Array) },
     ]);
+  });
+
+  it("unlocks the tab and keeps its edits when building the change set throws", async () => {
+    useGridStates.getState().update(id, (state) => ({
+      pending: setCell(state.pending, existing(0), "name", t("kept"), t("a")),
+      // A page loaded after the identity column was renamed away.
+      snapshot: { rows: [[t("a")]], columns: [col("name")] },
+    }));
+    const commit = commitPending(id, async (submitted) => {
+      buildChangeSet(submitted.pending, submitted.snapshot!.rows, submitted.snapshot!.columns, ["id"]);
+      return { saved: true, failedRow: null };
+    });
+    await expect(commit).rejects.toThrow("Identity column id is not in the result");
+    const state = useGridStates.getState().states[id];
+    expect(state.committing).toBe(false);
+    expect(hasPendingEdits(id)).toBe(true);
+    expect(useGridStates.getState().discard(id)).toBe(true);
+    expect(hasPendingEdits(id)).toBe(false);
+  });
+
+  it("discard refuses while a commit is running", () => {
+    useGridStates.getState().update(id, (state) => ({ pending: setCell(state.pending, existing(0), "name", t("x"), t("a")), snapshot }));
+    useGridStates.getState().beginCommit(id);
+    expect(useGridStates.getState().discard(id)).toBe(false);
+    expect(hasPendingEdits(id)).toBe(true);
   });
 
   it("ignores a stale save response instead of clearing newer, unsent changes", () => {
@@ -227,7 +272,7 @@ describe("saving grid changes", () => {
     expect(hasPendingEdits(id)).toBe(true);
     expect(useGridStates.getState().states[id].committing).toBe(true);
     expect(buildChangeSet(useGridStates.getState().states[id].pending, snapshot.rows, snapshot.columns, ["id"]).changes).toEqual([
-      { kind: "update", key: [n(2)], values: [{ column: "name", value: t("second") }] },
+      { kind: "update", key: [n(2)], values: [{ column: "name", value: t("second") }], expected: expect.any(Array) },
     ]);
   });
 });

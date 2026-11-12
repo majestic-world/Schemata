@@ -130,6 +130,47 @@ async fn deleting_a_connection_reports_a_credential_that_could_not_be_removed() 
     assert!(reopened.list().is_empty(), "the connection itself must still be deleted");
 }
 
+/// A credential store that is locked: reads fail, but what it holds is intact.
+#[derive(Clone, Default)]
+struct LockedSecrets {
+    stored: MemorySecrets,
+}
+
+impl SecretStore for LockedSecrets {
+    fn get(&self, _id: &str) -> Result<Option<String>> {
+        Err(AppError::io("The keyring is locked"))
+    }
+
+    fn set(&self, id: &str, secret: &str) -> Result<()> {
+        self.stored.set(id, secret)
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        self.stored.delete(id)
+    }
+}
+
+#[tokio::test]
+async fn a_locked_credential_store_does_not_turn_off_the_saved_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.json");
+    let locked = LockedSecrets::default();
+    let store = ConnectionStore::open(&path, Box::new(locked.clone())).unwrap();
+    let mut config = ConnectionConfig::new("Saved password", Engine::MySql);
+    config.save_password = true;
+    store.save(&config, Some("kept-secret")).unwrap();
+
+    config.name = "Renamed while the keyring is locked".into();
+    let saved = store.save(&config, None).unwrap();
+    assert!(saved.config.save_password, "a failed read must not disable password saving");
+    assert!(saved.password_warning.expect("the failed read is reported").contains("could not be checked"));
+    drop(store);
+
+    let unlocked = ConnectionStore::open(&path, Box::new(locked.stored.clone())).unwrap();
+    assert!(unlocked.get(&config.id).unwrap().save_password);
+    assert_eq!(unlocked.password(&config.id).unwrap().as_deref(), Some("kept-secret"));
+}
+
 #[test]
 fn connection_snapshots_replace_atomically_without_overwriting_an_unrelated_temporary_file() {
     let directory = tempfile::tempdir().unwrap();

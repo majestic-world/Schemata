@@ -61,11 +61,13 @@ async fn creates_table_from_design(t: TestDb) {
             name: "fk_product_category".into(),
             columns: vec!["category_id".into()],
             ref_table: "category".into(),
+            ref_schema: None,
             ref_columns: vec!["id".into()],
             on_update: "NO ACTION".into(),
             on_delete: "CASCADE".into(),
         }],
         options: TableOptions { comment: (t.engine != Engine::Sqlite).then(|| "Products".to_owned()), ..TableOptions::default() },
+        primary_key_order: vec![],
     };
     apply(&t, None, &design).await;
 
@@ -266,11 +268,13 @@ async fn unqualified_ddl_lands_in_the_target_database(t: TestDb) {
             name: "fk_product_category".into(),
             columns: vec!["category_id".into()],
             ref_table: "category".into(),
+            ref_schema: None,
             ref_columns: vec!["id".into()],
             on_update: "NO ACTION".into(),
             on_delete: "NO ACTION".into(),
         }],
         options: TableOptions::default(),
+        primary_key_order: vec![],
     };
     let other = connect(&server.params(None)).await.unwrap();
     let create = other.plan_table(&t.db, None, &design).await.unwrap();
@@ -404,3 +408,99 @@ async fn mysql_backslash_defaults_survive_column_changes(t: TestDb) {
     assert_eq!(all_rows(&t, "escaped_default", "id").await[0][1], CellValue::Text(r"C:\temp\new".into()));
 }
 scenario!(mysql_backslash_defaults_survive_column_changes);
+
+async fn designer_refuses_an_outdated_original(t: TestDb) {
+    t.exec(&format!("CREATE TABLE t (id {} PRIMARY KEY, a VARCHAR(20))", int_type(&t))).await;
+    let original = t.driver.table_design(&t.db, "t").await.unwrap();
+    t.exec("ALTER TABLE t ADD COLUMN notes VARCHAR(50)").await;
+    t.exec("INSERT INTO t (id, a, notes) VALUES (1, 'x', 'keep me')").await;
+    let mut design = original.clone();
+    design.columns[1].data_type = "VARCHAR(30)".into();
+    let err = t.driver.plan_table(&t.db, Some(&original), &design).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Validation, "{err:?}");
+    assert_eq!(names(&t, "t").await, vec!["id", "a", "notes"]);
+}
+scenario!(designer_refuses_an_outdated_original);
+
+async fn sqlite_rebuild_keeps_rowids(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE t (name TEXT, qty INT); INSERT INTO t VALUES ('a', 1), ('b', 2), ('c', 3), ('d', 4); DELETE FROM t WHERE name IN ('b', 'c')").await;
+    let original = t.driver.table_design(&t.db, "t").await.unwrap();
+    let mut design = original.clone();
+    design.columns[1].data_type = "BIGINT".into();
+    apply(&t, Some(&original), &design).await;
+    let rows = t.driver.execute_script(Some("main"), "SELECT rowid, name FROM t ORDER BY rowid", 10, None).await.unwrap();
+    let schematadb_core::StatementOutcome::Rows { rows, .. } = &rows.outcomes[0] else { panic!("no rows") };
+    assert_eq!(rows, &vec![vec![CellValue::Int(1), CellValue::Text("a".into())], vec![CellValue::Int(4), CellValue::Text("d".into())]]);
+}
+scenario!(sqlite_rebuild_keeps_rowids);
+
+async fn composite_primary_key_order_is_kept(t: TestDb) {
+    let int = int_type(&t);
+    t.exec(&format!("CREATE TABLE m (a {int} NOT NULL, b {int} NOT NULL, note VARCHAR(10), PRIMARY KEY (b, a))")).await;
+    let info = t.driver.table_info(&t.db, "m").await.unwrap();
+    assert_eq!(info.primary_key, vec!["b", "a"]);
+    let original = t.driver.table_design(&t.db, "m").await.unwrap();
+    let mut design = original.clone();
+    design.columns[2].data_type = "VARCHAR(40)".into();
+    apply(&t, Some(&original), &design).await;
+    assert_eq!(t.driver.table_info(&t.db, "m").await.unwrap().primary_key, vec!["b", "a"]);
+}
+scenario!(composite_primary_key_order_is_kept);
+
+async fn composite_primary_key_order_is_kept_when_a_column_joins_the_key(t: TestDb) {
+    let int = int_type(&t);
+    t.exec(&format!("CREATE TABLE mk (a {int} NOT NULL, b {int} NOT NULL, c {int} NOT NULL, PRIMARY KEY (b, a))")).await;
+    let original = t.driver.table_design(&t.db, "mk").await.unwrap();
+    let mut design = original.clone();
+    design.columns[2].primary_key = true;
+    design.primary_key_order.push("c".into());
+    apply(&t, Some(&original), &design).await;
+    assert_eq!(t.driver.table_info(&t.db, "mk").await.unwrap().primary_key, vec!["b", "a", "c"]);
+}
+scenario!(composite_primary_key_order_is_kept_when_a_column_joins_the_key);
+
+async fn sqlite_rebuild_with_rename_keeps_foreign_keys_pointing_at_the_table(t: TestDb) {
+    if t.engine != Engine::Sqlite {
+        return;
+    }
+    t.exec(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, up INTEGER REFERENCES parent(id), w TEXT);
+         INSERT INTO parent VALUES (1, NULL, '1');
+         CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));",
+    )
+    .await;
+    let original = t.driver.table_design(&t.db, "parent").await.unwrap();
+    let mut design = original.clone();
+    design.name = "folks".into();
+    design.columns[2].data_type = "REAL".into();
+    let ddl = t.driver.plan_table(&t.db, Some(&original), &design).await.unwrap();
+    assert!(ddl.iter().any(|s| s.contains("INSERT INTO")), "type changes need a rebuild: {ddl:?}");
+    t.driver.apply_ddl(&t.db, &ddl).await.unwrap();
+
+    assert_eq!(t.driver.table_info(&t.db, "child").await.unwrap().foreign_keys[0].ref_table, "folks");
+    assert_eq!(t.driver.table_info(&t.db, "folks").await.unwrap().foreign_keys[0].ref_table, "folks");
+    t.exec("PRAGMA foreign_keys = ON; INSERT INTO child VALUES (1, 1); INSERT INTO folks VALUES (2, 1, 2.5);").await;
+    assert_eq!(all_rows(&t, "child", "id").await, vec![vec![CellValue::Int(1), CellValue::Int(1)]]);
+}
+scenario!(sqlite_rebuild_with_rename_keeps_foreign_keys_pointing_at_the_table);
+
+async fn enum_value_case_changes_produce_ddl(t: TestDb) {
+    if t.engine == Engine::Sqlite {
+        return;
+    }
+    t.exec("CREATE TABLE flag (id INT PRIMARY KEY, state ENUM('on','off'))").await;
+    let original = t.driver.table_design(&t.db, "flag").await.unwrap();
+    let mut design = original.clone();
+    design.columns[1].data_type = "ENUM('ON','off')".into();
+    apply(&t, Some(&original), &design).await;
+    let info = t.driver.table_info(&t.db, "flag").await.unwrap();
+    assert!(info.columns[1].data_type.contains("'ON'"), "{}", info.columns[1].data_type);
+    let read_back = t.driver.table_design(&t.db, "flag").await.unwrap();
+    let mut upper = read_back.clone();
+    upper.columns[1].data_type = upper.columns[1].data_type.to_uppercase().replace("'OFF'", "'off'");
+    assert!(t.driver.plan_table(&t.db, Some(&read_back), &upper).await.unwrap().is_empty(), "keyword case is not a change");
+}
+scenario!(enum_value_case_changes_produce_ddl);

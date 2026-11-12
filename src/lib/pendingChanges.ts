@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, ColumnMeta, RowChange } from "../api/types";
+import type { CellValue, ColumnInfo, ColumnMeta, Engine, RowChange } from "../api/types";
 
 /** A row of the grid: one already in the database (page index) or one being inserted. */
 export type RowRef = { kind: "existing"; index: number } | { kind: "new"; index: number };
@@ -32,27 +32,39 @@ export function setCell(p: Pending, row: RowRef, column: string, value: CellValu
   return { ...p, updates };
 }
 
+/** Characters MySQL string literals spell with a backslash; any other escaped character stands for itself. */
+const MYSQL_ESCAPES: Record<string, string> = { "0": "\0", b: "\b", n: "\n", r: "\r", t: "\t", Z: "\x1a" };
+
 /**
  * Value of a constant column default (`0`, `-1.5`, `'text'`), or null when the default is an expression
- * (`CURRENT_TIMESTAMP`, `(uuid())`, …) only the database can evaluate.
+ * (`CURRENT_TIMESTAMP`, `(uuid())`, …) only the database can evaluate. MySQL and MariaDB report string defaults
+ * with backslash escapes (`'C:\\temp'`); SQLite literals have none, only doubled quotes.
  */
-export function literalDefault(expr: string): CellValue | null {
+export function literalDefault(expr: string, engine: Engine): CellValue | null {
   const s = expr.trim();
   if (/^[+-]?\d+$/.test(s)) {
     const n = Number(s);
     return Number.isSafeInteger(n) ? { type: "int", value: n } : { type: "bigInt", value: s.replace(/^\+/, "") };
   }
   if (/^[+-]?(\d+\.\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return { type: "decimal", value: s.replace(/^\+/, "") };
-  const quoted = /^'((?:[^']|'')*)'$/.exec(s);
-  return quoted ? { type: "text", value: quoted[1].replace(/''/g, "'") } : null;
+  if (engine === "sqlite") {
+    const quoted = /^'((?:[^']|'')*)'$/.exec(s);
+    return quoted ? { type: "text", value: quoted[1].replace(/''/g, "'") } : null;
+  }
+  const quoted = /^'((?:[^'\\]|''|\\[\s\S])*)'$/.exec(s);
+  if (!quoted) return null;
+  // `\%` and `\_` keep their backslash: MySQL leaves it so LIKE patterns can use them.
+  const value = quoted[1].replace(/''|\\([\s\S])/g, (all, c: string | undefined) =>
+    c === undefined ? "'" : c === "%" || c === "_" ? all : (MYSQL_ESCAPES[c] ?? c));
+  return { type: "text", value };
 }
 
 /** New row prefilled with the constant defaults; other columns are left for the database to fill. */
-export function addRow(p: Pending, columns: ColumnInfo[]): { pending: Pending; row: RowRef } {
+export function addRow(p: Pending, columns: ColumnInfo[], engine: Engine): { pending: Pending; row: RowRef } {
   const values: Record<string, CellValue> = {};
   for (const c of columns) {
     if (c.generated) continue;
-    const v = c.default === null || c.autoIncrement ? null : literalDefault(c.default);
+    const v = c.default === null || c.autoIncrement ? null : literalDefault(c.default, engine);
     if (v) Object.defineProperty(values, c.name, { value: v, enumerable: true, writable: true, configurable: true });
   }
   return { pending: { ...p, inserts: [...p.inserts, values] }, row: { kind: "new", index: p.inserts.length } };
@@ -104,12 +116,14 @@ export function buildChangeSet(
     return i;
   });
   const keyOf = (row: number) => keyIdx.map((i) => pageRows[row][i]);
+  // The row as loaded, so the backend can refuse to write a row that changed or was replaced meanwhile.
+  const expectedOf = (row: number) => columns.flatMap((c, i) => (c.hidden ? [] : [{ column: c.name, value: pageRows[row][i] }]));
   const changes: RowChange[] = [];
   const rowOf: RowRef[] = [];
   for (const [row, values] of Object.entries(p.updates).sort((a, b) => Number(a[0]) - Number(b[0]))) {
     const index = Number(row);
     if (p.deletes.includes(index)) continue;
-    changes.push({ kind: "update", key: keyOf(index), values: Object.entries(values).map(([column, value]) => ({ column, value })) });
+    changes.push({ kind: "update", key: keyOf(index), values: Object.entries(values).map(([column, value]) => ({ column, value })), expected: expectedOf(index) });
     rowOf.push({ kind: "existing", index });
   }
   p.inserts.forEach((values, index) => {
@@ -117,7 +131,7 @@ export function buildChangeSet(
     rowOf.push({ kind: "new", index });
   });
   for (const index of p.deletes) {
-    changes.push({ kind: "delete", key: keyOf(index) });
+    changes.push({ kind: "delete", key: keyOf(index), expected: expectedOf(index) });
     rowOf.push({ kind: "existing", index });
   }
   return { changes, rowOf };

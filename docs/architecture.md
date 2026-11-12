@@ -5,7 +5,15 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Values
 
 - Cells cross the Rust↔JS boundary as the tagged union `CellValue` (`crates/schematadb-core/src/value.rs`) so precision and NULL are never lost: integers beyond ±2^53 travel as `BigInt` strings, decimals as `Decimal` strings, binary as a hex preview plus length.
-- Grid edits send the same union back; CSV import converts fields to text/NULL values. Both bind values as prepared-statement parameters, never interpolated. SQL exports and dumps are the exception: they serialize values as literals, since their output is SQL text.
+- Grid edits send the same union back; CSV import converts fields to text/NULL values (`0x…` hex into binary columns and numbers into BIT columns, as exports write them). Both bind values as prepared-statement parameters, never interpolated. SQL exports and dumps are the exception: they serialize values as literals, since their output is SQL text; each multi-row INSERT stays under 1 MB (or holds a single row).
+
+## Grid edits
+
+- A change set carries the row identity the grid loaded; the backend refuses it when the table's identity changed meanwhile (primary key moved, designer change). Keyed statements must hit exactly one row, or the transaction rolls back.
+- Tables without a key match rows by value with `LIMIT 1`; when some columns cannot be compared (binary, JSON, FLOAT, BIT, spatial) and two rows match, the change is refused instead of hitting either row. SQLite never matches by value: it prefers the rowid over unique keys, and rowid changes also compare the loaded row values, so a reused or renumbered rowid is never written. SQLite table rebuilds keep rowids.
+- Pool connections (grid, DDL, imports) run with `STRICT_ALL_TABLES` and without `NO_BACKSLASH_ESCAPES`, so bad input fails instead of being converted. Query tabs on SQLite use their own connection, like MySQL/MariaDB, so app operations never join a query tab's transaction. Run SQL File on MySQL/MariaDB uses a dedicated connection, so a script's session settings never reach the pool.
+- The cell editor is a textarea: line breaks survive, and opening and closing it without typing stages nothing.
+- The table designer refuses to plan against a table that changed since it was loaded, applies only DDL that re-planning still reproduces exactly, and discards pending grid edits (after confirmation) before altering a table.
 
 ## Errors
 
@@ -40,9 +48,11 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - The script splitter is dialect-aware (quotes, backticks, comments, `DELIMITER`, trigger bodies). In the SQL editor, execution stops at the first error; result sets are capped at 1,000 rows with continuation.
 - Cancelling: MySQL/MariaDB issue `KILL QUERY <thread id>` through a control connection independent of the work pool; SQLite uses its interrupt handle. File execution also interrupts the active statement, not only the next batch. A cancel that arrives before a long operation registers is kept, so the operation starts cancelled; multi-step dialog flows (create database then restore, prepare then copy) check the cancel between steps, and a dismissed dialog never starts its pending step.
 - Long operations stream in batches between the database and files and emit progress events; the UI never holds whole tables in memory. SQLite table copies stage rows in a temporary file before importing, avoiding a reader/writer deadlock on the shared connection.
+- Copying a table within one engine recreates it from its own definition (`SHOW CREATE TABLE` / `sqlite_schema`), renaming database-scoped constraint and index names after the copy, so ON UPDATE, column collations, CHECK, STRICT, WITHOUT ROWID, generated, INVISIBLE and partial/expression-index definitions survive; generated values are recomputed, not copied. Copies into another engine translate the table design and refuse generated columns. Copies between MySQL/MariaDB servers read and write TIMESTAMPs in UTC.
 - Running a `.sql` file or restoring a backup must not leave the session dirty: after an error or cancellation any open transaction is rolled back and foreign-key checks are re-enabled. The SQL editor does not do this, so deliberate transactions keep working across runs: each MySQL/MariaDB query tab owns a dedicated server session outside the pool, keyed by the tab id, so transactions, user variables and temporary tables persist across runs and continuation. Closing the tab or disconnecting ends the session, and the server rolls back its open transaction. A session the server closed (timeout, KILL, restart) fails its next run with a connection error instead of reconnecting silently and hiding the rollback; the following run opens a fresh session.
 - Exports and backups write to a uniquely named temporary file next to the destination and replace it only on success, so a failed or cancelled run never destroys an existing file.
-- SQL files require valid UTF-8 (with an optional BOM); invalid bytes fail the operation instead of silently replacing stored text.
+- SQL files are decoded as UTF-8 (a BOM always means UTF-8) or Windows-1252. The whole file is decoded before the first statement runs, so a decoding error never leaves earlier statements applied; invalid bytes fail the operation instead of silently replacing stored text. CSV import is equally strict: invalid UTF-8 fails with a hint to choose Windows-1252, and rows whose field count differs from the header (or first row) are row failures. Windows-1252 exports fail on characters the encoding lacks.
+- CSV exports write NULL as `\N` by default and imports read that marker back as NULL, so NULL and the empty string stay distinct. Exporting a query result runs the query again, so only read-only queries can be exported.
 - Replacing existing rows during test-data generation uses DELETE and INSERT within the same transaction. Failed planning, insertion or cancellation must preserve the previous data. Operations requiring rollback reject nontransactional table engines. Sequences that would exceed the 64-bit integer range are rejected before inserting.
 - MySQL/MariaDB imports retry a failed multi-row INSERT row by row only for statement-level errors. Deadlocks (1213) and lock wait timeouts (1205) can roll back the whole transaction, so they abort the import instead of letting later rows autocommit.
 - Exports that include `CREATE TABLE` under another destination name replace only the statement's table-name token with the quoted destination; other statement shapes fail instead of writing broken SQL.
@@ -50,7 +60,8 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 ## Dumps
 
-- Backups are plain `.sql` files compatible with the engine's own CLI tools. MySQL/MariaDB: foreign-key checks off during load, batched multi-row INSERTs, views after tables, triggers last. SQLite: schema SQL from `sqlite_schema` plus INSERTs in one transaction.
+- Backups are plain `.sql` files compatible with the engine's own CLI tools. MySQL/MariaDB: foreign-key checks off during load, batched multi-row INSERTs, views after tables, triggers last; every table is read on one session inside one `START TRANSACTION WITH CONSISTENT SNAPSHOT`, with TIMESTAMPs in UTC, and that session is closed afterwards even on error or cancel. SQLite: schema SQL from `sqlite_schema` plus INSERTs in one transaction.
+- Restoring over an existing database requires typing its name. The file is checked first; `USE` and `CREATE DATABASE` statements are listed in the confirmation, since statements after them run in that database. "Delete existing rows first" in data generation confirms, naming every table whose foreign keys reference the target.
 
 ## Startup visibility
 
@@ -86,7 +97,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - Changing a saved connection's target requires disconnecting first, including while its initial connection is being established.
 - Clicking empty space or a header in the object list clears all selected objects while keeping the connection and database. Toolbar actions remain outside this clearing area so they can act on the selection.
 - Right-clicking blank space in Objects opens database-scoped actions and clears object selection. New Table opens the designer; Execute Sql File opens the SQL runner; Dump Sql File and Dump Sql With Data reuse the backup dialog with structure-only and structure-plus-data presets. Table rows retain their own context menus, including table-specific data generation.
-- Execute SQL File separates General configuration from Message Log results. The log shows attempted/successful/failed statement counts from the final engine report, elapsed time and byte-read progress; counts remain unknown while running or when no report is available. Only a successful report turns the bar green. UTF-8/BOM decoding, continue-on-error and script-controlled transactions retain existing execution semantics.
+- Execute SQL File separates General configuration from Message Log results. The log shows attempted/successful/failed statement counts from the final engine report, elapsed time and byte-read progress; counts remain unknown while running or when no report is available. Only a successful report turns the bar green; a transaction the script left open is reported as rolled back, not as success. The file is read as UTF-8 or Windows-1252; continue-on-error and script-controlled transactions retain existing execution semantics.
 - In Objects, Ctrl+A selects the currently visible, search-filtered objects; Ctrl-click toggles individual items. Delete, the toolbar and the context menu share one confirmed bulk-drop action. If a drop fails, processing stops, successful drops are refreshed, and failed/unattempted objects remain selected.
 - In data grids, Ctrl+A selects the loaded page, including virtualized rows outside the viewport, never unloaded pages. Delete stages those rows through the normal pending-change flow; Commit applies them. Text editors retain native Ctrl+A/Delete behavior, and read-only grids cannot stage deletions.
 - Null values and empty-row placeholders reserve 2 px inside their text clipping box for italic glyph overhang. Column clipping and ellipsis remain enabled for long values.
@@ -97,7 +108,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Persistence
 
 - Connection definitions: JSON in the app-config directory, never containing passwords.
-- Passwords: OS credential store via `keyring`, keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect. Connections with password saving disabled never read an old stored credential. Deleting a connection that had a saved password reports a credential-store failure after the connection itself is removed.
+- Passwords: OS credential store via `keyring`, keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect. A failed read while saving a connection (e.g. a locked keyring) keeps password saving enabled and reports a warning. Connections with password saving disabled never read an old stored credential. Deleting a connection that had a saved password reports a credential-store failure after the connection itself is removed.
 - Query history: app-data directory, atomically replaced; damaged history is preserved without preventing startup. A process-lifetime profile lock prevents concurrent application instances from overwriting saved state. Window size/position: Tauri window-state plugin. Panel sizes and tree state: persisted frontend stores.
 - Favorites (`schematadb.favorites`) and tree filters (`schematadb.treeFilter`, without the search text) persist in frontend storage. Favorites follow table renames and are dropped with the object.
 - The Create table dialog's "Add `created_at` and `updated_at`" choice (`schematadb.designerPrefs`, off by default) persists and applies to later new tables until changed; it appends two nullable `DATETIME` columns, skipping names the design already has.
@@ -113,6 +124,10 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Core tests exercise the public `schematadb-core` API against real engines (SQLite files, MySQL and MariaDB in Docker), running the same scenarios on all three. Assert resulting database state, returned values or produced files; generated SQL is verified by executing it, not by string matching.
 - Frontend: Vitest on pure state modules (grid pending changes, import column mapping, etc.). No automated UI end-to-end tests; UI is validated manually.
+
+## Data-safety review (2026-11-12)
+
+- Third review (three read-only audits of the data-edit, designer/DDL and bulk-transfer chains) focused on anything that can corrupt or silently lose data; every finding was fixed, each with a regression test where the path is testable. Rust workspace: 360 tests passed against SQLite, MySQL 8.4 and MariaDB 11.4; Clippy clean. Frontend: typecheck and 114 Vitest tests passed. UI smoke on the dev build: a multi-line cell opened and saved without typing staged nothing; an edit kept its line breaks in the database; Delete Table on a parent listed the cascading child table.
 
 ## Release-candidate validation (2026-11-11)
 

@@ -1,15 +1,19 @@
 //! Export, import and SQL-file execution. Rows stream in batches; nothing holds a whole table in memory.
 
-use crate::{AppError, ColumnMeta, Driver, Engine, Result, Splitter, Value};
+use crate::{AppError, ColumnMeta, Driver, Engine, Result, Splitter, TableInfo, Value};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 pub use tokio_util::sync::CancellationToken;
 
 pub const BATCH: usize = 500;
 /// Rows per INSERT statement in SQL exports.
 const INSERT_ROWS: usize = 100;
+/// Size cap of one INSERT statement in SQL exports (a single larger row still gets its own statement), well below
+/// the servers' default `max_allowed_packet`.
+const INSERT_BYTES: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,10 +84,15 @@ fn ascii(c: char, what: &str) -> Result<u8> {
     u8::try_from(c).map_err(|_| AppError::validation(format!("The {what} must be a single ASCII character")))
 }
 
-/// Writes UTF-8 text through the selected encoding.
+/// Writes UTF-8 text through the selected encoding. Windows-1252 output is encoded as it streams: a UTF-8 sequence
+/// split across writes is completed by the next write, and a character Windows-1252 lacks fails the export.
 struct Encoded<W: Write> {
     out: W,
     encoding: TextEncoding,
+    encoder: encoding_rs::Encoder,
+    /// Start of a UTF-8 sequence the next write completes.
+    pending: Vec<u8>,
+    buffer: Vec<u8>,
 }
 
 impl<W: Write> Encoded<W> {
@@ -91,19 +100,75 @@ impl<W: Write> Encoded<W> {
         if encoding == TextEncoding::Utf8Bom {
             out.write_all(b"\xEF\xBB\xBF")?;
         }
-        Ok(Self { out, encoding })
+        let buffer = if encoding == TextEncoding::Windows1252 { vec![0; 8192] } else { Vec::new() };
+        Ok(Self { out, encoding, encoder: encoding_rs::WINDOWS_1252.new_encoder(), pending: Vec::new(), buffer })
+    }
+
+    /// The underlying writer; fails when the text ended inside a UTF-8 sequence.
+    fn finish(self) -> std::io::Result<W> {
+        if !self.pending.is_empty() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "The exported text ended inside a UTF-8 sequence"));
+        }
+        Ok(self.out)
+    }
+
+    fn encode(&mut self, mut text: &str) -> std::io::Result<()> {
+        loop {
+            let (result, read, written) = self.encoder.encode_from_utf8_without_replacement(text, &mut self.buffer, false);
+            self.out.write_all(&self.buffer[..written])?;
+            text = &text[read..];
+            match result {
+                encoding_rs::EncoderResult::InputEmpty => return Ok(()),
+                encoding_rs::EncoderResult::OutputFull => {}
+                encoding_rs::EncoderResult::Unmappable(c) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("The character “{c}” (U+{:04X}) cannot be written in Windows-1252; export as UTF-8 instead", c as u32),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Length of the UTF-8 sequence that `lead` starts.
+fn utf8_sequence_len(lead: u8) -> usize {
+    match lead {
+        0xF0.. => 4,
+        0xE0.. => 3,
+        0xC0.. => 2,
+        _ => 1,
     }
 }
 
 impl<W: Write> Write for Encoded<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let invalid = |e| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
         match self.encoding {
             TextEncoding::Utf8 | TextEncoding::Utf8Bom => self.out.write_all(buf)?,
             TextEncoding::Windows1252 => {
-                // csv hands over whole fields/records, so chunks never split a UTF-8 sequence.
-                let text = std::str::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                let (bytes, _, _) = encoding_rs::WINDOWS_1252.encode(text);
-                self.out.write_all(&bytes)?;
+                let mut input = buf;
+                if let Some(&lead) = self.pending.first() {
+                    let take = (utf8_sequence_len(lead) - self.pending.len()).min(input.len());
+                    self.pending.extend_from_slice(&input[..take]);
+                    input = &input[take..];
+                    if self.pending.len() < utf8_sequence_len(lead) {
+                        return Ok(buf.len());
+                    }
+                    let pending = std::mem::take(&mut self.pending);
+                    self.encode(std::str::from_utf8(&pending).map_err(invalid)?)?;
+                }
+                let (text, rest) = match std::str::from_utf8(input) {
+                    Ok(text) => (text, &[][..]),
+                    // The write ends inside a sequence: keep its start for the next write.
+                    Err(e) if e.error_len().is_none() => {
+                        let (valid, rest) = input.split_at(e.valid_up_to());
+                        (std::str::from_utf8(valid).map_err(invalid)?, rest)
+                    }
+                    Err(e) => return Err(invalid(e)),
+                };
+                self.encode(text)?;
+                self.pending.extend_from_slice(rest);
             }
         }
         Ok(buf.len())
@@ -138,9 +203,8 @@ impl PendingFile {
 /// Reads a SQL text file. It must be UTF-8; a leading byte-order mark is dropped so it never reaches the server.
 pub async fn read_sql_text(path: &Path) -> Result<String> {
     let bytes = tokio::fs::read(path).await?;
-    let text = String::from_utf8(bytes).map_err(|_| {
-        AppError::validation(format!("{} is not a UTF-8 text file; convert it to UTF-8 to open it", path.display()))
-    })?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| AppError::validation(format!("{} is not a UTF-8 text file; convert it to UTF-8 to open it", path.display())))?;
     Ok(match text.strip_prefix('\u{feff}') {
         Some(rest) => rest.to_owned(),
         None => text,
@@ -283,10 +347,22 @@ pub(crate) fn quote_for(engine: Engine) -> fn(&str) -> String {
 }
 
 /// Generated values stay visible in query results but must be recomputed when INSERTs are restored.
-fn hide_generated(columns: &mut [ColumnMeta], info: &crate::TableInfo) {
+pub(crate) fn hide_generated(columns: &mut [ColumnMeta], info: &TableInfo) {
     for generated in info.columns.iter().filter(|c| c.generated) {
         if let Some(column) = columns.iter_mut().find(|c| c.name == generated.name) {
             column.hidden = true;
+        }
+    }
+}
+
+/// Reads every row of a table. MySQL/MariaDB name each column, because `SELECT *` leaves out INVISIBLE columns.
+pub(crate) fn select_all(engine: Engine, db: &str, info: &TableInfo) -> String {
+    let q = quote_for(engine);
+    match engine {
+        Engine::Sqlite => format!("SELECT * FROM {}.{}", q(db), q(&info.name)),
+        Engine::MySql | Engine::MariaDb => {
+            let columns = info.columns.iter().map(|c| q(&c.name)).collect::<Vec<_>>().join(", ");
+            format!("SELECT {columns} FROM {}.{}", q(db), q(&info.name))
         }
     }
 }
@@ -310,14 +386,23 @@ pub(crate) fn insert_statements(
         }
         return Ok(());
     }
-    let cols = visible.iter().map(|i| q(&columns[*i].name)).collect::<Vec<_>>().join(", ");
-    for chunk in rows.chunks(INSERT_ROWS) {
-        let values = chunk
-            .iter()
-            .map(|r| format!("({})", visible.iter().map(|i| literal(&r[*i], engine)).collect::<Vec<_>>().join(", ")))
-            .collect::<Vec<_>>()
-            .join(",\n  ");
-        writeln!(out, "INSERT INTO {} ({cols}) VALUES\n  {values};", q(table))?;
+    let prefix =
+        format!("INSERT INTO {} ({}) VALUES\n  ", q(table), visible.iter().map(|i| q(&columns[*i].name)).collect::<Vec<_>>().join(", "));
+    let mut statement = String::new();
+    let mut count = 0;
+    for r in rows {
+        let tuple = format!("({})", visible.iter().map(|i| literal(&r[*i], engine)).collect::<Vec<_>>().join(", "));
+        if count > 0 && (count == INSERT_ROWS || statement.len() + tuple.len() + 4 > INSERT_BYTES) {
+            writeln!(out, "{statement};")?;
+            statement.clear();
+            count = 0;
+        }
+        statement.push_str(if count == 0 { &prefix } else { ",\n  " });
+        statement.push_str(&tuple);
+        count += 1;
+    }
+    if count > 0 {
+        writeln!(out, "{statement};")?;
     }
     Ok(())
 }
@@ -336,16 +421,21 @@ pub async fn export(
     }
     let engine = driver.engine();
     let q = quote_for(engine);
-    let (sql, total, default_name) = match source {
+    let (sql, table_info, total, default_name) = match source {
         ExportSource::Table { table } => {
-            (format!("SELECT * FROM {}.{}", q(db), q(table)), Some(driver.count_rows(db, table, &[]).await?), table.clone())
+            // SQLite's stream owns the connection until it is drained; metadata must be read first.
+            let info = driver.table_info(db, table).await?;
+            (select_all(engine, db, &info), Some(info), Some(driver.count_rows(db, table, &[]).await?), table.clone())
         }
-        ExportSource::Query { sql } => (sql.trim().trim_end_matches(';').to_owned(), None, "query_result".to_owned()),
-    };
-    // SQLite's stream owns the connection until it is drained; metadata must be read first.
-    let table_info = match (source, format) {
-        (ExportSource::Table { table }, ExportFormat::Sql(_)) => Some(driver.table_info(db, table).await?),
-        _ => None,
+        ExportSource::Query { sql } => {
+            // Exporting runs the statement again, on another connection: only a statement without side effects may.
+            if !crate::is_read_only_query(sql) {
+                return Err(AppError::validation(
+                    "Only the results of read-only queries (SELECT, WITH, SHOW, …) can be exported, because exporting runs the query again",
+                ));
+            }
+            (sql.trim().trim_end_matches(';').to_owned(), None, None, "query_result".to_owned())
+        }
     };
     let mut stream = driver.stream_query(Some(db), &sql, BATCH).await?;
     let mut columns = match stream.recv().await {
@@ -353,7 +443,8 @@ pub async fn export(
         Some(Err(e)) => return Err(e),
         _ => return Err(AppError::sql("The query did not return a result set")),
     };
-    if let Some(info) = &table_info {
+    // CSV and JSON keep generated values; SQL INSERTs must leave them for the server to recompute.
+    if let (Some(info), ExportFormat::Sql(_)) = (&table_info, format) {
         hide_generated(&mut columns, info);
     }
     let (pending, file) = PendingFile::create(path)?;
@@ -439,7 +530,8 @@ pub async fn export(
     }
     match sink {
         Sink::Csv(w, _) => {
-            drop(w.into_inner().map_err(|e| AppError::io(e.to_string()))?.out.into_inner().map_err(|e| AppError::io(e.to_string()))?)
+            let encoded = w.into_inner().map_err(|e| AppError::io(e.error().to_string()))?;
+            drop(encoded.finish()?.into_inner().map_err(|e| AppError::io(e.to_string()))?)
         }
         Sink::Json(mut f, _) => {
             f.write_all(b"\n]\n")?;
@@ -484,6 +576,9 @@ pub struct CsvImport {
     pub mapping: Vec<ColumnMapping>,
     /// Empty fields become NULL instead of the empty string.
     pub empty_as_null: bool,
+    /// Fields equal to this text become NULL, matching [`CsvOptions::null_text`] of an export (`\N` by default),
+    /// so NULL and the empty string stay distinct. Empty: no text means NULL.
+    pub null_text: String,
     /// Keep going past rows that fail (they are reported); otherwise the first failure rolls back everything.
     pub skip_errors: bool,
 }
@@ -510,15 +605,28 @@ pub const MAX_REPORTED_FAILURES: usize = 100;
 /// A batch of rows to insert, each tagged with its source line.
 pub type ImportBatch = Vec<(u64, Vec<Value>)>;
 
+/// How [`crate::Driver::import_rows`] writes its rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportOptions {
+    /// Report failing rows and keep going instead of rolling everything back at the first one.
+    pub skip_errors: bool,
+    /// Delete every existing row first, in the same transaction.
+    pub empty_first: bool,
+    /// TIMESTAMP values are given in UTC (`+00:00`) rather than in the session time zone (MySQL/MariaDB).
+    pub utc_timestamps: bool,
+}
+
 fn csv_reader(path: &Path, o: &CsvReadOptions) -> Result<csv::Reader<Box<dyn std::io::Read + Send>>> {
     let file = std::fs::File::open(path)?;
-    let encoding = match o.encoding {
-        TextEncoding::Windows1252 => Some(encoding_rs::WINDOWS_1252),
-        _ => Some(encoding_rs::UTF_8),
+    let mut decoder = encoding_rs_io::DecodeReaderBytesBuilder::new();
+    match o.encoding {
+        // A UTF-8 byte-order mark overrides the selection; other bytes are transcoded.
+        TextEncoding::Windows1252 => decoder.encoding(Some(encoding_rs::WINDOWS_1252)).bom_override(true),
+        // Bytes pass through unchanged (minus a BOM), so the CSV reader rejects invalid UTF-8 instead of it being
+        // replaced by U+FFFD.
+        TextEncoding::Utf8 | TextEncoding::Utf8Bom => decoder.encoding(None).utf8_passthru(true).strip_bom(true),
     };
-    // Strips a BOM when present and transcodes to UTF-8.
-    let reader: Box<dyn std::io::Read + Send> =
-        Box::new(encoding_rs_io::DecodeReaderBytesBuilder::new().encoding(encoding).bom_override(true).build(file));
+    let reader: Box<dyn std::io::Read + Send> = Box::new(decoder.build(file));
     Ok(csv::ReaderBuilder::new()
         .delimiter(ascii(o.delimiter, "delimiter")?)
         .quote(ascii(o.quote, "quote character")?)
@@ -527,20 +635,83 @@ fn csv_reader(path: &Path, o: &CsvReadOptions) -> Result<csv::Reader<Box<dyn std
         .from_reader(reader))
 }
 
+fn csv_error(e: &csv::Error) -> AppError {
+    match e.kind() {
+        csv::ErrorKind::Utf8 { pos, .. } => AppError::validation(format!(
+            "The file is not valid UTF-8{}. If it was saved by Excel or another Windows program, choose the Windows-1252 encoding.",
+            pos.as_ref().map(|p| format!(" (line {})", p.line())).unwrap_or_default()
+        )),
+        _ => AppError::validation(format!("Invalid CSV: {e}")),
+    }
+}
+
 pub fn preview_csv(path: &Path, options: &CsvReadOptions, limit: usize) -> Result<CsvPreview> {
     let mut reader = csv_reader(path, options)?;
+    let headers: Option<Vec<String>> =
+        if options.has_header { Some(reader.headers().map_err(|e| csv_error(&e))?.iter().map(str::to_owned).collect()) } else { None };
     let rows: Vec<Vec<String>> = reader
         .records()
         .take(limit)
-        .map(|r| r.map(|r| r.iter().map(str::to_owned).collect()).map_err(|e| AppError::validation(format!("Invalid CSV: {e}"))))
+        .map(|r| r.map(|r| r.iter().map(str::to_owned).collect()).map_err(|e| csv_error(&e)))
         .collect::<Result<_>>()?;
     let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let headers = if options.has_header {
-        reader.headers().map_err(|e| AppError::validation(format!("Invalid CSV: {e}")))?.iter().map(str::to_owned).collect()
-    } else {
-        (1..=width).map(|i| format!("column {i}")).collect()
-    };
+    let headers = headers.unwrap_or_else(|| (1..=width).map(|i| format!("column {i}")).collect());
     Ok(CsvPreview { headers, rows })
+}
+
+/// How a CSV field is read for its target column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldKind {
+    Text,
+    /// Binary columns take the `0x…` hex an export writes for bytes.
+    Binary,
+    /// MySQL/MariaDB BIT columns take numbers (and `0x…` hex) as integers, not as the bytes of their text.
+    Bit,
+}
+
+fn field_kind(engine: Engine, data_type: &str) -> FieldKind {
+    let base = data_type.trim().split(['(', ' ']).next().unwrap_or("").to_ascii_lowercase();
+    match engine {
+        Engine::Sqlite if base.contains("blob") => FieldKind::Binary,
+        Engine::Sqlite => FieldKind::Text,
+        Engine::MySql | Engine::MariaDb => match base.as_str() {
+            "bit" => FieldKind::Bit,
+            "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => FieldKind::Binary,
+            _ => FieldKind::Text,
+        },
+    }
+}
+
+/// Bytes written as `0x` followed by an even number of hex digits.
+fn hex_bytes(s: &str) -> Option<Vec<u8>> {
+    let digits = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    if digits.len() % 2 != 0 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..digits.len()).step_by(2).map(|i| u8::from_str_radix(&digits[i..i + 2], 16).ok()).collect()
+}
+
+fn csv_value(field: &str, kind: FieldKind) -> Value {
+    match kind {
+        FieldKind::Text => Value::Text(field.to_owned()),
+        FieldKind::Binary => hex_bytes(field).map_or_else(|| Value::Text(field.to_owned()), Value::Bytes),
+        FieldKind::Bit => match field.trim().parse::<u64>() {
+            Ok(n) => Value::UInt(n),
+            Err(_) => match hex_bytes(field.trim()).filter(|b| b.len() <= 8) {
+                Some(bytes) => Value::UInt(bytes.iter().fold(0, |n, b| (n << 8) | u64::from(*b))),
+                None => Value::Text(field.to_owned()),
+            },
+        },
+    }
+}
+
+/// Rows the CSV reader rejected itself (wrong number of fields), merged into the driver's report.
+#[derive(Default)]
+struct Rejected {
+    /// Without `skip_errors`: the row that stopped the import.
+    fatal: Option<RowFailure>,
+    failed: Vec<RowFailure>,
+    count: u64,
 }
 
 pub async fn import_csv(
@@ -555,6 +726,13 @@ pub async fn import_csv(
     if spec.mapping.is_empty() {
         return Err(AppError::validation("Map at least one column"));
     }
+    let info = driver.table_info(db, table).await?;
+    let engine = driver.engine();
+    let kinds: Vec<FieldKind> = spec
+        .mapping
+        .iter()
+        .map(|m| info.columns.iter().find(|c| c.name == m.target).map_or(FieldKind::Text, |c| field_kind(engine, &c.data_type)))
+        .collect();
     let total = {
         let mut r = csv_reader(path, &spec.options)?;
         Some(r.records().count() as u64)
@@ -563,10 +741,24 @@ pub async fn import_csv(
     let reader = csv_reader(path, &spec.options)?;
     let spec_c = spec.clone();
     let cancel_c = cancel.clone();
+    let rejected = Arc::new(Mutex::new(Rejected::default()));
+    let rejected_c = rejected.clone();
     let producer = tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut batch: ImportBatch = Vec::with_capacity(BATCH);
         let mut done = 0u64;
+        // Every row must have as many fields as the header (or, without one, the first row): a shorter or longer
+        // row would put its values under the wrong columns.
+        let mut width = None;
+        if spec_c.options.has_header {
+            match reader.headers() {
+                Ok(headers) => width = Some(headers.len()),
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(csv_error(&e)));
+                    return;
+                }
+            }
+        }
         for record in reader.records() {
             if cancel_c.is_cancelled() {
                 let _ = tx.blocking_send(Err(AppError::cancelled()));
@@ -575,17 +767,39 @@ pub async fn import_csv(
             let record = match record {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.blocking_send(Err(AppError::validation(format!("Invalid CSV: {e}"))));
+                    let _ = tx.blocking_send(Err(csv_error(&e)));
                     return;
                 }
             };
             let line = record.position().map(|p| p.line()).unwrap_or(0);
+            let expected = *width.get_or_insert(record.len());
+            if record.len() != expected {
+                let failure = RowFailure { line, message: format!("Expected {expected} fields but found {}", record.len()) };
+                if !spec_c.skip_errors {
+                    // Rows before it go first, so a failure among them is still the one reported.
+                    let message = failure.message.clone();
+                    rejected_c.lock().unwrap().fatal = Some(failure);
+                    if !batch.is_empty() && tx.blocking_send(Ok(std::mem::take(&mut batch))).is_err() {
+                        return;
+                    }
+                    let _ = tx.blocking_send(Err(AppError::validation(message)));
+                    return;
+                }
+                let mut rejected = rejected_c.lock().unwrap();
+                rejected.count += 1;
+                if rejected.failed.len() < MAX_REPORTED_FAILURES {
+                    rejected.failed.push(failure);
+                }
+                continue;
+            }
             let values = spec_c
                 .mapping
                 .iter()
-                .map(|m| match record.get(m.source) {
+                .zip(&kinds)
+                .map(|(m, kind)| match record.get(m.source) {
                     Some("") if spec_c.empty_as_null => Value::Null,
-                    Some(s) => Value::Text(s.to_owned()),
+                    Some(s) if !spec_c.null_text.is_empty() && s == spec_c.null_text => Value::Null,
+                    Some(s) => csv_value(s, *kind),
                     None => Value::Null,
                 })
                 .collect();
@@ -605,9 +819,26 @@ pub async fn import_csv(
         progress(Progress { done, total });
     });
     let columns: Vec<String> = spec.mapping.iter().map(|m| m.target.clone()).collect();
-    let report = driver.import_rows(db, table, &columns, rx, spec.skip_errors, false).await;
-    let _ = producer.await;
-    report
+    let options = ImportOptions { skip_errors: spec.skip_errors, ..ImportOptions::default() };
+    let report = driver.import_rows(db, table, &columns, rx, options).await;
+    producer.await.map_err(|e| AppError::io(e.to_string()))?;
+    let rejected = std::mem::take(&mut *rejected.lock().unwrap());
+    match report {
+        // The import was rolled back at the row the reader rejected.
+        Err(e) => match rejected.fatal {
+            Some(failure) if e.message == failure.message => Ok(ImportReport { inserted: 0, failed: vec![failure], failed_count: 1 }),
+            _ => Err(e),
+        },
+        Ok(mut report) => {
+            if rejected.count > 0 {
+                report.failed_count += rejected.count;
+                report.failed.extend(rejected.failed);
+                report.failed.sort_by_key(|f| f.line);
+                report.failed.truncate(MAX_REPORTED_FAILURES);
+            }
+            Ok(report)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- SQL files
@@ -625,6 +856,8 @@ pub struct StatementFailure {
 pub struct ScriptRunReport {
     pub executed: u64,
     pub failed: Vec<StatementFailure>,
+    /// The script left a transaction open; it was rolled back, discarding its uncommitted writes.
+    pub open_transaction_rolled_back: bool,
 }
 
 pub(crate) fn failure(index: usize, statement: &str, message: String) -> StatementFailure {
@@ -633,44 +866,104 @@ pub(crate) fn failure(index: usize, statement: &str, message: String) -> Stateme
     StatementFailure { index, statement, message }
 }
 
+/// A `.sql` file read line by line in the selected encoding. A UTF-8 byte-order mark is dropped, and wins over a
+/// Windows-1252 selection because it proves the file is UTF-8.
+struct SqlFileLines {
+    input: std::io::BufReader<std::fs::File>,
+    windows_1252: bool,
+    line: Vec<u8>,
+    number: u64,
+    /// Bytes read so far.
+    read: u64,
+    /// File size.
+    total: u64,
+}
+
+impl SqlFileLines {
+    fn open(path: &Path, encoding: TextEncoding) -> Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let total = file.metadata()?.len();
+        let mut input = std::io::BufReader::new(file);
+        let bom = input.fill_buf()?.starts_with(b"\xEF\xBB\xBF");
+        if bom {
+            input.consume(3);
+        }
+        let windows_1252 = encoding == TextEncoding::Windows1252 && !bom;
+        Ok(Self { input, windows_1252, line: Vec::new(), number: 0, read: if bom { 3 } else { 0 }, total })
+    }
+
+    fn next_line(&mut self) -> Result<Option<Cow<'_, str>>> {
+        self.line.clear();
+        let n = self.input.read_until(b'\n', &mut self.line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        self.number += 1;
+        self.read += n as u64;
+        if self.windows_1252 {
+            return Ok(Some(encoding_rs::WINDOWS_1252.decode_without_bom_handling(&self.line).0));
+        }
+        let number = self.number;
+        match std::str::from_utf8(&self.line) {
+            Ok(text) => Ok(Some(Cow::Borrowed(text))),
+            Err(_) => Err(AppError::validation(format!(
+                "The SQL file is not valid UTF-8 (line {number}); nothing was run. If it was saved by a Windows program, choose the Windows-1252 encoding."
+            ))),
+        }
+    }
+
+    /// Decodes the whole file without using it, so a decoding error is found before anything runs.
+    fn check(path: &Path, encoding: TextEncoding, cancel: &CancellationToken) -> Result<()> {
+        let mut lines = Self::open(path, encoding)?;
+        if lines.windows_1252 {
+            // Every byte is a Windows-1252 character.
+            return Ok(());
+        }
+        while lines.next_line()?.is_some() {
+            if cancel.is_cancelled() {
+                return Err(AppError::cancelled());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Runs every statement of a `.sql` file on one session, outside a transaction (dumps manage their own).
-/// The file is read and split incrementally; progress is reported in bytes read.
+/// The whole file is decoded first, so a decoding error never leaves the statements before it applied; it is then
+/// read and split incrementally, and progress is reported in bytes read.
 pub async fn run_sql_file(
     driver: &dyn Driver,
     db: &str,
     path: &Path,
+    encoding: TextEncoding,
     stop_on_error: bool,
     progress: ProgressFn,
     cancel: CancellationToken,
 ) -> Result<ScriptRunReport> {
-    let file = std::fs::File::open(path)?;
-    let total = file.metadata()?.len();
+    {
+        let (path, cancel) = (path.to_owned(), cancel.clone());
+        tokio::task::spawn_blocking(move || SqlFileLines::check(&path, encoding, &cancel))
+            .await
+            .map_err(|e| AppError::io(e.to_string()))??;
+    }
+    let mut lines = SqlFileLines::open(path, encoding)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String>>(64);
     let engine = driver.engine();
     let cancel_reader = cancel.clone();
     let reader = tokio::task::spawn_blocking(move || {
-        let run = || -> Result<()> {
-            let mut input = std::io::BufReader::new(file);
+        let mut run = || -> Result<()> {
             let mut splitter = Splitter::new(engine);
-            let mut line = Vec::new();
-            let mut read = 0u64;
-            let mut first = true;
-            loop {
-                line.clear();
-                let n = input.read_until(b'\n', &mut line)?;
-                if n == 0 || cancel_reader.is_cancelled() {
-                    break;
-                }
-                read += n as u64;
-                let bytes = if first { line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line) } else { &line };
-                first = false;
-                let text = std::str::from_utf8(bytes).map_err(|e| AppError::validation(format!("The SQL file is not valid UTF-8: {e}")))?;
-                for statement in splitter.feed(text) {
+            while !cancel_reader.is_cancelled() {
+                let statements = match lines.next_line()? {
+                    Some(text) => splitter.feed(&text),
+                    None => break,
+                };
+                for statement in statements {
                     if tx.blocking_send(Ok(statement)).is_err() {
                         return Ok(());
                     }
                 }
-                progress(Progress { done: read, total: Some(total) });
+                progress(Progress { done: lines.read, total: Some(lines.total) });
             }
             if !cancel_reader.is_cancelled() {
                 for statement in splitter.finish() {
@@ -690,204 +983,57 @@ pub async fn run_sql_file(
     report
 }
 
-// ---------------------------------------------------------------- copy table
-
-/// Where a copied table goes: possibly another database, connection or engine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CopyTableTarget {
-    pub db: String,
-    pub name: String,
-    /// Copy the rows too, not only the structure.
-    pub data: bool,
+pub struct SqlFileScan {
+    /// Databases the file switches to (`USE`) or creates (`CREATE DATABASE`/`CREATE SCHEMA`), in order of first
+    /// appearance. Its statements after a `USE` run in that database, not in the one it is restored into.
+    pub databases: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CopyTableReport {
-    pub rows: u64,
-}
-
-/// Structure of `design` recreated as `name` in the target database. Self-references follow the copy;
-/// foreign keys to tables missing from the target, table options of another engine, and index features SQLite
-/// lacks (FULLTEXT/SPATIAL indexes, index methods and comments) are dropped.
-/// Index and foreign key names are scoped to the database (SQLite indexes, MySQL foreign keys), so a copy
-/// under a new name renames them after it (`ix_orders_total` → `ix_orders_copy_total`).
-pub(crate) fn copy_design(
-    mut design: crate::TableDesign,
-    name: &str,
-    source_engine: Engine,
-    target_engine: Engine,
-    target_tables: &[String],
-) -> crate::TableDesign {
-    let source_name = std::mem::replace(&mut design.name, name.to_owned());
-    let rename = |object: &mut String| {
-        if source_name != name {
-            *object = if object.contains(&source_name) { object.replacen(&source_name, name, 1) } else { format!("{name}_{object}") };
+/// The database a `USE` or `CREATE DATABASE`/`CREATE SCHEMA` statement names.
+fn named_database(statement: &str, engine: Engine) -> Option<String> {
+    let mut tokens = crate::sql_tokens::Tokens::new(statement, engine);
+    let first = tokens.next()?;
+    let mut name = if first.is_keyword(statement, "USE") {
+        tokens.next()?
+    } else if first.is_keyword(statement, "CREATE") {
+        let kind = tokens.next()?;
+        if !(kind.is_keyword(statement, "DATABASE") || kind.is_keyword(statement, "SCHEMA")) {
+            return None;
         }
+        tokens.next()?
+    } else {
+        return None;
     };
-    design.foreign_keys.retain(|fk| fk.ref_table == source_name || target_tables.contains(&fk.ref_table));
-    for fk in &mut design.foreign_keys {
-        if fk.ref_table == source_name {
-            fk.ref_table = name.to_owned();
-        }
-        rename(&mut fk.name);
+    if name.is_keyword(statement, "IF") {
+        // IF NOT EXISTS
+        name = tokens.nth(2)?;
     }
-    for index in &mut design.indexes {
-        rename(&mut index.name);
-    }
-    if source_engine != target_engine {
-        design.options = crate::TableOptions { comment: design.options.comment.take(), ..Default::default() };
-    }
-    if target_engine == Engine::Sqlite {
-        // SQLite has neither FULLTEXT/SPATIAL indexes nor index methods and comments.
-        design.indexes.retain(|i| matches!(i.kind, crate::IndexKind::Normal | crate::IndexKind::Unique));
-        for index in &mut design.indexes {
-            index.method = None;
-            index.comment = None;
-        }
-    }
-    for c in &mut design.columns {
-        c.original_name = None;
-        // SQLite only auto-increments an INTEGER PRIMARY KEY.
-        if target_engine == Engine::Sqlite && c.auto_increment {
-            c.data_type = "INTEGER".into();
-        }
-    }
-    design
+    name.name(statement).map(Cow::into_owned)
 }
 
-/// Copies a table's structure (and optionally its rows) into another database, possibly on another
-/// connection or engine. The new table is dropped again when the data copy fails or is cancelled.
-pub async fn copy_table(
-    source: &dyn Driver,
-    source_db: &str,
-    table: &str,
-    target: &dyn Driver,
-    to: &CopyTableTarget,
-    progress: ProgressFn,
-    cancel: CancellationToken,
-) -> Result<CopyTableReport> {
-    if to.name.trim().is_empty() {
-        return Err(AppError::validation("Enter a name for the copy"));
-    }
-    let target_tables: Vec<String> = target.list_objects(&to.db).await?.into_iter().map(|o| o.name).collect();
-    if target_tables.iter().any(|t| t.eq_ignore_ascii_case(&to.name)) {
-        return Err(AppError::validation(format!("A table named {} already exists in {}", to.name, to.db)));
-    }
-    let design = copy_design(source.table_design(source_db, table).await?, &to.name, source.engine(), target.engine(), &target_tables);
-    let ddl = target.plan_table(&to.db, None, &design).await?;
-    target.apply_ddl(&to.db, &ddl).await?;
-    if !to.data {
-        return Ok(CopyTableReport { rows: 0 });
-    }
-    match copy_rows(source, source_db, table, target, to, progress, cancel).await {
-        Ok(rows) => Ok(CopyTableReport { rows }),
-        Err(e) => {
-            let _ = target.drop_object(&to.db, &to.name, crate::ObjectKind::Table).await;
-            Err(e)
-        }
-    }
-}
-
-async fn copy_rows(
-    source: &dyn Driver,
-    source_db: &str,
-    table: &str,
-    target: &dyn Driver,
-    to: &CopyTableTarget,
-    progress: ProgressFn,
-    cancel: CancellationToken,
-) -> Result<u64> {
-    let total = Some(source.count_rows(source_db, table, &[]).await?);
-    let q = quote_for(source.engine());
-    let mut stream = source.stream_query(Some(source_db), &format!("SELECT * FROM {}.{}", q(source_db), q(table)), BATCH).await?;
-    let columns = match stream.recv().await {
-        Some(Ok(StreamItem::Columns(c))) => c,
-        Some(Err(e)) => return Err(e),
-        _ => return Err(AppError::sql("The table did not return a result set")),
-    };
-    if source.engine() == Engine::Sqlite && std::ptr::addr_eq(source, target) {
-        // A SQLite stream holds the driver's only connection. Drain it to a temporary database first;
-        // columns without affinity retain integers, floats, text (including NULs) and BLOBs exactly.
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("rows.sqlite");
-        let staging = crate::connect(&crate::ConnectParams::sqlite(path.to_string_lossy().into_owned(), true)).await?;
-        let names = columns.iter().filter(|c| !c.hidden).map(|c| q(&c.name)).collect::<Vec<_>>().join(", ");
-        let created = staging.execute_script(Some("main"), &format!("CREATE TABLE staged_rows ({names})"), 1, None).await?;
-        if let Some(error) = created.error {
-            return Err(error.error);
-        }
-        let staged_target = CopyTableTarget { db: "main".into(), name: "staged_rows".into(), data: true };
-        import_stream(stream, &columns, staging.as_ref(), &staged_target, Arc::new(|_| {}), cancel.clone(), total).await?;
-        let mut staged_stream = staging.stream_query(Some("main"), "SELECT * FROM staged_rows", BATCH).await?;
-        let staged_columns = match staged_stream.recv().await {
-            Some(Ok(StreamItem::Columns(c))) => c,
-            Some(Err(e)) => return Err(e),
-            _ => return Err(AppError::sql("The staged table did not return a result set")),
-        };
-        return import_stream(staged_stream, &staged_columns, target, to, progress, cancel, total).await;
-    }
-    import_stream(stream, &columns, target, to, progress, cancel, total).await
-}
-
-async fn import_stream(
-    mut stream: RowStream,
-    columns: &[ColumnMeta],
-    target: &dyn Driver,
-    to: &CopyTableTarget,
-    progress: ProgressFn,
-    cancel: CancellationToken,
-    total: Option<u64>,
-) -> Result<u64> {
-    let visible: Vec<usize> = (0..columns.len()).filter(|i| !columns[*i].hidden).collect();
-    let names: Vec<String> = visible.iter().map(|i| columns[*i].name.clone()).collect();
-    progress(Progress { done: 0, total });
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportBatch>>(4);
-    let feed = async move {
-        let mut done = 0u64;
-        loop {
-            let item = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => Some(Err(AppError::cancelled())),
-                item = stream.recv() => item,
-            };
-            let rows = match item {
-                None => break,
-                Some(Ok(StreamItem::Columns(_))) => continue,
-                Some(Ok(StreamItem::Rows(rows))) => rows,
-                Some(Err(e)) => {
-                    let _ = tx.send(Err(e)).await;
-                    break;
-                }
-            };
-            let batch: ImportBatch = rows
-                .into_iter()
-                .enumerate()
-                .map(|(i, mut r)| (done + i as u64 + 1, visible.iter().map(|c| std::mem::replace(&mut r[*c], Value::Null)).collect()))
-                .collect();
-            done += batch.len() as u64;
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    let _ = tx.send(Err(AppError::cancelled())).await;
-                    break;
-                }
-                sent = tx.send(Ok(batch)) => {
-                    if sent.is_err() {
-                        break;
-                    }
-                }
+/// Checks that a `.sql` file decodes in `encoding` and lists the databases it switches to or creates, so a restore can
+/// warn before the file's statements go somewhere other than the selected database.
+pub async fn scan_sql_file(path: &Path, encoding: TextEncoding, engine: Engine) -> Result<SqlFileScan> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || -> Result<SqlFileScan> {
+        let mut lines = SqlFileLines::open(&path, encoding)?;
+        let mut splitter = Splitter::new(engine);
+        let mut scan = SqlFileScan::default();
+        let mut note = |statement: &str| {
+            if let Some(name) = named_database(statement, engine).filter(|n| !scan.databases.contains(n)) {
+                scan.databases.push(name);
             }
-            progress(Progress { done, total });
+        };
+        while let Some(text) = lines.next_line()? {
+            splitter.feed(&text).iter().for_each(|s| note(s));
         }
-    };
-    let (report, ()) = tokio::join!(target.import_rows(&to.db, &to.name, &names, rx, false, false), feed);
-    let report = report?;
-    if let Some(f) = report.failed.first() {
-        return Err(AppError::sql(format!("Row {} could not be copied: {}", f.line, f.message)));
-    }
-    Ok(report.inserted)
+        splitter.finish().iter().for_each(|s| note(s));
+        Ok(scan)
+    })
+    .await
+    .map_err(|e| AppError::io(e.to_string()))?
 }
 
 // ---------------------------------------------------------------- backup
@@ -919,7 +1065,24 @@ pub struct DumpScript {
     pub epilogue: Vec<String>,
 }
 
-/// Writes a `.sql` dump of `db` that the engine's own CLI (or [`run_sql_file`]) can restore.
+/// Opens the MySQL/MariaDB session `key` for a series of reads: TIMESTAMPs come back in UTC and, with `snapshot`, every
+/// read sees the same consistent snapshot of InnoDB tables (as `mysqldump --single-transaction`). The caller closes it
+/// with [`Driver::close_editor_session`].
+pub(crate) async fn open_read_session(driver: &dyn Driver, key: &str, db: &str, snapshot: bool) -> Result<()> {
+    let mut sql = "SET time_zone = '+00:00'".to_owned();
+    if snapshot {
+        sql += ";\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
+    }
+    let result = driver.execute_in_session(key, Some(db), &sql, 1, None).await?;
+    match result.error {
+        Some(error) => Err(error.error),
+        None => Ok(()),
+    }
+}
+
+/// Writes a `.sql` dump of `db` that the engine's own CLI (or [`run_sql_file`]) can restore. On MySQL/MariaDB every
+/// table is read in one session, inside one consistent snapshot and with TIMESTAMPs in UTC (the dump's prologue sets
+/// `time_zone = '+00:00'` to match).
 pub async fn dump_database(
     driver: &dyn Driver,
     db: &str,
@@ -931,6 +1094,29 @@ pub async fn dump_database(
     if !options.structure && !options.data {
         return Err(AppError::validation("Choose structure, data or both"));
     }
+    if driver.engine() == Engine::Sqlite || !options.data {
+        return write_dump(driver, db, path, options, None, progress, cancel).await;
+    }
+    let session = format!("schemata-dump-{}", uuid::Uuid::new_v4());
+    let dumped = async {
+        open_read_session(driver, &session, db, true).await?;
+        write_dump(driver, db, path, options, Some(&session), progress, cancel).await
+    }
+    .await;
+    // Ends the snapshot's transaction, also after an error or a cancel.
+    let _ = driver.close_editor_session(&session).await;
+    dumped
+}
+
+async fn write_dump(
+    driver: &dyn Driver,
+    db: &str,
+    path: &Path,
+    options: &DumpOptions,
+    session: Option<&str>,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<DumpReport> {
     let engine = driver.engine();
     let script = driver.dump_script(db).await?;
     let mut total = 0u64;
@@ -946,7 +1132,6 @@ pub async fn dump_database(
     }
     let mut done = 0u64;
     progress(Progress { done, total: Some(total) });
-    let q = quote_for(engine);
     for (table, create) in &script.tables {
         writeln!(out)?;
         if options.structure {
@@ -956,7 +1141,11 @@ pub async fn dump_database(
             continue;
         }
         let info = driver.table_info(db, table).await?;
-        let mut stream = driver.stream_query(Some(db), &format!("SELECT * FROM {}.{}", q(db), q(table)), BATCH).await?;
+        let sql = select_all(engine, db, &info);
+        let mut stream = match session {
+            Some(session) => driver.stream_query_in_session(session, Some(db), &sql, BATCH).await?,
+            None => driver.stream_query(Some(db), &sql, BATCH).await?,
+        };
         let mut columns = Vec::new();
         loop {
             let item = tokio::select! {

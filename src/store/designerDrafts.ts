@@ -27,6 +27,55 @@ type Store = {
   forget: (id: string) => void;
 };
 
+/**
+ * Renames column `index`, following it in index and foreign key columns and in the primary key order. A key
+ * column that gets its first name joins the end of the key order.
+ */
+export function renameColumn(design: TableDesign, index: number, name: string): TableDesign {
+  const old = design.columns[index].name;
+  const rename = (names: string[]) => old && name ? names.map((n) => n === old ? name : n) : names;
+  const primaryKeyOrder = !old && name && design.columns[index].primaryKey && !design.primaryKeyOrder.includes(name)
+    ? [...design.primaryKeyOrder, name]
+    : rename(design.primaryKeyOrder);
+  return {
+    ...design,
+    columns: design.columns.map((c, i) => i === index ? { ...c, name } : c),
+    indexes: design.indexes.map((item) => ({ ...item, columns: rename(item.columns) })),
+    foreignKeys: design.foreignKeys.map((item) => ({ ...item, columns: rename(item.columns) })),
+    primaryKeyOrder,
+  };
+}
+
+/**
+ * Removes column `index` from the design, from its indexes (dropping indexes left without columns), from the
+ * primary key order, and drops the foreign keys that use it (a key cannot lose one column of its pairs).
+ */
+export function removeColumn(design: TableDesign, index: number): TableDesign {
+  const name = design.columns[index].name;
+  const columns = design.columns.filter((_, i) => i !== index);
+  if (!name) return { ...design, columns };
+  return {
+    ...design,
+    columns,
+    indexes: design.indexes
+      .map((item) => ({ ...item, columns: item.columns.filter((c) => c !== name) }))
+      .filter((item) => item.columns.length > 0),
+    foreignKeys: design.foreignKeys.filter((item) => !item.columns.includes(name)),
+    primaryKeyOrder: design.primaryKeyOrder.filter((c) => c !== name),
+  };
+}
+
+/** Adds column `index` to the end of the primary key, or removes it; key columns are NOT NULL. */
+export function setPrimaryKey(design: TableDesign, index: number, on: boolean): TableDesign {
+  const column = design.columns[index];
+  const rest = design.primaryKeyOrder.filter((c) => c !== column.name);
+  return {
+    ...design,
+    columns: design.columns.map((c, i) => i === index ? { ...c, primaryKey: on, nullable: on ? false : c.nullable } : c),
+    primaryKeyOrder: on && column.name ? [...rest, column.name] : rest,
+  };
+}
+
 const isDirty = (draft: Pick<DesignerDraft, "original" | "design" | "inputs">) =>
   draft.original === null || Object.keys(draft.inputs).length > 0 || JSON.stringify(draft.original) !== JSON.stringify(draft.design);
 
@@ -47,15 +96,7 @@ export const useDesignerDrafts = create<Store>((set, get) => ({
       const index = Number(position);
       const columns = text.split(",").map((name) => name.trim()).filter(Boolean);
       if (kind === "column" && design.columns[index]) {
-        const old = design.columns[index].name;
-        const name = text.trim();
-        const rename = (names: string[]) => old && name ? names.map((n) => n === old ? name : n) : names;
-        design = {
-          ...design,
-          columns: design.columns.map((c, i) => i === index ? { ...c, name } : c),
-          indexes: design.indexes.map((item) => ({ ...item, columns: rename(item.columns) })),
-          foreignKeys: design.foreignKeys.map((item) => ({ ...item, columns: rename(item.columns) })),
-        };
+        design = renameColumn(design, index, text.trim());
       } else if (kind === "index") {
         design = { ...design, indexes: design.indexes.map((item, i) => i === index ? { ...item, columns } : item) };
       } else if (kind === "fk") {

@@ -91,3 +91,19 @@ describe("active table selection", () => {
     });
   });
 });
+
+describe("table tab ids", () => {
+  it("never collide when names contain the separator", () => {
+    const tabs = useTabs.getState();
+    tabs.openTable({ connectionId: "server", database: "a/b", name: "c", objectKind: "table" });
+    tabs.openTable({ connectionId: "server", database: "a", name: "b/c", objectKind: "table" });
+    tabs.openTable({ connectionId: "server/a", database: "b", name: "c", objectKind: "table" });
+    const opened = useTabs.getState().tabs;
+    expect(new Set(opened.map((tab) => tab.id)).size).toBe(3);
+    expect(opened.map((tab) => tab.kind === "table" && [tab.connectionId, tab.database, tab.name])).toEqual([
+      ["server", "a/b", "c"],
+      ["server", "a", "b/c"],
+      ["server/a", "b", "c"],
+    ]);
+  });
+});

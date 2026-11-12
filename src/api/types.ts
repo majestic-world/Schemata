@@ -79,6 +79,8 @@ export type ForeignKeyInfo = {
   name: string;
   columns: string[];
   refTable: string;
+  /** Database of the referenced table when it is not the table's own database. */
+  refSchema: string | null;
   refColumns: string[];
   onUpdate: string;
   onDelete: string;
@@ -105,7 +107,11 @@ export type TableInfo = {
   comment: string | null;
   createSql: string;
   rowIdentity: RowIdentity;
+  /** Primary key columns in key order. */
+  primaryKey: string[];
 };
+/** A foreign key in another table that references this one. */
+export type IncomingForeignKey = { table: string; name: string; onDelete: string };
 export type CreateDatabase = { name: string; charset: string | null; collation: string | null };
 export type CharsetInfo = { name: string; defaultCollation: string; collations: string[] };
 
@@ -116,10 +122,11 @@ export type PageRequest = { offset: number; limit: number; sort: SortSpec | null
 export type Page = { columns: ColumnMeta[]; rows: CellValue[][] };
 
 export type ColumnValue = { column: string; value: CellValue };
+/** `expected`: the row's values as loaded, checked where the key alone may address another row (SQLite rowids). */
 export type RowChange =
-  | { kind: "update"; key: CellValue[]; values: ColumnValue[] }
+  | { kind: "update"; key: CellValue[]; values: ColumnValue[]; expected: ColumnValue[] }
   | { kind: "insert"; values: ColumnValue[] }
-  | { kind: "delete"; key: CellValue[] };
+  | { kind: "delete"; key: CellValue[]; expected: ColumnValue[] };
 export type ChangeError = { index: number | null; error: AppError };
 
 export type ColumnDesign = {
@@ -137,6 +144,7 @@ export type ForeignKeyDesign = {
   name: string;
   columns: string[];
   refTable: string;
+  refSchema: string | null;
   refColumns: string[];
   onUpdate: string;
   onDelete: string;
@@ -148,6 +156,8 @@ export type TableDesign = {
   indexes: IndexDesign[];
   foreignKeys: ForeignKeyDesign[];
   options: TableOptions;
+  /** Primary key columns in key order; flagged columns missing here follow in column order. */
+  primaryKeyOrder: string[];
 };
 
 export type HistoryEntry = { connectionId: string; sql: string; ok: boolean; durationMs: number; at: number };
@@ -160,9 +170,13 @@ export type ExportSource = { kind: "table"; table: string } | { kind: "query"; s
 export type CsvReadOptions = { delimiter: string; quote: string; hasHeader: boolean; encoding: TextEncoding };
 export type CsvPreview = { headers: string[]; rows: string[][] };
 export type ColumnMapping = { source: number; target: string };
-export type CsvImport = { options: CsvReadOptions; mapping: ColumnMapping[]; emptyAsNull: boolean; skipErrors: boolean };
+/** `nullText`: fields equal to it become NULL (an export's "Write NULL as" marker); empty: none. */
+export type CsvImport = { options: CsvReadOptions; mapping: ColumnMapping[]; emptyAsNull: boolean; nullText: string; skipErrors: boolean };
 export type ImportReport = { inserted: number; failed: { line: number; message: string }[]; failedCount: number };
-export type ScriptRunReport = { executed: number; failed: { index: number; statement: string; message: string }[] };
+/** `openTransactionRolledBack`: the script left a transaction open, and it was rolled back. */
+export type ScriptRunReport = { executed: number; failed: { index: number; statement: string; message: string }[]; openTransactionRolledBack: boolean };
+/** Databases a `.sql` file switches to (`USE`) or creates (`CREATE DATABASE`), in order of appearance. */
+export type SqlFileScan = { databases: string[] };
 export type OperationProgress = { operationId: string; done: number; total: number | null };
 export type CopyTableTarget = { db: string; name: string; data: boolean };
 export type GeneratorKind =

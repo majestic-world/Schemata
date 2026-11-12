@@ -1,9 +1,11 @@
 use crate::model::derive_identity;
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
+use crate::transfer::{
+    DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
+};
 use crate::{
     AppError, CellValue, ChangeError, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver, Engine,
-    ErrorKind, Filter, ForeignKeyInfo, IndexInfo, IndexKind, IndexMethod, ObjectInfo, ObjectKind, Page, PageRequest, Result, RowChange,
-    RowIdentity, ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+    ErrorKind, Filter, ForeignKeyInfo, IncomingForeignKey, IndexInfo, IndexKind, IndexMethod, ObjectInfo, ObjectKind, Page, PageRequest,
+    Result, RowChange, RowIdentity, ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -14,7 +16,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Column, Connection, Either, Row, Statement, TypeInfo, ValueRef};
 use sqlx_mysql::types::MySqlTime;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -29,16 +31,52 @@ struct RunningQuery {
 /// A SQL editor tab's dedicated server connection, opened lazily outside the pool. The async mutex serializes runs.
 type EditorSession = Arc<tokio::sync::Mutex<Option<sqlx::MySqlConnection>>>;
 
+/// Session `sql_mode` of pool connections (grid edits, DDL, imports, metadata): the server's mode plus
+/// `STRICT_ALL_TABLES`, so invalid values fail instead of being stored converted, and without
+/// `NO_BACKSLASH_ESCAPES`, since [`crate::design::mysql::literal`] escapes backslashes. Editor sessions and Run SQL
+/// File connections keep the server's mode.
+const STRICT_SESSION: &str = "SET SESSION sql_mode = CONCAT_WS(',', 'STRICT_ALL_TABLES', \
+     NULLIF(TRIM(BOTH ',' FROM REPLACE(CONCAT(',', @@SESSION.sql_mode, ','), ',NO_BACKSLASH_ESCAPES,', ',')), ''))";
+
+/// `sql_mode` a dump is restored under, as mysqldump writes it: zero ids stay zero and zero dates load.
+const DUMP_SQL_MODE: &str = "NO_AUTO_VALUE_ON_ZERO";
+
+/// How a server reports `information_schema.COLUMNS.COLUMN_DEFAULT`.
+#[derive(Clone, Copy, PartialEq)]
+enum DefaultStyle {
+    /// MariaDB 10.2.7+: SQL expressions (quoted literals, `NULL` for none).
+    Expressions,
+    /// MySQL 8.0.13+: unquoted literals, expressions flagged `DEFAULT_GENERATED` in `EXTRA`.
+    FlaggedLiterals,
+    /// Older MySQL and MariaDB: unquoted literals, and `CURRENT_TIMESTAMP` is the only expression.
+    Literals,
+}
+
+impl DefaultStyle {
+    fn of(engine: Engine, version: &str) -> Self {
+        let number: Vec<u32> = version.split(|c: char| !c.is_ascii_digit()).take(3).map(|p| p.parse().unwrap_or(0)).collect();
+        let at_least = |min: [u32; 3]| number.as_slice() >= min.as_slice();
+        match engine {
+            Engine::MariaDb if at_least([10, 2, 7]) => DefaultStyle::Expressions,
+            Engine::MySql if at_least([8, 0, 13]) => DefaultStyle::FlaggedLiterals,
+            _ => DefaultStyle::Literals,
+        }
+    }
+}
+
 pub struct MySqlDriver {
     pool: MySqlPool,
     connect_options: MySqlConnectOptions,
     engine: Engine,
     version: String,
+    defaults: DefaultStyle,
     uncached_statistics: bool,
     /// Server thread id per running execution, used by `KILL QUERY`.
     running: Mutex<HashMap<String, RunningQuery>>,
     /// Editor sessions by key; dropping the driver closes them, and the server rolls back their transactions.
     editor_sessions: Mutex<HashMap<String, EditorSession>>,
+    /// Editor sessions whose server session was lost with a replaced driver; the next run of each reports it once.
+    lost_editor_sessions: Mutex<HashSet<String>>,
 }
 
 pub(crate) fn quote_ident(name: &str) -> String {
@@ -71,7 +109,12 @@ pub(crate) fn map_err(e: sqlx::Error) -> AppError {
         }
         sqlx::Error::Io(e) => AppError::connection(format!("Connection lost: {e}")),
         sqlx::Error::Tls(e) => AppError::connection(format!("TLS error: {e}")),
-        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => AppError::connection("Could not reach the server"),
+        sqlx::Error::PoolTimedOut => AppError {
+            kind: ErrorKind::Connection,
+            message: "Could not reach the server (timed out waiting for a connection)".to_owned(),
+            sql_state: Some(crate::sessions::POOL_TIMEOUT_SQL_STATE.to_owned()),
+        },
+        sqlx::Error::PoolClosed => AppError::connection("Could not reach the server"),
         sqlx::Error::Protocol(m) => AppError::connection(m),
         other => AppError::sql(other.to_string()),
     }
@@ -98,11 +141,11 @@ pub(crate) fn read_value(row: &MySqlRow, i: usize) -> Result<Value> {
         "DECIMAL" => Value::Decimal(row.try_get_unchecked::<String, _>(i).map_err(dec)?),
         "DATE" => match row.try_get_unchecked::<chrono::NaiveDate, _>(i) {
             Ok(d) => Value::DateTime(d.format("%Y-%m-%d").to_string()),
-            Err(_) => Value::DateTime(zero_date(row, i, "0000-00-00")),
+            Err(_) => Value::DateTime(invalid_date(row, i, false).map_err(dec)?),
         },
         "DATETIME" | "TIMESTAMP" => match row.try_get_unchecked::<chrono::NaiveDateTime, _>(i) {
             Ok(d) => Value::DateTime(d.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
-            Err(_) => Value::DateTime(zero_date(row, i, "0000-00-00 00:00:00")),
+            Err(_) => Value::DateTime(invalid_date(row, i, true).map_err(dec)?),
         },
         "TIME" => Value::DateTime(row.try_get_unchecked::<MySqlTime, _>(i).map_err(dec)?.to_string()),
         "BIT" => {
@@ -126,12 +169,29 @@ pub(crate) fn read_value(row: &MySqlRow, i: usize) -> Result<Value> {
     })
 }
 
-/// Zero dates ('0000-00-00') are valid in MySQL but not representable in chrono.
-fn zero_date(row: &MySqlRow, i: usize, fallback: &str) -> String {
-    match row.try_get_unchecked::<Vec<u8>, _>(i) {
-        Ok(b) if !b.is_empty() && b.iter().all(|c| c.is_ascii()) => String::from_utf8_lossy(&b).into_owned(),
-        _ => fallback.to_owned(),
+/// Dates chrono cannot represent, which MySQL stores as given: zero dates (`0000-00-00`) and dates with a zero
+/// month or day (`2024-05-00`). Text results carry them as text; binary (prepared statement) results as
+/// `length, year (2 bytes LE), month, day[, hour, minute, second[, microseconds (4 bytes LE)]]`.
+fn invalid_date(row: &MySqlRow, i: usize, with_time: bool) -> std::result::Result<String, sqlx::Error> {
+    let b = row.try_get_unchecked::<Vec<u8>, _>(i)?;
+    if b.first().is_some_and(u8::is_ascii_digit) {
+        return Ok(String::from_utf8_lossy(&b).into_owned());
     }
+    let byte = |n: usize| b.get(n).copied().unwrap_or(0);
+    let len = byte(0);
+    let date = format!("{:04}-{:02}-{:02}", u16::from_le_bytes([byte(1), byte(2)]), byte(3), byte(4));
+    if !with_time {
+        return Ok(date);
+    }
+    let (hour, minute, second) = if len >= 7 { (byte(5), byte(6), byte(7)) } else { (0, 0, 0) };
+    let micros = if len >= 11 { u32::from_le_bytes([byte(8), byte(9), byte(10), byte(11)]) } else { 0 };
+    // Fractions as chrono's `%.f` writes them: none, milliseconds or microseconds.
+    let fraction = match micros {
+        0 => String::new(),
+        m if m % 1000 == 0 => format!(".{:03}", m / 1000),
+        m => format!(".{m:06}"),
+    };
+    Ok(format!("{date} {hour:02}:{minute:02}:{second:02}{fraction}"))
 }
 
 pub(crate) fn column_meta(row: &MySqlRow) -> Vec<ColumnMeta> {
@@ -196,18 +256,49 @@ fn is_numeric_type(data_type: &str) -> bool {
     )
 }
 
-/// Turns `information_schema.COLUMNS.COLUMN_DEFAULT` into a SQL expression. MariaDB already reports
-/// expressions; MySQL reports literals unquoted and flags expressions with `DEFAULT_GENERATED`.
-fn default_expression(engine: Engine, raw: Option<String>, data_type: &str, extra: &str) -> Option<String> {
+/// `CURRENT_TIMESTAMP`, `CURRENT_TIMESTAMP(3)`, `now()`: the only expression defaults before MySQL 8.0.13.
+fn is_current_timestamp(expression: &str) -> bool {
+    let upper = expression.trim().to_ascii_uppercase();
+    let rest = upper.strip_prefix("CURRENT_TIMESTAMP").or_else(|| upper.strip_prefix("NOW"));
+    rest.is_some_and(|r| {
+        r.is_empty() || r.strip_prefix('(').and_then(|r| r.strip_suffix(')')).is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
+/// MySQL reports expression defaults with quotes and backslashes escaped (`concat(_utf8mb4\'a\')`). An expression
+/// with a quote that is not escaped is reported as written.
+fn unescape_expression(raw: &str) -> String {
+    let mut backslashes = 0;
+    for c in raw.chars() {
+        if c == '\'' && backslashes % 2 == 0 {
+            return raw.to_owned();
+        }
+        backslashes = if c == '\\' { backslashes + 1 } else { 0 };
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        out.extend(if c == '\\' { chars.next() } else { Some(c) });
+    }
+    out
+}
+
+/// Turns `information_schema.COLUMNS.COLUMN_DEFAULT` into a SQL expression (see [`DefaultStyle`]).
+fn default_expression(style: DefaultStyle, raw: Option<String>, data_type: &str, extra: &str) -> Option<String> {
     let raw = raw?;
-    if engine == Engine::MariaDb {
-        return (!raw.eq_ignore_ascii_case("NULL")).then_some(raw);
+    match style {
+        DefaultStyle::Expressions => return (!raw.eq_ignore_ascii_case("NULL")).then_some(raw),
+        DefaultStyle::FlaggedLiterals if extra.to_ascii_uppercase().contains("DEFAULT_GENERATED") => {
+            let expression = unescape_expression(&raw);
+            return Some(if is_current_timestamp(&expression) { expression } else { format!("({expression})") });
+        }
+        DefaultStyle::Literals if matches!(data_type, "timestamp" | "datetime") && is_current_timestamp(&raw) => return Some(raw),
+        _ => {}
     }
-    if extra.to_ascii_uppercase().contains("DEFAULT_GENERATED") {
-        let upper = raw.to_ascii_uppercase();
-        return Some(if upper.starts_with("CURRENT_TIMESTAMP") || upper.starts_with("NOW") { raw } else { format!("({raw})") });
-    }
-    if is_numeric_type(data_type) { Some(raw) } else { Some(crate::design::mysql::literal(&raw)) }
+    let binary = matches!(data_type, "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob");
+    // MySQL 8 reports binary literals in hex (`0x6162`), which is valid SQL as is.
+    let hex = raw.strip_prefix("0x").is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()));
+    if is_numeric_type(data_type) || (binary && hex) { Some(raw) } else { Some(crate::design::mysql::literal(&raw)) }
 }
 
 /// Column names of a statement, by preparing it. Used when a result set is empty and has no row to read them
@@ -223,12 +314,37 @@ async fn statement_columns(conn: &mut sqlx::MySqlConnection, sql: &str) -> Optio
     )
 }
 
-/// Removes `DEFINER=user@host` so a dumped view can be created by whoever restores it.
+/// Removes the `DEFINER=user@host` clause so a dumped view, routine or event can be created by whoever restores it.
 fn strip_definer(sql: &str) -> String {
     let Some(start) = sql.find("DEFINER=") else { return sql.to_owned() };
-    let rest = &sql[start..];
-    let end = rest.find(" SQL SECURITY").or_else(|| rest.find(" VIEW")).unwrap_or(rest.len());
-    format!("{}{}", &sql[..start], rest[end..].trim_start())
+    let mut rest = &sql[start + "DEFINER=".len()..];
+    // `user`@`host`, each part quoted (doubling its quote) or bare, or a bare `CURRENT_USER`.
+    loop {
+        let end = match rest.chars().next() {
+            Some(quote @ ('`' | '\'' | '"')) => {
+                let mut chars = rest.char_indices().skip(1).peekable();
+                let mut end = rest.len();
+                while let Some((i, c)) = chars.next() {
+                    if c == quote {
+                        if chars.peek().is_some_and(|&(_, next)| next == quote) {
+                            chars.next();
+                        } else {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                }
+                end
+            }
+            _ => rest.find(|c: char| c.is_whitespace() || c == '@').unwrap_or(rest.len()),
+        };
+        rest = &rest[end..];
+        match rest.strip_prefix('@') {
+            Some(host) => rest = host,
+            None => break,
+        }
+    }
+    format!("{}{}", &sql[..start], rest.trim_start())
 }
 
 /// Statements whose results are row sets even when empty.
@@ -278,6 +394,7 @@ impl MySqlDriver {
             .max_connections(6)
             .min_connections(1)
             .acquire_timeout(Duration::from_secs(15))
+            .after_connect(|conn, _| Box::pin(async move { sqlx::raw_sql(STRICT_SESSION).execute(conn).await.map(|_| ()) }))
             .connect_with(opts.clone())
             .await
             .map_err(map_err)?;
@@ -289,10 +406,12 @@ impl MySqlDriver {
             pool,
             connect_options: opts,
             engine,
+            defaults: DefaultStyle::of(engine, &version),
             version,
             uncached_statistics,
             running: Mutex::new(HashMap::new()),
             editor_sessions: Mutex::new(HashMap::new()),
+            lost_editor_sessions: Mutex::new(HashSet::new()),
         })
     }
 
@@ -312,6 +431,10 @@ impl MySqlDriver {
         &self,
         key: &str,
     ) -> Result<(tokio::sync::OwnedMutexGuard<Option<sqlx::MySqlConnection>>, sqlx::MySqlConnection)> {
+        // The session was lost with the driver this one replaced (reconnection, close and reopen).
+        if self.lost_editor_sessions.lock().unwrap().remove(key) {
+            return Err(lost_editor_session());
+        }
         let slot = self.editor_sessions.lock().unwrap().entry(key.to_owned()).or_default().clone();
         let mut guard = slot.lock_owned().await;
         let conn = match guard.take() {
@@ -319,9 +442,7 @@ impl MySqlDriver {
                 // The server may have closed it meanwhile (wait_timeout, KILL, restart). Reconnecting silently would hide
                 // the rolled-back transaction, so this run fails and the next one opens a fresh session.
                 if conn.ping().await.is_err() {
-                    return Err(AppError::connection(
-                        "The server closed this editor session; any open transaction was rolled back. Run again to reconnect.",
-                    ));
+                    return Err(lost_editor_session());
                 }
                 conn
             }
@@ -339,9 +460,7 @@ impl MySqlDriver {
         execution_id: Option<&str>,
     ) -> Result<ScriptResult> {
         let statements = split_statements(sql, self.engine);
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
-        }
+        use_database(conn, db).await?;
         if let Some(id) = execution_id {
             let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
             self.running.lock().unwrap().insert(id.to_owned(), RunningQuery { thread, cancelled: false, cancel_complete: None });
@@ -354,7 +473,7 @@ impl MySqlDriver {
             // MySQL may return a successful SLEEP result when KILL QUERY interrupts it.
             let result = if cancelled() { Err(AppError::cancelled()) } else { result };
             match result {
-                Ok(o) => outcomes.push(o),
+                Ok(o) => outcomes.extend(o),
                 Err(e) => {
                     error = Some(StatementError { index, statement, error: e });
                     break;
@@ -372,9 +491,7 @@ impl MySqlDriver {
     }
 
     async fn more_rows(conn: &mut sqlx::MySqlConnection, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
-        }
+        use_database(conn, db).await?;
         let rows = sqlx::query(AssertSqlSafe(crate::sql::more_rows(statement)))
             .bind(limit as i64)
             .bind(offset as i64)
@@ -412,14 +529,25 @@ impl MySqlDriver {
         Ok(())
     }
 
-    async fn run_statement(conn: &mut sqlx::MySqlConnection, sql: &str, row_limit: usize) -> Result<StatementOutcome> {
+    /// Runs one statement; a `CALL` may return several result sets, one outcome each, every set with its own columns.
+    async fn run_statement(conn: &mut sqlx::MySqlConnection, sql: &str, row_limit: usize) -> Result<Vec<StatementOutcome>> {
         let started = Instant::now();
         let mut stream = sqlx::raw_sql(AssertSqlSafe(sql)).fetch_many(&mut *conn);
+        let mut outcomes = Vec::new();
         let mut columns: Option<Vec<ColumnMeta>> = None;
         let mut rows = Vec::new();
         let mut has_more = false;
         let mut affected = 0u64;
         let mut last_insert_id = None;
+        let mut end_result_set = |columns: Vec<ColumnMeta>, rows: &mut Vec<Vec<CellValue>>, has_more: &mut bool| {
+            outcomes.push(StatementOutcome::Rows {
+                statement: sql.to_owned(),
+                columns,
+                rows: std::mem::take(rows),
+                has_more: std::mem::take(has_more),
+                duration_ms: started.elapsed().as_millis() as u64,
+            })
+        };
         while let Some(item) = stream.try_next().await.map_err(map_err)? {
             match item {
                 Either::Right(row) => {
@@ -430,26 +558,308 @@ impl MySqlDriver {
                         has_more = true;
                     }
                 }
-                Either::Left(done) => {
-                    affected += done.rows_affected();
-                    if done.last_insert_id() > 0 {
-                        last_insert_id = Some(done.last_insert_id());
+                Either::Left(done) => match columns.take() {
+                    Some(cols) => end_result_set(cols, &mut rows, &mut has_more),
+                    None => {
+                        affected += done.rows_affected();
+                        if done.last_insert_id() > 0 {
+                            last_insert_id = Some(done.last_insert_id());
+                        }
                     }
-                }
+                },
             }
         }
         drop(stream);
-        let duration_ms = started.elapsed().as_millis() as u64;
-        if columns.is_none() && returns_rows(sql) {
-            // Empty result sets carry no rows to read column names from; prepare the statement instead.
-            columns = statement_columns(conn, sql).await;
+        if let Some(cols) = columns.take() {
+            end_result_set(cols, &mut rows, &mut has_more);
         }
-        if columns.is_some() || returns_rows(sql) {
-            Ok(StatementOutcome::Rows { statement: sql.to_owned(), columns: columns.unwrap_or_default(), rows, has_more, duration_ms })
+        if !outcomes.is_empty() {
+            return Ok(outcomes);
+        }
+        let duration_ms = started.elapsed().as_millis() as u64;
+        Ok(vec![if returns_rows(sql) {
+            // Empty result sets carry no rows to read column names from; prepare the statement instead.
+            let columns = statement_columns(conn, sql).await.unwrap_or_default();
+            StatementOutcome::Rows { statement: sql.to_owned(), columns, rows: Vec::new(), has_more: false, duration_ms }
         } else {
-            Ok(StatementOutcome::Affected { statement: sql.to_owned(), rows_affected: affected, last_insert_id, duration_ms })
+            StatementOutcome::Affected { statement: sql.to_owned(), rows_affected: affected, last_insert_id, duration_ms }
+        }])
+    }
+
+    /// [`Driver::execute_statements`] on `conn`, which the caller closes afterwards.
+    async fn run_statements(
+        &self,
+        conn: &mut sqlx::MySqlConnection,
+        db: Option<&str>,
+        mut statements: tokio::sync::mpsc::Receiver<Result<String>>,
+        stop_on_error: bool,
+        cancel: &CancellationToken,
+    ) -> Result<ScriptRunReport> {
+        use_database(conn, db).await?;
+        let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
+        let mut report = ScriptRunReport::default();
+        let mut index = 0;
+        let mut input_error = None;
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                next = statements.recv() => next,
+            };
+            let st = match next {
+                None => break,
+                Some(Ok(st)) => st,
+                Some(Err(error)) => {
+                    input_error = Some(error);
+                    break;
+                }
+            };
+            let result = {
+                let query = sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn);
+                tokio::pin!(query);
+                tokio::select! {
+                    biased;
+                    result = &mut query => result.map_err(map_err).map(|_| ()),
+                    _ = cancel.cancelled() => {
+                        // Poll the query while establishing the control connection too: cancellation can race
+                        // its first socket write. Drain the interrupted response before session cleanup.
+                        let (_, killed) = tokio::join!(&mut query, self.kill_query(thread));
+                        killed.and(Err(AppError::cancelled()))
+                    }
+                }
+            };
+            match result {
+                Ok(()) => report.executed += 1,
+                Err(error) => {
+                    report.failed.push(crate::transfer::failure(index, &st, error.message));
+                    if stop_on_error || cancel.is_cancelled() {
+                        break;
+                    }
+                }
+            }
+            index += 1;
+        }
+        // Undo what the script left uncommitted, including on reader failures and cancellation.
+        report.open_transaction_rolled_back = roll_back_open_transaction(conn).await?;
+        if cancel.is_cancelled() {
+            Err(AppError::cancelled())
+        } else if let Some(error) = input_error {
+            Err(error)
+        } else {
+            Ok(report)
         }
     }
+
+    /// `SHOW CREATE <kind>` of an object of `db`: `(sql_mode, CREATE statement without DEFINER, time_zone)`.
+    async fn show_create(&self, db: &str, kind: &str, name: &str) -> Result<(String, String, Option<String>)> {
+        let row = sqlx::raw_sql(AssertSqlSafe(format!("SHOW CREATE {kind} {}.{}", quote_ident(db), quote_ident(name))))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(map_err)?;
+        // Events report their time zone before the statement.
+        let (create, time_zone) = if kind == "EVENT" { (text(&row, 3)?, text(&row, 2)?) } else { (text(&row, 2)?, None) };
+        // Without the privilege to read the body, the server reports none: the backup would silently lack it.
+        let create = create.ok_or_else(|| {
+            AppError::validation(format!(
+                "Cannot read the definition of {} {name}: the user lacks the privilege to see it",
+                kind.to_lowercase()
+            ))
+        })?;
+        Ok((text(&row, 1)?.unwrap_or_default(), strip_definer(&create), time_zone))
+    }
+
+    /// Stored procedures, functions (and MariaDB packages) of `db`, each created under its own `sql_mode`.
+    async fn dump_routines(&self, db: &str) -> Result<Vec<String>> {
+        let routines = sqlx::query(
+            "SELECT ROUTINE_TYPE, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_TYPE, ROUTINE_NAME",
+        )
+        .bind(db)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let mut out = Vec::new();
+        for r in &routines {
+            let (kind, name) = (text(r, 0)?.unwrap_or_default().to_ascii_uppercase(), text(r, 1)?.unwrap_or_default());
+            if !matches!(kind.as_str(), "PROCEDURE" | "FUNCTION" | "PACKAGE" | "PACKAGE BODY") {
+                return Err(AppError::validation(format!("Cannot back up routine {name} of unknown type {kind}")));
+            }
+            let (sql_mode, create, _) = self.show_create(db, &kind, &name).await?;
+            out.push(format!(
+                "DROP {kind} IF EXISTS {};\nSET SESSION sql_mode = {};\nDELIMITER ;;\n{create};;\nDELIMITER ;\nSET SESSION sql_mode = {};",
+                quote_ident(&name),
+                crate::design::mysql::literal(&sql_mode),
+                crate::design::mysql::literal(DUMP_SQL_MODE),
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Events of `db`, each created under its own `sql_mode` and time zone (which their schedules are read in).
+    async fn dump_events(&self, db: &str) -> Result<Vec<String>> {
+        let names: Vec<String> = sqlx::query("SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME")
+            .bind(db)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_err)?
+            .iter()
+            .map(|r| text(r, 0).map(Option::unwrap_or_default))
+            .collect::<Result<_>>()?;
+        let mut out = Vec::new();
+        for name in names {
+            let (sql_mode, create, time_zone) = self.show_create(db, "EVENT", &name).await?;
+            out.push(format!(
+                "DROP EVENT IF EXISTS {};\nSET SESSION sql_mode = {};\nSET time_zone = {};\nDELIMITER ;;\n{create};;\nDELIMITER ;\nSET SESSION sql_mode = {};\nSET time_zone = '+00:00';",
+                quote_ident(&name),
+                crate::design::mysql::literal(&sql_mode),
+                crate::design::mysql::literal(time_zone.as_deref().unwrap_or("SYSTEM")),
+                crate::design::mysql::literal(DUMP_SQL_MODE),
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Indexes the designer cannot model, by name: prefix lengths (`SUB_PART`), descending or functional key parts,
+    /// invisible (MySQL) or ignored (MariaDB). Re-created from a design they would change, so the designer leaves
+    /// them alone. `PRIMARY` is listed when the primary key is such an index.
+    async fn unmodelled_indexes(&self, db: &str, table: &str) -> Result<Vec<String>> {
+        // Every column: their set differs between servers and versions.
+        let rows = sqlx::query("SELECT * FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?")
+            .bind(db)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_err)?;
+        let mut out: Vec<String> = Vec::new();
+        for r in &rows {
+            let field = |name: &str| match r.columns().iter().position(|c| c.name().eq_ignore_ascii_case(name)) {
+                Some(i) => text(r, i),
+                None => Ok(None),
+            };
+            let index = field("INDEX_NAME")?.unwrap_or_default();
+            // Some servers report a fixed prefix length on spatial key parts.
+            let spatial = field("INDEX_TYPE")?.is_some_and(|t| t.eq_ignore_ascii_case("SPATIAL"));
+            let unmodelled = (field("SUB_PART")?.is_some() && !spatial)
+                || field("COLLATION")?.as_deref() == Some("D")
+                || field("COLUMN_NAME")?.is_none()
+                || field("EXPRESSION")?.is_some()
+                || field("IS_VISIBLE")?.is_some_and(|v| v.eq_ignore_ascii_case("NO"))
+                || field("IGNORED")?.is_some_and(|v| v.eq_ignore_ascii_case("YES"));
+            if unmodelled && !out.contains(&index) {
+                out.push(index);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// BIT values typed as text (`6`, `b'110'`, `0x06`) as integers: bound as text, MySQL would store the bytes of the
+/// characters (`'6'` is 54). Other text is refused.
+fn bit_values<'a>(info: &TableInfo, changes: &'a [RowChange]) -> Result<std::borrow::Cow<'a, [RowChange]>, ChangeError> {
+    let bits: Vec<&str> =
+        info.columns.iter().filter(|c| c.data_type.to_ascii_lowercase().starts_with("bit")).map(|c| c.name.as_str()).collect();
+    let typed = |v: &crate::ColumnValue| bits.contains(&v.column.as_str()) && matches!(v.value, CellValue::Text(_));
+    let values = |c: &RowChange| match c {
+        RowChange::Insert { values } | RowChange::Update { values, .. } => values.iter().any(typed),
+        RowChange::Delete { .. } => false,
+    };
+    if !changes.iter().any(values) {
+        return Ok(std::borrow::Cow::Borrowed(changes));
+    }
+    let mut converted = changes.to_vec();
+    for (index, change) in converted.iter_mut().enumerate() {
+        let (RowChange::Insert { values } | RowChange::Update { values, .. }) = change else { continue };
+        for v in values.iter_mut().filter(|v| bits.contains(&v.column.as_str())) {
+            let CellValue::Text(text) = &v.value else { continue };
+            let number = parse_bit(text).ok_or_else(|| ChangeError {
+                index: Some(index),
+                error: AppError::validation(format!("{} is a BIT column: enter a number such as 6, b'110' or 0x06", v.column)),
+            })?;
+            v.value = Value::UInt(number).to_cell();
+        }
+    }
+    Ok(std::borrow::Cow::Owned(converted))
+}
+
+/// `6`, `b'110'`/`0b110` or `x'06'`/`0x06`.
+fn parse_bit(text: &str) -> Option<u64> {
+    let t = text.trim();
+    let quoted = |prefix: [char; 2]| t.strip_prefix(prefix).and_then(|r| r.strip_prefix('\'')).and_then(|r| r.strip_suffix('\''));
+    let digits = |d: &str, radix| if d.is_empty() || d.starts_with('+') { None } else { u64::from_str_radix(d, radix).ok() };
+    if let Some(b) = t.strip_prefix("0b").or_else(|| quoted(['b', 'B'])) {
+        return digits(b, 2);
+    }
+    if let Some(h) = t.strip_prefix("0x").or_else(|| quoted(['x', 'X'])) {
+        return digits(h, 16);
+    }
+    digits(t, 10)
+}
+
+fn lost_editor_session() -> AppError {
+    AppError::connection("The server closed this editor session; any open transaction was rolled back. Run again to reconnect.")
+}
+
+async fn use_database(conn: &mut sqlx::MySqlConnection, db: Option<&str>) -> Result<()> {
+    if let Some(db) = db {
+        sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
+    }
+    Ok(())
+}
+
+/// Running a statement again to load more of its rows must not repeat side effects.
+fn require_read_only(statement: &str) -> Result<()> {
+    if crate::sql::is_read_only_query(statement) {
+        Ok(())
+    } else {
+        Err(AppError::validation(
+            "Only read-only statements (such as SELECT) can load more rows: this one would run again and repeat its effects",
+        ))
+    }
+}
+
+/// Rolls back the transaction open on `conn`, if any, and tells whether there was one. Every server reply flags an
+/// open transaction; `begin_with` fails with `BeginFailed` when a no-op statement's reply does not.
+async fn roll_back_open_transaction(conn: &mut sqlx::MySqlConnection) -> Result<bool> {
+    match conn.begin_with("DO 0").await {
+        Ok(tx) => {
+            tx.rollback().await.map_err(map_err)?;
+            Ok(true)
+        }
+        Err(sqlx::Error::BeginFailed) => Ok(false),
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+/// Sends the rows of `sql` to `tx` in batches of `batch`, the column list first. Stops when the receiver is gone.
+async fn stream_rows(
+    conn: &mut sqlx::MySqlConnection,
+    sql: &str,
+    batch: usize,
+    tx: &tokio::sync::mpsc::Sender<Result<StreamItem>>,
+) -> Result<()> {
+    let mut stream = sqlx::raw_sql(AssertSqlSafe(sql)).fetch(&mut *conn);
+    let Some(first) = stream.try_next().await.map_err(map_err)? else {
+        drop(stream);
+        let columns = statement_columns(conn, sql).await.unwrap_or_default();
+        let _ = tx.send(Ok(StreamItem::Columns(columns))).await;
+        return Ok(());
+    };
+    let columns = column_meta(&first);
+    let n = columns.len();
+    if tx.send(Ok(StreamItem::Columns(columns))).await.is_err() {
+        return Ok(());
+    }
+    let read = |r: &MySqlRow| (0..n).map(|i| read_value(r, i)).collect::<Result<Vec<_>>>();
+    let mut buf = vec![read(&first)?];
+    while let Some(row) = stream.try_next().await.map_err(map_err)? {
+        buf.push(read(&row)?);
+        if buf.len() == batch && tx.send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).await.is_err() {
+            return Ok(());
+        }
+    }
+    if !buf.is_empty() {
+        let _ = tx.send(Ok(StreamItem::Rows(buf))).await;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -535,38 +945,32 @@ impl Driver for MySqlDriver {
     async fn stream_query(&self, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
-        }
+        use_database(&mut conn, db).await?;
         let sql = sql.to_owned();
         tokio::spawn(async move {
-            let result: Result<()> = async {
-                let mut stream = sqlx::raw_sql(AssertSqlSafe(sql.clone())).fetch(&mut *conn);
-                let Some(first) = stream.try_next().await.map_err(map_err)? else {
-                    drop(stream);
-                    let columns = statement_columns(&mut conn, &sql).await.unwrap_or_default();
-                    let _ = tx.send(Ok(StreamItem::Columns(columns))).await;
-                    return Ok(());
-                };
-                let columns = column_meta(&first);
-                let n = columns.len();
-                if tx.send(Ok(StreamItem::Columns(columns))).await.is_err() {
-                    return Ok(());
-                }
-                let read = |r: &MySqlRow| (0..n).map(|i| read_value(r, i)).collect::<Result<Vec<_>>>();
-                let mut buf = vec![read(&first)?];
-                while let Some(row) = stream.try_next().await.map_err(map_err)? {
-                    buf.push(read(&row)?);
-                    if buf.len() == batch && tx.send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).await.is_err() {
-                        return Ok(());
-                    }
-                }
-                if !buf.is_empty() {
-                    let _ = tx.send(Ok(StreamItem::Rows(buf))).await;
-                }
-                Ok(())
+            if let Err(e) = stream_rows(&mut conn, &sql, batch, &tx).await {
+                let _ = tx.send(Err(e)).await;
             }
-            .await;
+        });
+        Ok(rx)
+    }
+
+    async fn stream_query_in_session(&self, session: &str, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (mut guard, mut conn) = self.checkout_editor_session(session).await?;
+        if let Err(e) = use_database(&mut conn, db).await {
+            if e.kind != ErrorKind::Connection {
+                *guard = Some(conn);
+            }
+            return Err(e);
+        }
+        let sql = sql.to_owned();
+        // The guard moves into the task: other runs of the session wait until the stream ends.
+        tokio::spawn(async move {
+            let result = stream_rows(&mut conn, &sql, batch, &tx).await;
+            if !result.as_ref().is_err_and(|e| e.kind == ErrorKind::Connection) {
+                *guard = Some(conn);
+            }
             if let Err(e) = result {
                 let _ = tx.send(Err(e)).await;
             }
@@ -580,9 +984,9 @@ impl Driver for MySqlDriver {
         table: &str,
         columns: &[String],
         mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
-        skip_errors: bool,
-        empty_first: bool,
+        options: ImportOptions,
     ) -> Result<ImportReport> {
+        let ImportOptions { skip_errors, empty_first, utc_timestamps } = options;
         self.require_transactional(db, table).await?;
         self.table_info(db, table).await?.validate_writable_columns(columns.iter().map(String::as_str))?;
         let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
@@ -590,7 +994,13 @@ impl Driver for MySqlDriver {
         let prefix = format!("INSERT INTO {}.{} ({cols}) VALUES ", quote_ident(db), quote_ident(table));
         // MySQL allows at most 65,535 placeholders per statement.
         let per_statement = (60_000 / columns.len().max(1)).max(1);
-        let mut tx = self.pool.begin().await.map_err(map_err)?;
+        let mut conn = self.pool.acquire().await.map_err(map_err)?;
+        if utc_timestamps {
+            // TIMESTAMP values are converted from the session time zone; this one must not go back to the pool.
+            conn.close_on_drop();
+            sqlx::raw_sql("SET time_zone = '+00:00'").execute(&mut *conn).await.map_err(map_err)?;
+        }
+        let mut tx = Connection::begin(&mut *conn).await.map_err(map_err)?;
         if empty_first {
             sqlx::raw_sql(AssertSqlSafe(format!("DELETE FROM {}.{}", quote_ident(db), quote_ident(table))))
                 .execute(&mut *tx)
@@ -653,67 +1063,16 @@ impl Driver for MySqlDriver {
     async fn execute_statements(
         &self,
         db: Option<&str>,
-        mut statements: tokio::sync::mpsc::Receiver<Result<String>>,
+        statements: tokio::sync::mpsc::Receiver<Result<String>>,
         stop_on_error: bool,
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
-        let mut conn = self.pool.acquire().await.map_err(map_err)?;
-        if let Some(db) = db {
-            sqlx::raw_sql(AssertSqlSafe(format!("USE {}", quote_ident(db)))).execute(&mut *conn).await.map_err(map_err)?;
-        }
-        let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(map_err)?;
-        let mut report = ScriptRunReport::default();
-        let mut index = 0;
-        let mut input_error = None;
-        loop {
-            let next = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                next = statements.recv() => next,
-            };
-            let st = match next {
-                None => break,
-                Some(Ok(st)) => st,
-                Some(Err(error)) => {
-                    input_error = Some(error);
-                    break;
-                }
-            };
-            let result = {
-                let query = sqlx::raw_sql(AssertSqlSafe(st.as_str())).execute(&mut *conn);
-                tokio::pin!(query);
-                tokio::select! {
-                    biased;
-                    result = &mut query => result.map_err(map_err).map(|_| ()),
-                    _ = cancel.cancelled() => {
-                        // Poll the query while establishing the control connection too: cancellation can race
-                        // its first socket write. Drain the interrupted response before session cleanup.
-                        let (_, killed) = tokio::join!(&mut query, self.kill_query(thread));
-                        killed.and(Err(AppError::cancelled()))
-                    }
-                }
-            };
-            match result {
-                Ok(()) => report.executed += 1,
-                Err(error) => {
-                    report.failed.push(crate::transfer::failure(index, &st, error.message));
-                    if stop_on_error || cancel.is_cancelled() {
-                        break;
-                    }
-                }
-            }
-            index += 1;
-        }
-        // Never return a dirty script session to the pool, including on reader/decode failures.
-        sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await.map_err(map_err)?;
-        sqlx::raw_sql("SET FOREIGN_KEY_CHECKS = 1").execute(&mut *conn).await.map_err(map_err)?;
-        if cancel.is_cancelled() {
-            Err(AppError::cancelled())
-        } else if let Some(error) = input_error {
-            Err(error)
-        } else {
-            Ok(report)
-        }
+        // A dedicated connection, closed afterwards: scripts change session state (SET NAMES, sql_mode, time_zone,
+        // UNIQUE_CHECKS, autocommit, USE) that must not reach the pool.
+        let mut conn = sqlx::MySqlConnection::connect_with(&self.connect_options).await.map_err(map_err)?;
+        let result = self.run_statements(&mut conn, db, statements, stop_on_error, &cancel).await;
+        let _ = conn.close().await;
+        result
     }
 
     async fn dump_script(&self, db: &str) -> Result<DumpScript> {
@@ -750,7 +1109,9 @@ impl Driver for MySqlDriver {
                 }
             }
         }
-        let mut objects_sql: Vec<String> = crate::transfer::order_views(views, quote_ident).into_iter().map(|(_, sql)| sql).collect();
+        // Routines first: a view may call a stored function, while routine bodies are only checked when they run.
+        let mut objects_sql = self.dump_routines(db).await?;
+        objects_sql.extend(crate::transfer::order_views(views, quote_ident).into_iter().map(|(_, sql)| sql));
         let triggers = sqlx::query(
             "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT \
              FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, ACTION_ORDER",
@@ -776,8 +1137,15 @@ DELIMITER ;",
                 quote_ident(&table)
             ));
         }
+        objects_sql.extend(self.dump_events(db).await?);
         Ok(DumpScript {
-            prologue: vec!["SET NAMES utf8mb4;".into(), "SET FOREIGN_KEY_CHECKS = 0;".into()],
+            // As mysqldump: values are written in UTC and restored as given (zero ids and dates included).
+            prologue: vec![
+                "SET NAMES utf8mb4;".into(),
+                format!("SET SESSION sql_mode = {};", crate::design::mysql::literal(DUMP_SQL_MODE)),
+                "SET time_zone = '+00:00';".into(),
+                "SET FOREIGN_KEY_CHECKS = 0;".into(),
+            ],
             tables,
             data_tail: Vec::new(),
             objects: objects_sql,
@@ -786,11 +1154,13 @@ DELIMITER ;",
     }
 
     async fn fetch_more(&self, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        require_read_only(statement)?;
         let mut conn = self.pool.acquire().await.map_err(map_err)?;
         Self::more_rows(&mut conn, db, statement, offset, limit).await
     }
 
     async fn fetch_more_in_session(&self, session: &str, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        require_read_only(statement)?;
         let (mut guard, mut conn) = self.checkout_editor_session(session).await?;
         let result = Self::more_rows(&mut conn, db, statement, offset, limit).await;
         if !result.as_ref().is_err_and(|e| e.kind == ErrorKind::Connection) {
@@ -800,6 +1170,7 @@ DELIMITER ;",
     }
 
     async fn close_editor_session(&self, session: &str) -> Result<()> {
+        self.lost_editor_sessions.lock().unwrap().remove(session);
         let Some(slot) = self.editor_sessions.lock().unwrap().remove(session) else { return Ok(()) };
         // A run still in progress holds the lock; its connection is dropped when that run finishes.
         let conn = match slot.try_lock() {
@@ -810,6 +1181,18 @@ DELIMITER ;",
             let _ = conn.close().await;
         }
         Ok(())
+    }
+
+    fn live_editor_sessions(&self) -> Vec<String> {
+        let sessions = self.editor_sessions.lock().unwrap();
+        // A session busy with a run holds a connection too.
+        let live = sessions.iter().filter(|(_, slot)| slot.try_lock().map_or(true, |conn| conn.is_some())).map(|(key, _)| key.clone());
+        // Sessions this driver took over and has not reported yet are lost with it as well.
+        live.chain(self.lost_editor_sessions.lock().unwrap().iter().cloned()).collect()
+    }
+
+    fn adopt_lost_editor_sessions(&self, keys: Vec<String>) {
+        self.lost_editor_sessions.lock().unwrap().extend(keys);
     }
 
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
@@ -943,7 +1326,7 @@ DELIMITER ;",
                     primary_key: pk_columns.contains(&name),
                     data_type: text(r, 1)?.unwrap_or_default(),
                     nullable: text(r, 2)?.as_deref() == Some("YES"),
-                    default: default_expression(self.engine, text(r, 3)?, &data_type, &extra),
+                    default: default_expression(self.defaults, text(r, 3)?, &data_type, &extra),
                     auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
                     generated: extra.to_ascii_uppercase().contains("VIRTUAL GENERATED")
                         || extra.to_ascii_uppercase().contains("STORED GENERATED"),
@@ -954,7 +1337,8 @@ DELIMITER ;",
             .collect::<Result<Vec<_>>>()?;
 
         let fk_rows = sqlx::query(
-            "SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE \
+            "SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE, \
+                    k.REFERENCED_TABLE_SCHEMA \
              FROM information_schema.KEY_COLUMN_USAGE k \
              JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
                ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
@@ -974,6 +1358,7 @@ DELIMITER ;",
                     name: fk_name,
                     columns: Vec::new(),
                     ref_table: text(r, 2)?.unwrap_or_default(),
+                    ref_schema: text(r, 6)?.filter(|schema| schema != db),
                     ref_columns: Vec::new(),
                     on_update: text(r, 4)?.unwrap_or_default(),
                     on_delete: text(r, 5)?.unwrap_or_default(),
@@ -991,8 +1376,7 @@ DELIMITER ;",
         let create_sql = text(&create, 1)?.unwrap_or_default();
         let row_identity = match kind {
             ObjectKind::Table => {
-                let identity_indexes: Vec<IndexInfo> =
-                    indexes.iter().filter(|i| !expression_indexes.contains(&i.name)).cloned().collect();
+                let identity_indexes: Vec<IndexInfo> = indexes.iter().filter(|i| !expression_indexes.contains(&i.name)).cloned().collect();
                 derive_identity(&columns, &identity_indexes, false)
             }
             ObjectKind::View => RowIdentity::None,
@@ -1012,6 +1396,7 @@ DELIMITER ;",
             foreign_keys,
             create_sql,
             row_identity,
+            primary_key: pk_columns,
         })
     }
 
@@ -1046,25 +1431,47 @@ DELIMITER ;",
         Ok(Page { columns, rows })
     }
 
-    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
+    async fn apply_changes(&self, db: &str, table: &str, identity: &RowIdentity, changes: &[RowChange]) -> Result<u64, ChangeError> {
         let info = self.table_info(db, table).await?;
+        crate::sql::check_identity(identity, &info.row_identity)?;
         self.require_transactional(db, table).await?;
         info.validate_changes(changes)?;
-        let table_ref = format!("{}.{}", quote_ident(db), quote_ident(table));
-        let dialect = crate::sql::ChangeDialect { empty_insert: "() VALUES ()", null_safe_eq: "<=>", single_row: "LIMIT 1" };
+        let changes = bit_values(&info, changes)?;
         // Matching by value must be byte-exact: case-insensitive or PAD SPACE collations would match other rows.
         let byte_exact: Vec<String> =
             info.columns.iter().filter(|c| crate::model::is_text_type(&c.data_type)).map(|c| c.name.clone()).collect();
-        let statements =
-            crate::sql::change_statements_byte_exact(changes, &table_ref, &info.row_identity, quote_ident, &dialect, &byte_exact)?;
+        let target = crate::sql::ChangeTarget {
+            table_ref: format!("{}.{}", quote_ident(db), quote_ident(table)),
+            identity: &info.row_identity,
+            quote: quote_ident,
+            dialect: crate::sql::ChangeDialect { empty_insert: "() VALUES ()", null_safe_eq: "<=>", single_row: "LIMIT 1" },
+            byte_exact,
+            rowid: None,
+            expected_columns: Vec::new(),
+            complete_match: info.row_identity.columns().len() == info.columns.len(),
+        };
+        let statements = crate::sql::change_statements(&changes, &target)?;
         let mut tx = self.pool.begin().await.map_err(map_err)?;
         for (index, st) in statements.iter().enumerate() {
             let at = |e: sqlx::Error| ChangeError { index: Some(index), error: map_err(e) };
+            if let Some(sql) = &st.ambiguity_sql {
+                let mut q = sqlx::query(AssertSqlSafe(sql.clone()));
+                for v in st.key_binds.iter().cloned() {
+                    q = bind(q, v);
+                }
+                let row = q.fetch_one(&mut *tx).await.map_err(at)?;
+                if int(&row, 0).map_err(|error| ChangeError { index: Some(index), error })?.unwrap_or(0) > 1 {
+                    return Err(crate::sql::ambiguous(index));
+                }
+            }
             let mut q = sqlx::query(AssertSqlSafe(st.sql.clone()));
             for v in st.binds.iter().cloned() {
                 q = bind(q, v);
             }
             let affected = q.execute(&mut *tx).await.map_err(at)?.rows_affected();
+            if st.keyed && affected > 1 {
+                return Err(crate::sql::several(index, affected));
+            }
             if st.keyed && affected == 0 {
                 // MySQL counts changed rows: a no-op update reports 0 although the row exists.
                 let exists = match &st.exists_sql {
@@ -1097,10 +1504,28 @@ DELIMITER ;",
         Ok(int(&row, 0)?.unwrap_or(0) as u64)
     }
 
+    async fn table_design(&self, db: &str, table: &str) -> Result<TableDesign> {
+        let info = self.table_info(db, table).await?;
+        if info.columns.iter().any(|c| c.generated) {
+            return Err(AppError::validation("Tables with generated columns cannot be edited in the table designer; use SQL"));
+        }
+        let mut design = TableDesign::from_info(&info);
+        // Left out of the design, they are never dropped or re-created (`table_info` still lists them).
+        let unmodelled = self.unmodelled_indexes(db, table).await?;
+        design.indexes.retain(|index| !unmodelled.contains(&index.name));
+        Ok(design)
+    }
+
     async fn plan_table(&self, db: &str, original: Option<&TableDesign>, design: &TableDesign) -> Result<Vec<String>> {
         let Some(original) = original else {
             return crate::design::mysql::create(design);
         };
+        let current = self.table_design(db, &original.name).await?;
+        if current != *original {
+            return Err(AppError::validation(
+                "The table changed since the designer loaded it. Reopen the designer (or revert) to load its current structure, then make your changes again.",
+            ));
+        }
         let statements = crate::design::mysql::alter(original, design)?;
         if statements.is_empty() {
             return Ok(statements);
@@ -1109,30 +1534,54 @@ DELIMITER ;",
         if info.columns.iter().any(|c| c.generated) {
             return Err(AppError::validation("Tables with generated columns cannot be altered by the table designer"));
         }
-        if statements.iter().any(|sql| sql.contains("CHANGE COLUMN")) {
-            let columns =
-                sqlx::query("SELECT EXTRA, COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?")
-                    .bind(db)
-                    .bind(&original.name)
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(map_err)?;
-            for column in &columns {
-                let extra = text(column, 0)?
-                    .unwrap_or_default()
-                    .to_ascii_uppercase()
-                    .replace("AUTO_INCREMENT", "")
-                    .replace("DEFAULT_GENERATED", "");
-                let collation = text(column, 1)?;
-                if !extra.trim().is_empty() || (collation.is_some() && collation != info.collation) {
-                    return Err(AppError::validation(
-                        "Column attributes (such as ON UPDATE or a column collation) cannot be preserved by the designer; use SQL",
-                    ));
-                }
+        if statements.iter().any(|sql| sql.contains("DROP PRIMARY KEY"))
+            && self.unmodelled_indexes(db, &original.name).await?.iter().any(|index| index == "PRIMARY")
+        {
+            return Err(AppError::validation(
+                "The primary key has prefix lengths or descending parts the designer cannot preserve; change it with SQL",
+            ));
+        }
+        // Columns a CHANGE COLUMN redefines: attributes the design does not model would be lost on them only.
+        let redefined: Vec<&str> = original
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|name| statements.iter().any(|sql| sql.contains(&format!("CHANGE COLUMN {} ", quote_ident(name)))))
+            .collect();
+        if redefined.is_empty() {
+            return Ok(statements);
+        }
+        let columns = sqlx::query(
+            "SELECT COLUMN_NAME, EXTRA, COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        )
+        .bind(db)
+        .bind(&original.name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        for column in &columns {
+            let name = text(column, 0)?.unwrap_or_default();
+            if !redefined.contains(&name.as_str()) {
+                continue;
             }
-            let upper = info.create_sql.to_ascii_uppercase();
-            if ["COLUMN_FORMAT", " STORAGE ", " SRID ", " INVISIBLE"].iter().any(|attribute| upper.contains(attribute)) {
-                return Err(AppError::validation("This table contains column storage attributes the designer cannot preserve; use SQL"));
+            let extra =
+                text(column, 1)?.unwrap_or_default().to_ascii_uppercase().replace("AUTO_INCREMENT", "").replace("DEFAULT_GENERATED", "");
+            let collation = text(column, 2)?;
+            if !extra.trim().is_empty() || (collation.is_some() && collation != info.collation) {
+                return Err(AppError::validation(format!(
+                    "Column attributes of {name} (such as ON UPDATE or a column collation) cannot be preserved by the designer; use SQL"
+                )));
+            }
+        }
+        // Attributes SHOW CREATE TABLE writes on the column's own line, including MariaDB column-level CHECK constraints.
+        for name in redefined {
+            let prefix = format!("{} ", quote_ident(name));
+            let Some(line) = info.create_sql.lines().find(|line| line.trim_start().starts_with(&prefix)) else { continue };
+            let upper = line.to_ascii_uppercase();
+            if [" COLUMN_FORMAT ", " STORAGE ", " SRID ", " INVISIBLE", " CHECK ("].iter().any(|attribute| upper.contains(attribute)) {
+                return Err(AppError::validation(format!(
+                    "Column {name} has attributes (such as a CHECK constraint or storage options) the designer cannot preserve; use SQL"
+                )));
             }
         }
         Ok(statements)
@@ -1146,6 +1595,32 @@ DELIMITER ;",
             sqlx::raw_sql(AssertSqlSafe(st.clone())).execute(&mut *conn).await.map_err(map_err)?;
         }
         Ok(())
+    }
+
+    async fn incoming_foreign_keys(&self, db: &str, table: &str) -> Result<Vec<IncomingForeignKey>> {
+        let rows = sqlx::query(
+            "SELECT CONSTRAINT_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS \
+             WHERE UNIQUE_CONSTRAINT_SCHEMA = ? AND REFERENCED_TABLE_NAME = ? \
+             ORDER BY CONSTRAINT_SCHEMA, TABLE_NAME, CONSTRAINT_NAME",
+        )
+        .bind(db)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+        let mut out = Vec::new();
+        for r in &rows {
+            let (schema, child) = (text(r, 0)?.unwrap_or_default(), text(r, 1)?.unwrap_or_default());
+            if schema == db && child == table {
+                continue;
+            }
+            out.push(IncomingForeignKey {
+                table: if schema == db { child } else { format!("{schema}.{child}") },
+                name: text(r, 2)?.unwrap_or_default(),
+                on_delete: text(r, 3)?.unwrap_or_default(),
+            });
+        }
+        Ok(out)
     }
 
     async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()> {

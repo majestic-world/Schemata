@@ -2,8 +2,8 @@ mod common;
 
 use common::TestDb;
 use schematadb_core::{
-    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, connect, dump_database,
-    run_sql_file,
+    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, TextEncoding, connect,
+    dump_database, run_sql_file,
 };
 use std::sync::Arc;
 
@@ -71,7 +71,7 @@ async fn dump_restores_schema_and_data(t: TestDb) {
     assert_eq!(report.rows, 6);
 
     let (target, db) = empty_target(&t, &dir).await;
-    let run = run_sql_file(target.as_ref(), &db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    let run = run_sql_file(target.as_ref(), &db, &file, TextEncoding::Utf8, true, no_progress(), CancellationToken::new()).await.unwrap();
     assert!(run.failed.is_empty(), "{:?}", run.failed);
 
     let names = |o: Vec<schematadb_core::ObjectInfo>| o.into_iter().map(|o| (o.name, o.kind)).collect::<Vec<_>>();
@@ -102,7 +102,7 @@ async fn structure_only_dump_has_no_rows(t: TestDb) {
         .await
         .unwrap();
     let (target, db) = empty_target(&t, &dir).await;
-    let run = run_sql_file(target.as_ref(), &db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    let run = run_sql_file(target.as_ref(), &db, &file, TextEncoding::Utf8, true, no_progress(), CancellationToken::new()).await.unwrap();
     assert!(run.failed.is_empty(), "{:?}", run.failed);
     assert!(rows(target.as_ref(), &db, "customer", "id").await.is_empty());
     assert_eq!(target.table_info(&db, "orders").await.unwrap().foreign_keys.len(), 1);
@@ -134,7 +134,7 @@ async fn sqlite_backup_of_attached_database_reads_its_own_rows() {
     .unwrap();
     assert_eq!(report.rows, 2);
     let (target, db) = empty_target(&t, &dir).await;
-    run_sql_file(target.as_ref(), &db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    run_sql_file(target.as_ref(), &db, &file, TextEncoding::Utf8, true, no_progress(), CancellationToken::new()).await.unwrap();
     assert_eq!(
         rows(target.as_ref(), &db, "item", "id").await,
         vec![vec![CellValue::Int(1), CellValue::Text("other".into())], vec![CellValue::Int(2), CellValue::Text("other".into())],]
@@ -168,7 +168,8 @@ async fn backup_restores_generated_columns_over_existing_views(t: TestDb) {
     .unwrap();
     assert_eq!(report.rows, 2);
     t.exec("UPDATE generated_backup SET base = 99 WHERE id = 1").await;
-    let restored = run_sql_file(t.driver.as_ref(), &t.db, &file, true, no_progress(), CancellationToken::new()).await.unwrap();
+    let restored =
+        run_sql_file(t.driver.as_ref(), &t.db, &file, TextEncoding::Utf8, true, no_progress(), CancellationToken::new()).await.unwrap();
     assert!(restored.failed.is_empty(), "{:?}", restored.failed);
     assert_eq!(rows(t.driver.as_ref(), &t.db, "dependent_view", "id").await, expected);
     t.exec("UPDATE generated_backup SET base = 5 WHERE id = 1").await;
@@ -178,3 +179,91 @@ async fn backup_restores_generated_columns_over_existing_views(t: TestDb) {
     );
 }
 scenario!(backup_restores_generated_columns_over_existing_views);
+
+async fn dump_caps_each_insert_statement_by_size(t: TestDb) {
+    let text = if t.engine == Engine::Sqlite { "TEXT" } else { "LONGTEXT" };
+    t.exec(&format!("CREATE TABLE wide (id INT PRIMARY KEY, body {text})")).await;
+    // 30 rows of 100 KB: one 100-row INSERT would be about 3 MB.
+    for id in 1..=30 {
+        t.exec(&format!("INSERT INTO wide VALUES ({id}, '{}')", "x".repeat(100_000))).await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("wide.sql");
+    dump_database(t.driver.as_ref(), &t.db, &file, &DumpOptions { structure: true, data: true }, no_progress(), CancellationToken::new())
+        .await
+        .unwrap();
+    let dump = std::fs::read_to_string(&file).unwrap();
+    let inserts: Vec<&str> = dump.split("INSERT INTO").skip(1).map(|s| s.split(";\n").next().unwrap()).collect();
+    assert!(inserts.len() >= 3, "{} INSERT statements", inserts.len());
+    assert!(
+        inserts.iter().all(|s| s.len() <= 1 << 20),
+        "an INSERT exceeds 1 MB: {:?}",
+        inserts.iter().map(|s| s.len()).collect::<Vec<_>>()
+    );
+
+    let (target, db) = empty_target(&t, &dir).await;
+    let run = run_sql_file(target.as_ref(), &db, &file, TextEncoding::Utf8, true, no_progress(), CancellationToken::new()).await.unwrap();
+    assert!(run.failed.is_empty(), "{:?}", run.failed);
+    assert_eq!(target.count_rows(&db, "wide", &[]).await.unwrap(), 30);
+    if t.server.is_some() {
+        t.driver.execute_script(None, &format!("DROP DATABASE `{db}`"), 1, None).await.unwrap();
+    }
+}
+scenario!(dump_caps_each_insert_statement_by_size);
+
+/// Dumps read every table in one snapshot on one session, which is closed afterwards: no transaction stays open
+/// that would hold metadata locks against later DDL.
+async fn dump_leaves_no_open_session_behind(t: TestDb) {
+    seed(&t).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("dump.sql");
+    dump_database(t.driver.as_ref(), &t.db, &file, &DumpOptions { structure: true, data: true }, no_progress(), CancellationToken::new())
+        .await
+        .unwrap();
+    let ddl = tokio::time::timeout(std::time::Duration::from_secs(20), t.exec("ALTER TABLE customer ADD COLUMN extra INT"));
+    ddl.await.expect("DDL must not wait for a transaction left open by the dump");
+}
+scenario!(dump_leaves_no_open_session_behind);
+
+/// MySQL/MariaDB: rows committed while the dump runs never show up in tables it reads later (one snapshot).
+async fn server_dump_reads_one_consistent_snapshot(t: TestDb) {
+    t.exec("CREATE TABLE a_first (id INT PRIMARY KEY); INSERT INTO a_first VALUES (1); CREATE TABLE z_last (id INT PRIMARY KEY); INSERT INTO z_last VALUES (1);")
+        .await;
+    let (server, db) = (t.server.unwrap(), t.db.clone());
+    let wrote = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // After the first table's rows, another connection commits a row into the table dumped last.
+    let progress: ProgressFn = Arc::new(move |p| {
+        if p.done >= 1 && !wrote.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                    let writer = connect(&server.params(Some(&db))).await.unwrap();
+                    let result = writer.execute_script(Some(&db), "INSERT INTO z_last VALUES (2)", 1, None).await.unwrap();
+                    assert!(result.error.is_none(), "{:?}", result.error);
+                })
+            })
+            .join()
+            .unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("snapshot.sql");
+    let report =
+        dump_database(t.driver.as_ref(), &t.db, &file, &DumpOptions { structure: false, data: true }, progress, CancellationToken::new())
+            .await
+            .unwrap();
+    assert_eq!(report.rows, 2, "z_last is read as it was when the dump started");
+    assert_eq!(t.driver.count_rows(&t.db, "z_last", &[]).await.unwrap(), 2);
+    let dump = std::fs::read_to_string(&file).unwrap();
+    assert!(dump.contains("INSERT INTO `z_last` (`id`) VALUES\n  (1);"), "{dump}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_dump_reads_one_consistent_snapshot() {
+    server_dump_reads_one_consistent_snapshot(TestDb::mysql().await).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mariadb_dump_reads_one_consistent_snapshot() {
+    server_dump_reads_one_consistent_snapshot(TestDb::mariadb().await).await
+}

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { TableDesign } from "../api/types";
-import { hasDesignerEdits, useDesignerDrafts } from "./designerDrafts";
+import { hasDesignerEdits, removeColumn, renameColumn, setPrimaryKey, useDesignerDrafts } from "./designerDrafts";
 
 const design: TableDesign = {
   name: "items",
@@ -8,6 +8,7 @@ const design: TableDesign = {
   indexes: [{ name: "by_id", columns: ["id"], kind: "normal", method: null, comment: null }],
   foreignKeys: [],
   options: { engine: null, charset: null, collation: null, comment: null },
+  primaryKeyOrder: ["id"],
 };
 
 beforeEach(() => useDesignerDrafts.setState(useDesignerDrafts.getInitialState(), true));
@@ -87,5 +88,44 @@ describe("per-tab table designs", () => {
     store.initialize("one", { ...design, name: "other" }, { ...design, name: "other" });
     expect(useDesignerDrafts.getState().drafts.one?.design).toEqual(design);
     expect(useDesignerDrafts.getState().drafts.one?.inputs).toEqual({});
+  });
+});
+
+describe("column edits keep the design consistent", () => {
+  const col = (name: string) => ({ ...design.columns[0], originalName: name, name, primaryKey: false });
+  const wide: TableDesign = {
+    ...design,
+    columns: [{ ...col("a"), primaryKey: true }, { ...col("b"), primaryKey: true }, col("c")],
+    indexes: [
+      { name: "ab", columns: ["a", "c"], kind: "normal", method: null, comment: null },
+      { name: "c_only", columns: ["c"], kind: "unique", method: null, comment: null },
+    ],
+    foreignKeys: [{ name: "fk", columns: ["c"], refTable: "t", refSchema: null, refColumns: ["id"], onUpdate: "NO ACTION", onDelete: "NO ACTION" }],
+    primaryKeyOrder: ["b", "a"],
+  };
+
+  it("removes a deleted column from indexes, foreign keys and the key order", () => {
+    const d = removeColumn(wide, 2);
+    expect(d.indexes).toEqual([{ ...wide.indexes[0], columns: ["a"] }]);
+    expect(d.foreignKeys).toEqual([]);
+    expect(removeColumn(wide, 0).primaryKeyOrder).toEqual(["b"]);
+  });
+
+  it("follows renames in the key order, including buffered names flushed later", () => {
+    expect(renameColumn(wide, 0, "z").primaryKeyOrder).toEqual(["b", "z"]);
+    const store = useDesignerDrafts.getState();
+    store.initialize("pk", wide, wide);
+    store.input("pk", "column:1", "y");
+    store.flush("pk");
+    expect(useDesignerDrafts.getState().drafts.pk?.design.primaryKeyOrder).toEqual(["y", "a"]);
+  });
+
+  it("appends and removes key columns in toggle order", () => {
+    const d = setPrimaryKey(wide, 2, true);
+    expect(d.primaryKeyOrder).toEqual(["b", "a", "c"]);
+    expect(d.columns[2]).toMatchObject({ primaryKey: true, nullable: false });
+    expect(setPrimaryKey(d, 1, false).primaryKeyOrder).toEqual(["a", "c"]);
+    const unnamed = setPrimaryKey({ ...wide, columns: [...wide.columns, { ...col(""), originalName: null }] }, 3, true);
+    expect(renameColumn(unnamed, 3, "d").primaryKeyOrder).toEqual(["b", "a", "d"]);
   });
 });

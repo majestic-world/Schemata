@@ -1002,7 +1002,10 @@ pub async fn generate_data(
             let _ = tx.send(Err(AppError::cancelled())).await;
         }
     };
-    let (report, ()) = tokio::join!(driver.import_rows(db, table, &names, rx, false, spec.empty_first), feed);
+    let (report, ()) = tokio::join!(
+        driver.import_rows(db, table, &names, rx, crate::transfer::ImportOptions { empty_first: spec.empty_first, ..Default::default() }),
+        feed
+    );
     let report = report?;
     if let Some(f) = report.failed.first() {
         return Err(AppError::sql(format!("Row {} could not be inserted: {}", f.line, f.message)));

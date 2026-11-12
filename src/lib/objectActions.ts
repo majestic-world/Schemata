@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { ObjectKind } from "../api/types";
+import { ENGINE_LABEL, type Engine, type IncomingForeignKey, type ObjectKind } from "../api/types";
 import { confirmAction, promptAction } from "../store/confirm";
 import { closeTabsFor, useTabs } from "../store/tabs";
 import { notify, notifyError } from "../store/toasts";
@@ -18,13 +18,74 @@ function refreshObjects(qc: QueryClient, o: { connectionId: string; database: st
   void qc.invalidateQueries({ queryKey: ["count", o.connectionId, o.database] });
 }
 
+/** Removing a table's rows: dropping it, or emptying it. */
+type Removal = "drop" | "empty";
+
+/**
+ * What removing every row of `table` does to the tables whose foreign keys reference it, for the confirmation; empty
+ * when none does. SQLite applies their ON DELETE actions (rows deleted or set to NULL); MySQL and MariaDB refuse to
+ * drop or empty a referenced table, so the operation may fail.
+ */
+export function referencesNotice(engine: Engine | null, table: string, refs: readonly IncomingForeignKey[], removal: Removal): string {
+  if (refs.length === 0) return "";
+  const verb = removal === "drop" ? "deleting" : "emptying";
+  const action = (r: IncomingForeignKey) => `ON DELETE ${r.onDelete.toUpperCase()}`;
+  if (engine !== "sqlite") {
+    const list = refs.map((r) => `"${r.table}" (${action(r)})`).join(", ");
+    const outcome = engine === null
+      ? `Depending on the database, rows in ${refs.length === 1 ? "that table" : "those tables"} may be deleted or set to NULL, or ${verb} "${table}" may fail.`
+      : `${ENGINE_LABEL[engine]} refuses to ${removal === "drop" ? "delete" : "empty"} a table other tables reference, so this may fail.`;
+    return `Referenced by ${list}. ${outcome}`;
+  }
+  const effects = refs.map((r) => {
+    switch (r.onDelete.toUpperCase()) {
+      case "CASCADE":
+        return `rows in "${r.table}" that reference it will be deleted (${action(r)})`;
+      case "SET NULL":
+        return `references to it in "${r.table}" will be set to NULL (${action(r)})`;
+      case "SET DEFAULT":
+        return `references to it in "${r.table}" will be set to their default (${action(r)})`;
+      default:
+        return `${verb} it fails while rows in "${r.table}" reference it (${action(r)})`;
+    }
+  });
+  return `Other tables reference "${table}": ${effects.join("; ")}.`;
+}
+
+/** Engine of a connection, from the cached connection list; null when it cannot be told. */
+async function engineOf(qc: QueryClient, connectionId: string): Promise<Engine | null> {
+  try {
+    const connections = await qc.ensureQueryData({ queryKey: ["connections"], queryFn: api.listConnections });
+    return connections.find((c) => c.id === connectionId)?.engine ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The confirmation notes about tables referencing each of `tables`; a failed lookup is said rather than hidden. */
+async function referencesNotes(qc: QueryClient, scope: { connectionId: string; database: string }, tables: readonly string[], removal: Removal): Promise<string> {
+  if (tables.length === 0) return "";
+  const engine = await engineOf(qc, scope.connectionId);
+  const notes = await Promise.all(
+    tables.map(async (table) => {
+      try {
+        return referencesNotice(engine, table, await api.incomingForeignKeys(scope.connectionId, scope.database, table), removal);
+      } catch (e) {
+        return `Could not check which tables reference "${table}": ${e && typeof e === "object" && "message" in e ? String(e.message) : String(e)}.`;
+      }
+    }),
+  );
+  return notes.filter(Boolean).map((n) => ` ${n}`).join("");
+}
+
 export async function dropObjects(scope: Pick<ObjectRef, "connectionId" | "database">, objects: readonly Pick<ObjectRef, "name" | "kind">[], qc: QueryClient) {
   if (objects.length === 0) return;
   const noun = objects.every((o) => o.kind === "table") ? "table" : objects.every((o) => o.kind === "view") ? "view" : "object";
   const what = objects.length === 1 ? noun : plural(objects.length, noun);
+  const references = await referencesNotes(qc, scope, objects.filter((o) => o.kind === "table").map((o) => o.name), "drop");
   const ok = await confirmAction({
     title: `Delete ${what}`,
-    message: `Delete ${objects.length === 1 ? `the ${noun}` : what} ${objects.map((o) => `"${o.name}"`).join(", ")}${objects.some((o) => o.kind === "table") ? " and all contained data" : ""}? This cannot be undone.`,
+    message: `Delete ${objects.length === 1 ? `the ${noun}` : what} ${objects.map((o) => `"${o.name}"`).join(", ")}${objects.some((o) => o.kind === "table") ? " and all contained data" : ""}? This cannot be undone.${references}`,
     confirmLabel: `Delete ${what}`,
     danger: true,
   });
@@ -54,9 +115,10 @@ export async function dropObjects(scope: Pick<ObjectRef, "connectionId" | "datab
 }
 
 export async function truncateTable(o: ObjectRef, qc: QueryClient) {
+  const references = await referencesNotes(qc, o, [o.name], "empty");
   const ok = await confirmAction({
     title: "Empty table",
-    message: `Delete every row of "${o.name}"? The structure is kept. This cannot be undone.`,
+    message: `Delete every row of "${o.name}"? The structure is kept. This cannot be undone.${references}`,
     confirmLabel: "Empty Table",
     danger: true,
   });

@@ -87,7 +87,7 @@ describe("closing tabs", () => {
   it("keeps a group intact when an unblurred designer edit is not discarded", async () => {
     const id = table("designed");
     const clean = table("clean");
-    const design = { name: "designed", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    const design = { name: "designed", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: [] };
     useDesignerDrafts.getState().initialize(id, design, design);
     useDesignerDrafts.getState().input(id, "column:0", "typing");
     const closing = requestCloseTabs([id, clean]);
@@ -111,7 +111,7 @@ describe("closing tabs", () => {
     expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([id]);
     expect(useConfirm.getState().request).toBeNull();
     useGridStates.setState(useGridStates.getInitialState(), true);
-    const design = { name: "saving", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    const design = { name: "saving", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: [] };
     useDesignerDrafts.getState().initialize(id, design, design);
     useDesignerDrafts.getState().setBusy(id, true);
     await requestCloseTabs([id]);

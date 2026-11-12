@@ -125,6 +125,9 @@ pub struct ForeignKeyInfo {
     pub name: String,
     pub columns: Vec<String>,
     pub ref_table: String,
+    /// Database of the referenced table when it is not the table's own database (MySQL/MariaDB).
+    #[serde(default)]
+    pub ref_schema: Option<String>,
     pub ref_columns: Vec<String>,
     pub on_update: String,
     pub on_delete: String,
@@ -184,6 +187,18 @@ pub struct TableInfo {
     /// `CREATE TABLE` / `CREATE VIEW` statement.
     pub create_sql: String,
     pub row_identity: RowIdentity,
+    /// Primary key columns in key order (which may differ from column order).
+    pub primary_key: Vec<String>,
+}
+
+/// A foreign key in another table that references this one: deleting or dropping rows here triggers its action.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingForeignKey {
+    pub table: String,
+    pub name: String,
+    /// `CASCADE`, `SET NULL`, `SET DEFAULT`, `RESTRICT` or `NO ACTION`.
+    pub on_delete: String,
 }
 
 impl TableInfo {
@@ -230,30 +245,51 @@ pub struct CharsetInfo {
     pub collations: Vec<String>,
 }
 
-/// Picks the row identity from a primary key, else a unique key over non-null columns, else the SQLite rowid,
-/// else every column whose value can be matched exactly.
+/// Picks the row identity from a primary key, else (SQLite) the rowid, else a unique key over non-null columns,
+/// else every column whose value can be matched exactly. On SQLite the rowid wins over unique keys: a unique index
+/// may compare under a different collation than its column, so it can match several rows.
 pub(crate) fn derive_identity(columns: &[ColumnInfo], indexes: &[IndexInfo], has_rowid: bool) -> RowIdentity {
     let pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect();
     if !pk.is_empty() {
         return RowIdentity::PrimaryKey { columns: pk };
     }
+    if has_rowid {
+        return RowIdentity::RowId;
+    }
     let not_null = |name: &String| columns.iter().any(|c| &c.name == name && !c.nullable);
     if let Some(idx) = indexes.iter().find(|i| i.kind == IndexKind::Unique && !i.columns.is_empty() && i.columns.iter().all(not_null)) {
         return RowIdentity::UniqueKey { columns: idx.columns.clone() };
-    }
-    if has_rowid {
-        return RowIdentity::RowId;
     }
     let comparable: Vec<String> = columns.iter().filter(|c| matchable(&c.data_type)).map(|c| c.name.clone()).collect();
     if comparable.is_empty() { RowIdentity::None } else { RowIdentity::AllColumns { columns: comparable } }
 }
 
 /// Whether a column's grid value can find its row by equality: binary cells arrive as previews, FLOAT is stored
-/// approximately, and JSON/spatial values do not compare equal to their text.
-fn matchable(data_type: &str) -> bool {
-    let t = data_type.to_ascii_lowercase();
-    const UNMATCHABLE: [&str; 9] = ["blob", "binary", "json", "float", "geometry", "point", "linestring", "polygon", "bit"];
-    !UNMATCHABLE.iter().any(|u| t.contains(u))
+/// approximately, and JSON/spatial/BIT values do not compare equal to their text. Only the base type counts, so
+/// `enum('point','json')` stays matchable.
+pub(crate) fn matchable(data_type: &str) -> bool {
+    let t = data_type.trim().to_ascii_lowercase();
+    let base = t.split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or("");
+    const UNMATCHABLE: [&str; 17] = [
+        "tinyblob",
+        "blob",
+        "mediumblob",
+        "longblob",
+        "binary",
+        "varbinary",
+        "json",
+        "float",
+        "bit",
+        "geometry",
+        "point",
+        "linestring",
+        "polygon",
+        "multipoint",
+        "multilinestring",
+        "multipolygon",
+        "geometrycollection",
+    ];
+    !UNMATCHABLE.contains(&base) && base != "geomcollection"
 }
 
 /// Whether a MySQL/MariaDB column type compares under a collation (CHAR/VARCHAR/TEXT family, ENUM, SET).
@@ -316,13 +352,26 @@ pub struct ColumnValue {
     pub value: CellValue,
 }
 
-/// One pending grid change. `key` lists the row-identity column values in identity order.
+/// One pending grid change. `key` lists the row-identity column values in identity order. `expected` holds the
+/// row's values as loaded (column by column); drivers compare them when the identity alone is not stable (SQLite
+/// rowids), so a row that changed or was replaced since it was loaded is never written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RowChange {
-    Update { key: Vec<CellValue>, values: Vec<ColumnValue> },
-    Insert { values: Vec<ColumnValue> },
-    Delete { key: Vec<CellValue> },
+    Update {
+        key: Vec<CellValue>,
+        values: Vec<ColumnValue>,
+        #[serde(default)]
+        expected: Vec<ColumnValue>,
+    },
+    Insert {
+        values: Vec<ColumnValue>,
+    },
+    Delete {
+        key: Vec<CellValue>,
+        #[serde(default)]
+        expected: Vec<ColumnValue>,
+    },
 }
 
 /// Failure of a change set; `index` points at the change that failed, when known.

@@ -3,10 +3,10 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { ArrowDown, ArrowUp, Copy, KeyRound, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { api } from "../api/client";
 import type { ColumnDesign, Engine, ForeignKeyDesign, IndexDesign, IndexKind, IndexMethod, TableDesign } from "../api/types";
-import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, lengthForType, parseType, typeSuggestions } from "../lib/columnTypes";
+import { FK_ACTIONS, MARIADB_ENGINES, MYSQL_ENGINES, composeType, isNumericType, parseType, retype, typeSuggestions } from "../lib/columnTypes";
 import { notify, notifyError } from "../store/toasts";
 import { useDesignerPrefs } from "../store/designerPrefs";
-import { useDesignerDrafts } from "../store/designerDrafts";
+import { removeColumn, renameColumn, setPrimaryKey, useDesignerDrafts } from "../store/designerDrafts";
 import { confirmAction } from "../store/confirm";
 import { hasPendingEdits, useGridStates } from "../store/gridState";
 import { MOD, isMod } from "../lib/platform";
@@ -32,7 +32,7 @@ const blankColumn = (): ColumnDesign => ({
 
 function newDesign(engine: Engine): TableDesign {
   const id: ColumnDesign = { ...blankColumn(), name: "id", dataType: engine === "sqlite" ? "INTEGER" : "INT", nullable: false, autoIncrement: true, primaryKey: true };
-  return { name: "", columns: [id], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+  return { name: "", columns: [id], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: ["id"] };
 }
 
 /** Names a new table, renaming foreign keys that still carry the name-derived default (`fk_<table>_N`). */
@@ -184,20 +184,9 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
   if (!design) return <div className="empty"><p>{original.isError ? (original.error as { message: string }).message : "Loading…"}</p></div>;
 
   const patch = (p: Partial<TableDesign>) => setDesign((d) => (d ? { ...d, ...p } : d));
-  const setColumn = (i: number, p: Partial<ColumnDesign>) =>
-    setDesign((d) => {
-      if (!d) return d;
-      const old = d.columns[i].name;
-      const columns = d.columns.map((c, j) => (j === i ? { ...c, ...p } : c));
-      // Keep index and foreign key references in step with renamed columns.
-      const rename = (cols: string[]) => (p.name !== undefined && old && p.name ? cols.map((c) => (c === old ? p.name! : c)) : cols);
-      return {
-        ...d,
-        columns,
-        indexes: d.indexes.map((x) => ({ ...x, columns: rename(x.columns) })),
-        foreignKeys: d.foreignKeys.map((x) => ({ ...x, columns: rename(x.columns) })),
-      };
-    });
+  /** Changes column attributes other than its name and primary key flag (see `renameColumn`/`setPrimaryKey`). */
+  const setColumn = (i: number, p: Partial<Omit<ColumnDesign, "name" | "primaryKey">>) =>
+    setDesign((d) => (d ? { ...d, columns: d.columns.map((c, j) => (j === i ? { ...c, ...p } : c)) } : d));
   const moveColumn = (i: number, delta: number) =>
     restructure((d) => {
       if (!d) return d;
@@ -213,7 +202,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
   const addIndex = () => setDesign((d) => (d ? { ...d, indexes: [...d.indexes, { name: "", columns: [], kind: "normal", method: null, comment: null }] } : d));
   const addFk = () =>
     setDesign((d) =>
-      d ? { ...d, foreignKeys: [...d.foreignKeys, { name: `fk_${d.name || "table"}_${d.foreignKeys.length + 1}`, columns: [], refTable: "", refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] } : d,
+      d ? { ...d, foreignKeys: [...d.foreignKeys, { name: `fk_${d.name || "table"}_${d.foreignKeys.length + 1}`, columns: [], refTable: "", refSchema: null, refColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }] } : d,
     );
   addRowRef.current = section === "indexes" ? addIndex : section === "foreignKeys" ? addFk : addColumn;
 
@@ -252,13 +241,22 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
         notify("Save in progress", "Wait for the pending grid save to finish before altering this table.");
         return;
       }
-      if (table && saved.name !== table && hasPendingEdits(tabId) && !(await confirmAction({
-        title: "Discard grid changes",
-        message: "Renaming this table will close its current tab and discard pending grid edits. Continue?",
-        confirmLabel: "Discard and rename",
-        danger: true,
-      }))) return;
-      await api.applyDdl(connectionId, database, statements);
+      // Pending grid edits address rows of the table as it is now; altering it under them could write them to
+      // the wrong columns or rows, so they are discarded first.
+      if (table && hasPendingEdits(tabId)) {
+        if (!(await confirmAction({
+          title: "Discard grid changes",
+          message: "This table has unsaved grid edits. Altering it discards them. Continue?",
+          confirmLabel: "Discard and alter",
+          danger: true,
+        }))) return;
+        if (!useGridStates.getState().discard(tabId)) {
+          notify("Save in progress", "Wait for the pending grid save to finish before altering this table.");
+          return;
+        }
+      }
+      const reviewed = useDesignerDrafts.getState().drafts[tabId];
+      await api.applyTableDesign(connectionId, database, table ? reviewed?.original ?? null : null, saved, statements);
       setReview(null);
       const canonical = await api.tableDesign(connectionId, database, saved.name).catch((error) => {
         notifyError("Table saved, but its design could not be reloaded", error);
@@ -339,29 +337,24 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
               <tbody onKeyDown={rowArrowKeys((row) => { if (!hasText(row, "Column name")) return false; addColumn(); return true; })}>
                 {design.columns.map((c, i) => {
                   const t = parseType(c.dataType);
-                  const setType = (p: Partial<typeof t>) => {
-                    const n = { ...t, ...p };
-                    setColumn(i, { dataType: composeType(n.base, n.length, n.unsigned) });
-                  };
+                  const setType = (p: Partial<typeof t>) => setColumn(i, { dataType: composeType({ ...t, ...p }) });
+                  const loaded = c.originalName === null ? null : baseline?.columns.find((o) => o.name === c.originalName)?.dataType ?? null;
                   return (
                     <tr key={i}>
                       <td className="center">{c.primaryKey && <KeyRound size={14} className="pk-icon" />}</td>
-                      <td><CommitInput tabId={tabId} field={`column:${i}`} value={c.name} label="Column name" onCommit={(name) => setColumn(i, { name })} /></td>
-                      <td><ComboInput value={t.base} options={typeOptions} label="Column type" onChange={(base) => {
-                            // Like Navicat, a new type brings its usual length (INT → 11, DECIMAL → 10,2).
-                            setType({ base, length: lengthForType(engine, base, t.length), unsigned: t.unsigned && isNumericType(base) });
-                          }} /></td>
+                      <td><CommitInput tabId={tabId} field={`column:${i}`} value={c.name} label="Column name" onCommit={(name) => setDesign((d) => renameColumn(d, i, name))} /></td>
+                      <td><ComboInput value={t.base} options={typeOptions} label="Column type" onChange={(base) => setColumn(i, { dataType: retype(engine, c.dataType, loaded, base) })} /></td>
                       <td><input className="cell-input narrow" value={t.length} aria-label="Length" onChange={(e) => setType({ length: e.target.value })} /></td>
                       {!sqlite && <td className="center"><input type="checkbox" disabled={!isNumericType(t.base)} checked={t.unsigned} aria-label="Unsigned" onChange={(e) => setType({ unsigned: e.target.checked })} /></td>}
                       <td className="center"><input type="checkbox" checked={!c.nullable} aria-label="Not null" onChange={(e) => setColumn(i, { nullable: !e.target.checked })} /></td>
                       <td><input className="cell-input" value={c.default ?? ""} placeholder="NULL" aria-label="Default" onChange={(e) => setColumn(i, { default: e.target.value === "" ? null : e.target.value })} /></td>
                       <td className="center"><input type="checkbox" checked={c.autoIncrement} aria-label="Auto increment" onChange={(e) => setColumn(i, { autoIncrement: e.target.checked })} /></td>
-                      <td className="center"><input type="checkbox" checked={c.primaryKey} aria-label="Primary key" onChange={(e) => setColumn(i, { primaryKey: e.target.checked, nullable: e.target.checked ? false : c.nullable })} /></td>
+                      <td className="center"><input type="checkbox" checked={c.primaryKey} aria-label="Primary key" onChange={(e) => setDesign((d) => setPrimaryKey(d, i, e.target.checked))} /></td>
                       {!sqlite && <td><input className="cell-input" value={c.comment ?? ""} aria-label="Comment" onChange={(e) => setColumn(i, { comment: e.target.value || null })} /></td>}
                       <td className="row-actions">
                         <button className="icon-btn" title="Move up" disabled={i === 0} onClick={() => moveColumn(i, -1)}><ArrowUp size={14} /></button>
                         <button className="icon-btn" title="Move down" disabled={i === design.columns.length - 1} onClick={() => moveColumn(i, 1)}><ArrowDown size={14} /></button>
-                        <button className="icon-btn danger" title="Delete column" onClick={() => restructure((d) => ({ ...d, columns: d.columns.filter((_, j) => j !== i) }))}><Trash2 size={14} /></button>
+                        <button className="icon-btn danger" title="Delete column" onClick={() => restructure((d) => removeColumn(d, i))}><Trash2 size={14} /></button>
                       </td>
                     </tr>
                   );

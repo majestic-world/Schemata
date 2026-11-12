@@ -19,13 +19,31 @@ const PICKER_HEIGHT = 300;
 const pad = (n: number, width = 2) => String(n).padStart(width, "0");
 const ymd = (d: Date) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-/** `YYYY-MM-DD[ HH:MM[:SS]]` as a local date; null when the text is not such a value. */
-function parse(text: string): { day: Date; time: string } | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(text.trim());
+/** Local midnight of a calendar day (`month` from 0); unlike `new Date(y, m, d)`, years 0–99 stay as written. */
+export function localDate(year: number, month: number, day: number): Date {
+  const d = new Date(2000, 0, 1);
+  d.setFullYear(year, month, day);
+  return d;
+}
+
+/**
+ * `YYYY-MM-DD[ HH:MM[:SS[.fraction]]]` as a local day, its time and its fractional seconds (`.123456`, or empty);
+ * null when the text is not such a value or names no real day (`0000-00-00`, `2024-02-30`).
+ */
+export function parseDateText(text: string): { day: Date; time: string; fraction: string } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?)?/.exec(text.trim());
   if (!m) return null;
-  const day = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (Number.isNaN(day.getTime())) return null;
-  return { day, time: m[4] ? `${m[4]}:${m[5]}:${m[6] ?? "00"}` : "00:00:00" };
+  const [year, month, date] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
+  const day = localDate(year, month, date);
+  if (day.getFullYear() !== year || day.getMonth() !== month || day.getDate() !== date) return null;
+  return { day, time: m[4] ? `${m[4]}:${m[5]}:${m[6] ?? "00"}` : "00:00:00", fraction: m[7] ?? "" };
+}
+
+/** Text of a picked value: the day, and for a datetime the picked time with the fractional seconds the value had. */
+export function formatPicked(kind: DateKind, day: Date, time: string, fraction: string): string {
+  if (kind === "date") return ymd(day);
+  const full = time.length === 5 ? `${time}:00` : time;
+  return `${ymd(day)} ${full}${full.includes(".") ? "" : fraction}`;
 }
 
 type Props = {
@@ -44,16 +62,19 @@ type Props = {
 /** Calendar popup for date and datetime cells, like Navicat's: month navigation, Today, a time field, OK/Cancel. */
 export function DatePicker({ kind, value, anchor, onPick, onCancel, onBlur, ref }: Props) {
   const now = new Date();
-  const initial = parse(value) ?? { day: new Date(now.getFullYear(), now.getMonth(), now.getDate()), time: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}` };
+  const initial = parseDateText(value) ?? { day: localDate(now.getFullYear(), now.getMonth(), now.getDate()), time: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`, fraction: "" };
   const [selected, setSelected] = useState(initial.day);
   const [time, setTime] = useState(initial.time);
   const [view, setView] = useState({ year: initial.day.getFullYear(), month: initial.day.getMonth() });
 
-  const first = new Date(view.year, view.month, 1);
-  const days = Array.from({ length: 42 }, (_, i) => new Date(view.year, view.month, 1 - first.getDay() + i));
+  const first = localDate(view.year, view.month, 1);
+  const days = Array.from({ length: 42 }, (_, i) => localDate(view.year, view.month, 1 - first.getDay() + i));
   const today = ymd(now);
-  const pick = (day = selected) => onPick(kind === "datetime" ? `${ymd(day)} ${time.length === 5 ? `${time}:00` : time}` : ymd(day));
-  const shiftMonth = (delta: number) => setView((v) => ({ year: new Date(v.year, v.month + delta, 1).getFullYear(), month: new Date(v.year, v.month + delta, 1).getMonth() }));
+  const pick = (day = selected) => onPick(formatPicked(kind, day, time, initial.fraction));
+  const shiftMonth = (delta: number) => setView((v) => {
+    const d = localDate(v.year, v.month + delta, 1);
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
   const top = anchor.bottom + PICKER_HEIGHT > window.innerHeight ? Math.max(4, anchor.top - PICKER_HEIGHT - 2) : anchor.bottom + 2;
 
   return createPortal(
@@ -92,7 +113,7 @@ export function DatePicker({ kind, value, anchor, onPick, onCancel, onBlur, ref 
       <button
         className="link-btn datepicker-today"
         onClick={() => {
-          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const d = localDate(now.getFullYear(), now.getMonth(), now.getDate());
           setSelected(d);
           setView({ year: d.getFullYear(), month: d.getMonth() });
         }}

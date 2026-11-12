@@ -1,20 +1,22 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type FocusEvent, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type Ref } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Upload, Ban, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter as FilterIcon, Lock, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../api/client";
-import type { CellValue, ChangeError, Filter, FilterOp, SortSpec } from "../api/types";
+import type { CellValue, ChangeError, Filter, FilterOp, Page, SortSpec, TableInfo } from "../api/types";
 import { useTabs, type TableTab } from "../store/tabs";
 import { formatCount } from "../lib/format";
 import { notify, notifyError } from "../store/toasts";
 import { confirmAction } from "../store/confirm";
-import { useGridState, useGridStates, type DraftFilter } from "../store/gridState";
+import { commitPending, useGridState, useGridStates, type DraftFilter } from "../store/gridState";
 import { openTransfer } from "../store/transfer";
 import { MOD, isMod } from "../lib/platform";
 import { useRefreshShortcut } from "../lib/refreshShortcut";
 import { useRefetchFlash } from "../lib/refetchFlash";
-import { GridView, type GridSelection } from "./GridView";
+import { GridView, ROW_HEIGHT, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import { DatePicker, dateKind, type DateKind } from "./DatePicker";
+import { useConnection } from "../lib/useConnection";
+import { editedCell, editorKeyAction, editorText } from "../lib/cells";
 import {
   addRow,
   isUnset,
@@ -67,22 +69,24 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const setPending = (f: Pending | ((p: Pending) => Pending)) =>
     update((g) => {
       const next = typeof f === "function" ? f(g.pending) : f;
-      // Freeze the page the edits refer to; release it once nothing is pending.
+      // Freeze the page the edits refer to (the one an open editor froze); release it once nothing is pending.
       return {
         pending: next,
-        snapshot: isDirty(next) ? (g.snapshot ?? page.data ?? null) : null,
-        snapshotInfo: isDirty(next) ? (g.snapshotInfo ?? info.data ?? null) : null,
+        snapshot: isDirty(next) ? (g.snapshot ?? data ?? null) : null,
+        snapshotInfo: isDirty(next) ? (g.snapshotInfo ?? tableInfo ?? null) : null,
       };
     });
   const setFailedRow = (failedRow: RowRef | null) => update(() => ({ failedRow }));
-  const [editing, setEditing] = useState<{ row: number; column: string; session: number } | null>(null);
+  /** The open editor keeps the page and table info it opened on, so a background reload cannot move its row. */
+  const [editing, setEditing] = useState<{ row: number; column: string; session: number; page: Page | undefined; info: TableInfo | undefined } | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], columns: [] });
   const editorRef = useRef<CellEditorHandle | null>(null);
   const editSession = useRef(0);
   const isCommitting = () => !!useGridStates.getState().states[tab.id]?.committing;
 
+  const engine = useConnection(tab.connectionId)?.engine;
   const info = useTableInfo(tab);
-  const tableInfo = snapshotInfo ?? info.data;
+  const tableInfo = snapshotInfo ?? editing?.info ?? info.data;
   const identity = tableInfo?.rowIdentity;
   const readOnly = !identity || identity.kind === "none";
 
@@ -102,7 +106,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   });
   useEffect(() => setRowCount(tab.id, count.data), [count.data, tab.id, setRowCount]);
 
-  const data = snapshot ?? page.data;
+  const data = snapshot ?? editing?.page ?? page.data;
   const columns = useMemo(() => data?.columns ?? [], [data]);
   const pageRows = useMemo(() => data?.rows ?? [], [data]);
   const saved = pageRows.length;
@@ -124,10 +128,8 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     return allowed && !isCommitting();
   };
   const reset = () => {
-    if (isCommitting()) return false;
-    setPending(emptyPending());
+    if (!useGridStates.getState().discard(tab.id)) return false;
     setEditing(null);
-    setFailedRow(null);
     return true;
   };
   const go = async (o: number) => {
@@ -179,10 +181,10 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         if (!quiet) notifyError("Binary values cannot be edited here", { message: "Set the cell to NULL or use the SQL editor." });
         return;
       }
-      setEditing({ row, column, session: ++editSession.current });
+      setEditing({ row, column, session: ++editSession.current, page: data, info: tableInfo });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tab.id, readOnly, pageRows, columns, tableInfo, page.isPlaceholderData],
+    [tab.id, readOnly, data, tableInfo, page.isPlaceholderData],
   );
   const write = (row: number, column: string, value: CellValue) => {
     if (readOnly || isCommitting() || page.isPlaceholderData) return;
@@ -192,45 +194,50 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   };
   /** Adds a row prefilled with the column defaults, optionally editing `column` right away. */
   const appendRow = (column?: string) => {
-    if (readOnly || isCommitting() || page.isPlaceholderData) return;
-    const r = addRow(useGridStates.getState().states[tab.id]?.pending ?? emptyPending(), tableInfo?.columns ?? []);
+    if (readOnly || !engine || isCommitting() || page.isPlaceholderData) return;
+    const r = addRow(useGridStates.getState().states[tab.id]?.pending ?? emptyPending(), tableInfo?.columns ?? [], engine);
     setPending(r.pending);
-    if (column) setEditing({ row: saved + r.row.index, column, session: ++editSession.current });
+    if (column) setEditing({ row: saved + r.row.index, column, session: ++editSession.current, page: data, info: tableInfo });
   };
   // ArrowDown past the last row adds one, unless that row is itself a new row nobody has filled in yet.
   const lastInsert = pending.inserts.at(-1);
-  const lastRowUntouched = lastInsert !== undefined && JSON.stringify(lastInsert) === JSON.stringify(addRow(emptyPending(), tableInfo?.columns ?? []).pending.inserts[0]);
+  const lastRowUntouched = lastInsert !== undefined && !!engine && JSON.stringify(lastInsert) === JSON.stringify(addRow(emptyPending(), tableInfo?.columns ?? [], engine).pending.inserts[0]);
 
   const commit = async () => {
     if (!identity || identity.kind === "none" || !data || isCommitting() || page.isPlaceholderData) return;
     // Ending the editor updates Zustand synchronously; read the change set only afterwards.
     editorRef.current?.finish();
-    const submitted = useGridStates.getState().beginCommit(tab.id);
-    if (!submitted) return;
-    const submittedData = submitted.snapshot ?? data;
-    const submittedIdentity = submitted.snapshotInfo?.rowIdentity ?? identity;
-    const identityColumns = submittedIdentity.kind === "rowId" ? ["__rowid__"] : submittedIdentity.kind === "none" ? [] : submittedIdentity.columns;
-    const { changes, rowOf } = buildChangeSet(submitted.pending, submittedData.rows, submittedData.columns, identityColumns);
-    let saved = false;
-    let failed: RowRef | null = null;
-    try {
-      await api.applyChanges(tab.connectionId, tab.database, tab.name, changes);
-      saved = true;
-      notify("Changes saved", `${changes.length} change${changes.length === 1 ? "" : "s"} applied`);
-      await qc.invalidateQueries({ queryKey: ["page", ...base] });
-      await qc.invalidateQueries({ queryKey: ["count", ...base] });
-      void qc.invalidateQueries({ queryKey: ["objects", tab.connectionId, tab.database] });
-    } catch (e) {
-      if (saved) {
-        notifyError("Changes saved, but the grid could not be refreshed", e);
-      } else {
+    await commitPending(tab.id, async (submitted) => {
+      // Set once the change set is built: a failure before that is not about any row.
+      let rowOf: RowRef[] | null = null;
+      let saved = false;
+      try {
+        const submittedData = submitted.snapshot ?? data;
+        const submittedIdentity = submitted.snapshotInfo?.rowIdentity ?? identity;
+        const identityColumns = submittedIdentity.kind === "rowId" ? ["__rowid__"] : submittedIdentity.kind === "none" ? [] : submittedIdentity.columns;
+        const built = buildChangeSet(submitted.pending, submittedData.rows, submittedData.columns, identityColumns);
+        rowOf = built.rowOf;
+        await api.applyChanges(tab.connectionId, tab.database, tab.name, submittedIdentity, built.changes);
+        saved = true;
+        notify("Changes saved", `${built.changes.length} change${built.changes.length === 1 ? "" : "s"} applied`);
+        await qc.invalidateQueries({ queryKey: ["page", ...base] });
+        await qc.invalidateQueries({ queryKey: ["count", ...base] });
+        void qc.invalidateQueries({ queryKey: ["objects", tab.connectionId, tab.database] });
+        return { saved, failedRow: null };
+      } catch (e) {
+        if (saved) {
+          notifyError("Changes saved, but the grid could not be refreshed", e);
+          return { saved, failedRow: null };
+        }
+        if (!rowOf) {
+          notifyError("Changes were not saved", e);
+          return { saved, failedRow: null };
+        }
         const err = e as ChangeError;
-        failed = err.index !== null ? rowOf[err.index] ?? null : null;
         notifyError("Changes were not saved", err.error);
+        return { saved, failedRow: err.index !== null ? rowOf[err.index] ?? null : null };
       }
-    } finally {
-      useGridStates.getState().finishCommit(tab.id, submitted.pending, saved, failed);
-    }
+    });
   };
   const removeRows = (selected: readonly number[]) => {
     if (readOnly || isCommitting() || page.isPlaceholderData || selected.length === 0) return;
@@ -385,6 +392,14 @@ export function DataGrid({ tab }: { tab: TableTab }) {
 
 type CellEditorHandle = { finish: () => void };
 
+/** Lines a multi-line value shows at once; longer text scrolls inside the editor. */
+const EDITOR_MAX_LINES = 8;
+const EDITOR_LINE_HEIGHT = 18;
+
+/**
+ * In-cell text editor. A textarea, so line breaks survive (an `<input>` strips them): Enter saves, Shift+Enter or
+ * Alt+Enter adds a line, and a value with several lines opens over the rows below.
+ */
 function CellEditor({ initial, kind, disabled, onDone, ref }: {
   initial: CellValue;
   kind: DateKind | null;
@@ -392,26 +407,36 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
   onDone: (v: CellValue | null) => void;
   ref?: Ref<CellEditorHandle>;
 }) {
-  const start = initial.type === "null" ? "" : initial.type === "bytes" ? "" : String(initial.value);
+  const start = editorText(initial);
   const [text, setText] = useState(start);
+  // What the user typed, null until the first change. Saving reads this, never the control's value, so nothing
+  // the control normalizes counts as an edit.
+  const typed = useRef<string | null>(null);
   const [pickerAt, setPickerAt] = useState<DOMRect | null>(null);
+  const [width, setWidth] = useState<number | undefined>(undefined);
   const wrap = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const done = useRef(false);
-  // Unchanged text is not an edit (so Enter on a NULL cell keeps it NULL).
+  useLayoutEffect(() => setWidth(wrap.current?.offsetWidth), []);
   const finish = (value: CellValue | null) => {
     if (disabled || done.current) return;
     done.current = true;
     onDone(value);
   };
-  const commit = (value: string) => finish(value !== start ? { type: "text", value } : null);
-  useImperativeHandle(ref, () => ({ finish: () => commit(input.current?.value ?? text) }));
+  // Unchanged text is not an edit (so Enter on a NULL cell keeps it NULL).
+  const commit = (value: string | null) => finish(editedCell(start, value));
+  const change = (value: string) => {
+    if (disabled || done.current) return;
+    typed.current = value;
+    setText(value);
+  };
+  useImperativeHandle(ref, () => ({ finish: () => commit(typed.current) }));
   /** Focus leaving both the editor and its picker ends the edit, saving it. */
   const onBlur = (e: FocusEvent) => {
     const to = e.relatedTarget as Node | null;
     if (to && (wrap.current?.contains(to) || picker.current?.contains(to))) return;
-    commit(text);
+    commit(typed.current);
   };
   // Keys go to the picker while it is open (Esc closes it, Enter picks); the editor gets them back on Cancel.
   const openPicker = () => {
@@ -419,27 +444,69 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
     setPickerAt(wrap.current?.getBoundingClientRect() ?? null);
     requestAnimationFrame(() => picker.current?.focus());
   };
+  const lines = text.split(/\r\n?|\n/).length;
   return (
     <div className="cell-editor-wrap" ref={wrap}>
-      <input
+      <textarea
         ref={input}
         className="cell-editor"
         autoFocus
+        rows={1}
         disabled={disabled}
         value={text}
         placeholder={initial.type === "null" ? "NULL" : undefined}
-        onChange={(e) => { if (!disabled && !done.current) setText(e.target.value); }}
+        style={{
+          display: "block",
+          resize: "none",
+          whiteSpace: "pre",
+          ...(lines > 1
+            ? {
+                position: "absolute",
+                zIndex: 1,
+                width: width === undefined ? undefined : width - (kind ? 24 : 0),
+                height: Math.min(lines, EDITOR_MAX_LINES) * EDITOR_LINE_HEIGHT + 8,
+                padding: "4px 8px",
+                lineHeight: `${EDITOR_LINE_HEIGHT}px`,
+                overflow: "auto",
+                background: "var(--surface)",
+                boxShadow: "0 0 0 1px var(--accent), 0 4px 12px rgb(0 0 0 / 0.25)",
+              }
+            : { lineHeight: `${ROW_HEIGHT - 1}px`, overflow: "hidden" }),
+        }}
+        onChange={(e) => change(e.target.value)}
         onBlur={onBlur}
         onKeyDown={(e) => {
           if (disabled || done.current) return;
-          if (kind && e.altKey && e.key === "ArrowDown") {
-            e.preventDefault();
-            openPicker();
-            return;
+          const action = editorKeyAction({ key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing }, !!kind);
+          switch (action) {
+            case "picker":
+              e.preventDefault();
+              openPicker();
+              break;
+            case "newline": {
+              // Shift+Enter inserts the line break natively; Alt+Enter does not.
+              if (!e.altKey) break;
+              e.preventDefault();
+              const el = e.currentTarget;
+              el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
+              change(el.value);
+              break;
+            }
+            case "commit":
+              // Tab also saves; the grid then moves the editor to the neighbouring cell.
+              if (e.key === "Enter") e.preventDefault();
+              commit(typed.current);
+              break;
+            case "cancel":
+              finish(null);
+              break;
+            case null:
+              break;
+            default: {
+              const never: never = action;
+              return never;
+            }
           }
-          // Tab also saves; the grid then moves the editor to the neighbouring cell.
-          if (e.key === "Enter" || e.key === "Tab") commit(text);
-          if (e.key === "Escape") finish(null);
         }}
       />
       {kind && (

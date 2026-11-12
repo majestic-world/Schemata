@@ -131,7 +131,17 @@ async fn generated_columns_are_skipped_by_generation(t: TestDb) {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(Ok(vec![(1, vec![schematadb_core::Value::Int(1), schematadb_core::Value::Int(2)])])).await.unwrap();
     drop(tx);
-    let error = t.driver.import_rows(&t.db, "generated_data", &["id".into(), "doubled".into()], rx, false, true).await.unwrap_err();
+    let error = t
+        .driver
+        .import_rows(
+            &t.db,
+            "generated_data",
+            &["id".into(), "doubled".into()],
+            rx,
+            schematadb_core::ImportOptions { empty_first: true, ..Default::default() },
+        )
+        .await
+        .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Validation);
     assert_eq!(scalar(&t, "SELECT COUNT(*) FROM generated_data WHERE doubled = base * 2").await, 5);
 }

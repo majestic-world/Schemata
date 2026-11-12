@@ -4,7 +4,7 @@ import { api } from "../api/client";
 import { useConfirm } from "../store/confirm";
 import { OBJECTS_TAB, useTabs } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
-import { dropObjects, renameTable } from "./objectActions";
+import { dropObjects, renameTable, truncateTable } from "./objectActions";
 import { useDesignerDrafts } from "../store/designerDrafts";
 import { useGridStates } from "../store/gridState";
 import { setCell } from "./pendingChanges";
@@ -22,6 +22,12 @@ const scope = { connectionId: "connection", database: "main" };
 const objects = ["first", "second", "third"].map((name) => ({ name, kind: "table" as const }));
 let client: QueryClient;
 
+/** Answers the confirmation once it is shown (deleting asks only after looking up foreign keys). */
+async function answer(value: string | null) {
+  await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+  useConfirm.getState().settle(value);
+}
+
 function open(name: string) {
   useTabs.getState().openTable({ ...scope, name, objectKind: "table" });
   return useTabs.getState().active;
@@ -36,6 +42,7 @@ beforeEach(() => {
   useWorkspace.getState().selectObjects({ ...scope, objects });
   client = new QueryClient();
   client.setQueryData(["objects", scope.connectionId, scope.database], objects);
+  vi.spyOn(api, "incomingForeignKeys").mockResolvedValue([]);
 });
 afterEach(() => {
   useConfirm.getState().settle(null);
@@ -55,7 +62,7 @@ describe("deleting selected database objects", () => {
     useTabs.getState().activate(OBJECTS_TAB);
     useWorkspace.getState().selectObjects({ ...scope, objects });
     const operation = dropObjects(scope, objects, client);
-    useConfirm.getState().settle(null);
+    await answer(null);
     await operation;
 
     expect(remove).not.toHaveBeenCalled();
@@ -68,7 +75,7 @@ describe("deleting selected database objects", () => {
     objects.forEach((object) => open(object.name));
     const kept = open("not-selected");
     const operation = dropObjects(scope, objects, client);
-    useConfirm.getState().settle("ok");
+    await answer("ok");
     await operation;
 
     expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([kept]);
@@ -83,7 +90,7 @@ describe("deleting selected database objects", () => {
       .mockRejectedValueOnce({ kind: "sql", message: "Referenced by a foreign key", sqlState: "23000" });
     const tabs = objects.map((object) => open(object.name));
     const operation = dropObjects(scope, objects, client);
-    useConfirm.getState().settle("ok");
+    await answer("ok");
     await operation;
 
     expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual(tabs.slice(1));
@@ -95,7 +102,7 @@ describe("deleting selected database objects", () => {
     vi.spyOn(api, "dropObject").mockResolvedValue(undefined);
     const operation = dropObjects(scope, objects, client);
     useWorkspace.getState().select({ connectionId: "other", database: "other-db" });
-    useConfirm.getState().settle("ok");
+    await answer("ok");
     await operation;
 
     expect(useWorkspace.getState().selection).toEqual({ connectionId: "other", database: "other-db" });
@@ -107,7 +114,7 @@ describe("renaming tables with open drafts", () => {
   it("cancels the entire rename before touching the database or discarding grid/designer edits", async () => {
     const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
     const id = open("first");
-    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: [] };
     useDesignerDrafts.getState().initialize(id, design, design);
     useDesignerDrafts.getState().input(id, "column:0", "draft");
     useGridStates.getState().update(id, (state) => ({
@@ -132,7 +139,7 @@ describe("renaming tables with open drafts", () => {
     const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
     const id = open("first");
     const kept = open("other");
-    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: [] };
     useDesignerDrafts.getState().initialize(id, design, design);
     useDesignerDrafts.getState().update(id, (value) => ({ ...value, name: "draft" }));
     const operation = renameTable({ ...scope, name: "first", kind: "table" }, client);
@@ -151,7 +158,7 @@ describe("renaming tables with open drafts", () => {
   it("does not rename a table while its DDL is running", async () => {
     const rename = vi.spyOn(api, "renameTable").mockResolvedValue(undefined);
     const id = open("first");
-    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null } };
+    const design = { name: "first", columns: [], indexes: [], foreignKeys: [], options: { engine: null, charset: null, collation: null, comment: null }, primaryKeyOrder: [] };
     useDesignerDrafts.getState().initialize(id, design, design);
     useDesignerDrafts.getState().setBusy(id, true);
     const operation = renameTable({ ...scope, name: "first", kind: "table" }, client);
@@ -159,5 +166,59 @@ describe("renaming tables with open drafts", () => {
     await operation;
     expect(rename).not.toHaveBeenCalled();
     expect(useTabs.getState().tabs.map((tab) => tab.id)).toEqual([id]);
+  });
+});
+
+describe("confirming the removal of referenced tables", () => {
+  const connection = (engine: "mySql" | "sqlite") => client.setQueryData(["connections"], [{ id: scope.connectionId, engine }]);
+  const refs = [
+    { table: "orders", name: "fk_orders_0", onDelete: "CASCADE" },
+    { table: "notes", name: "fk_notes_0", onDelete: "SET NULL" },
+    { table: "audit", name: "fk_audit_0", onDelete: "NO ACTION" },
+  ];
+
+  it("SQLite: says which rows emptying the table deletes or sets to NULL", async () => {
+    connection("sqlite");
+    vi.spyOn(api, "incomingForeignKeys").mockResolvedValue(refs);
+    const truncate = vi.spyOn(api, "truncateTable").mockResolvedValue(undefined);
+    const operation = truncateTable({ ...scope, name: "customers", kind: "table" }, client);
+    await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+    const message = useConfirm.getState().request!.message;
+    expect(message).toContain('rows in "orders" that reference it will be deleted (ON DELETE CASCADE)');
+    expect(message).toContain('references to it in "notes" will be set to NULL (ON DELETE SET NULL)');
+    expect(message).toContain('emptying it fails while rows in "audit" reference it (ON DELETE NO ACTION)');
+    useConfirm.getState().settle(null);
+    await operation;
+    expect(truncate).not.toHaveBeenCalled();
+  });
+
+  it("MySQL: lists the referencing tables and warns that deleting may fail", async () => {
+    connection("mySql");
+    const lookup = vi.spyOn(api, "incomingForeignKeys").mockImplementation(async (_id, _db, table) => (table === "first" ? refs.slice(0, 1) : []));
+    const operation = dropObjects(scope, objects, client);
+    await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+    const message = useConfirm.getState().request!.message;
+    expect(lookup).toHaveBeenCalledTimes(objects.length);
+    expect(message).toContain('Referenced by "orders" (ON DELETE CASCADE). MySQL refuses to delete a table other tables reference, so this may fail.');
+    useConfirm.getState().settle(null);
+    await operation;
+  });
+
+  it("says when the references could not be checked", async () => {
+    connection("sqlite");
+    vi.spyOn(api, "incomingForeignKeys").mockRejectedValue({ kind: "connection", message: "lost", sqlState: null });
+    const operation = truncateTable({ ...scope, name: "customers", kind: "table" }, client);
+    await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+    expect(useConfirm.getState().request!.message).toContain('Could not check which tables reference "customers": lost.');
+    useConfirm.getState().settle(null);
+    await operation;
+  });
+
+  it("does not look up references for views", async () => {
+    const lookup = vi.spyOn(api, "incomingForeignKeys");
+    const operation = dropObjects(scope, [{ name: "v", kind: "view" }], client);
+    await answer(null);
+    await operation;
+    expect(lookup).not.toHaveBeenCalled();
   });
 });

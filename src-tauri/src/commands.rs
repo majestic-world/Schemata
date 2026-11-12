@@ -1,12 +1,14 @@
 //! Thin command layer: maps UI calls to core services. No business logic here.
 
 use schematadb_core::{
-    AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry, ObjectInfo,
-    ObjectKind, Page, PageRequest, QueryHistory, RowChange, SaveOutcome, ScriptResult, Sessions, TableDesign, TableInfo, connect,
+    AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry,
+    IncomingForeignKey, ObjectInfo, ObjectKind, Page, PageRequest, QueryHistory, RowChange, RowIdentity, SaveOutcome, ScriptResult,
+    Sessions, TableDesign, TableInfo, connect,
 };
 use schematadb_core::{
     CancellationToken, ColumnGenerator, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport,
-    ExportFormat, ExportReport, ExportSource, GenerateReport, GenerateSpec, ImportReport, Progress, ProgressFn, ScriptRunReport,
+    Engine, ExportFormat, ExportReport, ExportSource, GenerateReport, GenerateSpec, ImportReport, Progress, ProgressFn, ScriptRunReport,
+    SqlFileScan, TextEncoding,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -174,10 +176,26 @@ pub async fn apply_changes(
     id: String,
     db: String,
     table: String,
+    identity: RowIdentity,
     changes: Vec<RowChange>,
 ) -> Result<u64, ChangeError> {
     let driver = sessions.driver(&id).await?;
-    driver.apply_changes(&db, &table, &changes).await
+    driver.apply_changes(&db, &table, &identity, &changes).await
+}
+
+#[tauri::command]
+pub async fn incoming_foreign_keys(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: String,
+    table: String,
+) -> CmdResult<Vec<IncomingForeignKey>> {
+    sessions
+        .with_driver(&id, |d| {
+            let (db, table) = (db.clone(), table.clone());
+            async move { d.incoming_foreign_keys(&db, &table).await }
+        })
+        .await
 }
 
 #[tauri::command]
@@ -201,9 +219,23 @@ pub async fn plan_table(
     sessions.driver(&id).await?.plan_table(&db, original.as_ref(), &design).await
 }
 
+/// Applies a reviewed table design. The design is planned again and applied only when the plan is still exactly the
+/// reviewed `statements`, so a table changed since the review is never altered by outdated DDL.
 #[tauri::command]
-pub async fn apply_ddl(sessions: State<'_, Sessions>, id: String, db: String, statements: Vec<String>) -> CmdResult<()> {
-    sessions.driver(&id).await?.apply_ddl(&db, &statements).await
+pub async fn apply_table_design(
+    sessions: State<'_, Sessions>,
+    id: String,
+    db: String,
+    original: Option<TableDesign>,
+    design: TableDesign,
+    statements: Vec<String>,
+) -> CmdResult<()> {
+    let driver = sessions.driver(&id).await?;
+    let planned = driver.plan_table(&db, original.as_ref(), &design).await?;
+    if planned != statements {
+        return Err(AppError::validation("The table changed since its SQL was reviewed; review the changes again"));
+    }
+    driver.apply_ddl(&db, &planned).await
 }
 
 #[tauri::command]
@@ -357,14 +389,21 @@ pub async fn run_sql_file(
     id: String,
     db: String,
     path: PathBuf,
+    encoding: TextEncoding,
     stop_on_error: bool,
     operation_id: String,
 ) -> CmdResult<ScriptRunReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = schematadb_core::run_sql_file(driver.as_ref(), &db, &path, stop_on_error, progress, cancel).await;
+    let result = schematadb_core::run_sql_file(driver.as_ref(), &db, &path, encoding, stop_on_error, progress, cancel).await;
     end(&ops, &operation_id);
     result
+}
+
+/// Checks that a `.sql` file decodes and lists the databases it switches to or creates, before a restore runs it.
+#[tauri::command]
+pub async fn scan_sql_file(path: PathBuf, encoding: TextEncoding, engine: Engine) -> CmdResult<SqlFileScan> {
+    schematadb_core::scan_sql_file(&path, encoding, engine).await
 }
 
 #[tauri::command]

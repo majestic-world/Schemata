@@ -14,6 +14,8 @@ import type {
   Page,
   PageRequest,
   RowChange,
+  RowIdentity,
+  IncomingForeignKey,
   ChangeError,
   ObjectKind,
   TableDesign,
@@ -25,6 +27,9 @@ import type {
   CsvImport,
   ImportReport,
   ScriptRunReport,
+  SqlFileScan,
+  TextEncoding,
+  Engine,
   CopyTableTarget,
   ColumnGenerator,
   GenerateSpec,
@@ -73,7 +78,10 @@ export const api = {
   tableDesign: (id: string, db: string, table: string) => call<TableDesign>("table_design", { id, db, table }),
   planTable: (id: string, db: string, original: TableDesign | null, design: TableDesign) =>
     call<string[]>("plan_table", { id, db, original, design }),
-  applyDdl: (id: string, db: string, statements: string[]) => call<void>("apply_ddl", { id, db, statements }),
+  /** Applies reviewed DDL; rejected when planning `design` again no longer yields exactly `statements`. */
+  applyTableDesign: (id: string, db: string, original: TableDesign | null, design: TableDesign, statements: string[]) =>
+    call<void>("apply_table_design", { id, db, original, design, statements }),
+  incomingForeignKeys: (id: string, db: string, table: string) => call<IncomingForeignKey[]>("incoming_foreign_keys", { id, db, table }),
   dropObject: (id: string, db: string, name: string, kind: ObjectKind) => call<void>("drop_object", { id, db, name, kind }),
   truncateTable: (id: string, db: string, name: string) => call<void>("truncate_table", { id, db, name }),
   renameTable: (id: string, db: string, from: string, to: string) => call<void>("rename_table", { id, db, from, to }),
@@ -90,8 +98,10 @@ export const api = {
   previewCsv: (path: string, options: CsvReadOptions) => call<CsvPreview>("preview_csv", { path, options }),
   importCsv: (id: string, db: string, table: string, path: string, spec: CsvImport, operationId: string) =>
     call<ImportReport>("import_csv", { id, db, table, path, spec, operationId }),
-  runSqlFile: (id: string, db: string, path: string, stopOnError: boolean, operationId: string) =>
-    call<ScriptRunReport>("run_sql_file", { id, db, path, stopOnError, operationId }),
+  runSqlFile: (id: string, db: string, path: string, encoding: TextEncoding, stopOnError: boolean, operationId: string) =>
+    call<ScriptRunReport>("run_sql_file", { id, db, path, encoding, stopOnError, operationId }),
+  /** Checks that a `.sql` file decodes in `encoding` and lists the databases it switches to or creates. */
+  scanSqlFile: (path: string, encoding: TextEncoding, engine: Engine) => call<SqlFileScan>("scan_sql_file", { path, encoding, engine }),
   backupDatabase: (id: string, db: string, path: string, options: { structure: boolean; data: boolean }, operationId: string) =>
     call<{ tables: number; rows: number }>("backup_database", { id, db, path, options, operationId }),
   copyTable: (sourceId: string, sourceDb: string, table: string, targetId: string, target: CopyTableTarget, operationId: string) =>
@@ -103,9 +113,10 @@ export const api = {
     call<{ rows: number }>("generate_data", { id, db, table, spec, operationId }),
   cancelOperation: (operationId: string) => call<void>("cancel_operation", { operationId }),
   /** Rejects with a `ChangeError` (not an `AppError`) when a change fails. */
-  applyChanges: async (id: string, db: string, table: string, changes: RowChange[]): Promise<number> => {
+  /** `identity`: the row identity the change keys were taken from. */
+  applyChanges: async (id: string, db: string, table: string, identity: RowIdentity, changes: RowChange[]): Promise<number> => {
     try {
-      return await invoke<number>("apply_changes", { id, db, table, changes });
+      return await invoke<number>("apply_changes", { id, db, table, identity, changes });
     } catch (e) {
       const err = e as Partial<ChangeError>;
       throw err && typeof err === "object" && "error" in err ? (err as ChangeError) : ({ index: null, error: toAppError(e) } satisfies ChangeError);

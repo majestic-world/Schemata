@@ -1,23 +1,79 @@
 use crate::design::sqlite::{FK_OFF, FK_ON};
 use crate::model::derive_identity;
-use crate::transfer::{DumpScript, ImportBatch, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem};
+use crate::transfer::{
+    DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
+};
 use crate::{
     AppError, CellValue, ChangeError, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
-    ForeignKeyInfo, IndexInfo, IndexKind, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange, RowIdentity,
-    ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
+    ForeignKeyInfo, IncomingForeignKey, IndexInfo, IndexKind, ObjectInfo, ObjectKind, Page, PageRequest, ROWID_COLUMN, Result, RowChange,
+    RowIdentity, ScriptResult, StatementError, StatementOutcome, TableDesign, TableInfo, Value, split_statements,
 };
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, OpenFlags, types::ValueRef};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+/// How long a statement waits for a lock another connection holds before failing with [`LOCKED`].
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCKED: &str = "The database is locked by another connection; try again once its transaction ends";
+const LOCKED_BY_QUERY_TAB: &str =
+    "The database is locked by an open transaction in a query tab; commit or roll it back there, then try again";
+
 pub struct SqliteDriver {
+    /// The app's own connection: grid saves, DDL, imports and object actions. Query tabs never run on it (unless the
+    /// database cannot be opened twice), so their open transactions cannot capture or roll back app operations.
     conn: Arc<Mutex<Connection>>,
-    interrupt: rusqlite::InterruptHandle,
+    /// What the main database was opened with; `None` when a second connection would not see the same database
+    /// (in-memory or temporary), so query-tab sessions share the main connection.
+    path: Option<String>,
+    /// Databases attached through [`Driver::attach_database`] (alias, file), attached again on every session connection.
+    attached: Arc<Mutex<Vec<(String, String)>>>,
+    sessions: Mutex<HashMap<String, Arc<EditorSession>>>,
+    /// Sessions of a replaced driver whose next run must fail once (see [`Driver::adopt_lost_editor_sessions`]).
+    lost_sessions: Mutex<HashSet<String>>,
+    executions: Executions,
     version: String,
+}
+
+/// A query tab's own connection to the same database, opened on first use.
+struct EditorSession {
+    path: String,
+    conn: Mutex<Option<Connection>>,
+    /// Whether the connection was inside a transaction when its last run ended; names the cause of lock timeouts.
+    in_transaction: AtomicBool,
+}
+
+impl EditorSession {
+    /// Runs `f` on the session's connection, opening it on first use. Databases attached to the app connection since
+    /// the last run are attached here too (SQLite refuses ATTACH inside a transaction, so only between transactions).
+    fn run<T>(&self, attached: &Mutex<Vec<(String, String)>>, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let mut guard = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(open_connection(&self.path, OpenFlags::empty())?);
+        }
+        let conn = guard.as_ref().expect("opened above");
+        if conn.is_autocommit() {
+            let attached = attached.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            attach_missing(conn, &attached)?;
+        }
+        let result = f(conn);
+        self.in_transaction.store(!conn.is_autocommit(), Ordering::Relaxed);
+        result
+    }
+}
+
+/// Runs registered under an execution id, so [`Driver::cancel`] reaches the connection running them.
+type Executions = Arc<Mutex<HashMap<String, Execution>>>;
+
+struct Execution {
+    interrupt: rusqlite::InterruptHandle,
+    /// Checked between statements: interrupting only stops a statement that is running.
+    cancelled: Arc<AtomicBool>,
 }
 
 pub(crate) fn map_err(e: rusqlite::Error) -> AppError {
@@ -27,6 +83,7 @@ pub(crate) fn map_err(e: rusqlite::Error) -> AppError {
             match f.code {
                 rusqlite::ErrorCode::OperationInterrupted => AppError::cancelled(),
                 rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::NotADatabase => AppError::new(ErrorKind::Connection, message),
+                rusqlite::ErrorCode::DatabaseBusy => AppError::sql(LOCKED),
                 _ => AppError::sql(message),
             }
         }
@@ -38,14 +95,103 @@ pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// TEXT that is not valid UTF-8 is returned as its bytes: a lossy decode would be written back (or dumped) mangled.
 pub(crate) fn read_value(v: ValueRef<'_>) -> Value {
     match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => Value::Int(i),
         ValueRef::Real(f) => Value::Float(f),
-        ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Text(t) => match std::str::from_utf8(t) {
+            Ok(text) => Value::Text(text.to_owned()),
+            Err(_) => Value::Bytes(t.to_vec()),
+        },
         ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
     }
+}
+
+/// Opens `path` read-write with lock waits and foreign-key enforcement, the settings every connection shares.
+fn open_connection(path: &str, extra: OpenFlags) -> Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI | extra;
+    let conn = Connection::open_with_flags(path, flags).map_err(|e| AppError::connection(e.to_string()))?;
+    conn.busy_timeout(BUSY_TIMEOUT).map_err(map_err)?;
+    conn.execute_batch(FK_ON).map_err(map_err)?;
+    Ok(conn)
+}
+
+fn attach_missing(c: &Connection, attached: &[(String, String)]) -> Result<()> {
+    let mut stmt = c.prepare("SELECT name FROM pragma_database_list").map_err(map_err)?;
+    let present = collect(&mut stmt, [], |r| r.get::<_, String>(0))?;
+    for (alias, file) in attached {
+        if !present.iter().any(|name| name.eq_ignore_ascii_case(alias)) {
+            c.execute(&format!("ATTACH DATABASE ?1 AS {}", quote_ident(alias)), [file]).map_err(map_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs a script statement by statement under `execution_id`, stopping at the first error.
+fn run_script(c: &Connection, executions: &Executions, execution_id: Option<&str>, sql: &str, row_limit: usize) -> ScriptResult {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if let Some(id) = execution_id {
+        let execution = Execution { interrupt: c.get_interrupt_handle(), cancelled: cancelled.clone() };
+        executions.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_owned(), execution);
+    }
+    let mut result = ScriptResult { outcomes: Vec::new(), error: None };
+    for (index, statement) in split_statements(sql, Engine::Sqlite).into_iter().enumerate() {
+        let outcome = if cancelled.load(Ordering::Relaxed) { Err(AppError::cancelled()) } else { run_statement(c, &statement, row_limit) };
+        match outcome {
+            Ok(outcome) => result.outcomes.push(outcome),
+            Err(error) => {
+                result.error = Some(StatementError { index, statement, error });
+                break;
+            }
+        }
+    }
+    if let Some(id) = execution_id {
+        executions.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+    }
+    result
+}
+
+/// Rows `offset..offset+limit` of a read-only statement; anything else would repeat its side effects.
+fn read_more(c: &Connection, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+    if !crate::is_read_only_query(statement) {
+        return Err(AppError::validation("Only read-only queries can load more rows; run the statement again to see more"));
+    }
+    let mut stmt = c.prepare(&crate::sql::more_rows(statement)).map_err(map_err)?;
+    let columns: Vec<ColumnMeta> = stmt
+        .columns()
+        .map(|col| ColumnMeta { name: col.name().to_owned(), type_name: col.decl_type().unwrap_or("").to_owned(), hidden: false })
+        .collect();
+    let n = columns.len();
+    let rows =
+        collect(&mut stmt, [limit as i64, offset as i64], |r| Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect()))?;
+    Ok(Page { columns, rows })
+}
+
+/// Streams the rows of `sql` into `tx`: the column list first, then batches of `batch` rows.
+fn stream_rows(c: &Connection, sql: &str, batch: usize, tx: &tokio::sync::mpsc::Sender<Result<StreamItem>>) -> Result<()> {
+    let mut stmt = c.prepare(sql).map_err(map_err)?;
+    let columns: Vec<ColumnMeta> = stmt
+        .columns()
+        .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.decl_type().unwrap_or("").to_owned(), hidden: false })
+        .collect();
+    let n = columns.len();
+    if tx.blocking_send(Ok(StreamItem::Columns(columns))).is_err() {
+        return Ok(());
+    }
+    let mut rows = stmt.query([]).map_err(map_err)?;
+    let mut buf = Vec::with_capacity(batch);
+    while let Some(r) = rows.next().map_err(map_err)? {
+        buf.push((0..n).map(|i| read_value(r.get_ref_unwrap(i))).collect());
+        if buf.len() == batch && tx.blocking_send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).is_err() {
+            return Ok(());
+        }
+    }
+    if !buf.is_empty() {
+        let _ = tx.blocking_send(Ok(StreamItem::Rows(buf)));
+    }
+    Ok(())
 }
 
 impl SqliteDriver {
@@ -55,18 +201,19 @@ impl SqliteDriver {
             if !create && !Path::new(&path).exists() {
                 return Err(AppError::connection(format!("Database file not found: {path}")));
             }
-            let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
-            if create {
-                flags |= OpenFlags::SQLITE_OPEN_CREATE;
-            }
-            let conn = Connection::open_with_flags(&path, flags).map_err(|e| AppError::connection(e.to_string()))?;
+            let conn = open_connection(&path, if create { OpenFlags::SQLITE_OPEN_CREATE } else { OpenFlags::empty() })?;
             // Validates that the file really is a SQLite database.
             conn.query_row("SELECT count(*) FROM sqlite_schema", [], |_| Ok(()))
                 .map_err(|e| AppError::connection(format!("Not a SQLite database: {e}")))?;
-            conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(map_err)?;
+            let file: String =
+                conn.query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| r.get(0)).map_err(map_err)?;
             Ok(SqliteDriver {
-                interrupt: conn.get_interrupt_handle(),
                 conn: Arc::new(Mutex::new(conn)),
+                path: (!file.is_empty()).then_some(path),
+                attached: Arc::default(),
+                sessions: Mutex::default(),
+                lost_sessions: Mutex::default(),
+                executions: Arc::default(),
                 version: rusqlite::version().to_owned(),
             })
         })
@@ -74,7 +221,7 @@ impl SqliteDriver {
         .map_err(|e| AppError::io(e.to_string()))?
     }
 
-    /// Runs `f` on the connection in the blocking pool.
+    /// Runs `f` on the main connection in the blocking pool.
     pub(crate) async fn with_conn<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
@@ -82,11 +229,50 @@ impl SqliteDriver {
     {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
             f(&mut guard)
         })
         .await
         .map_err(|e| AppError::io(e.to_string()))?
+        .map_err(|e| self.explain_lock(e, None))
+    }
+
+    /// The connection of query-tab session `key`; `None` when sessions share the main connection (see `path`).
+    fn session(&self, key: &str) -> Result<Option<Arc<EditorSession>>> {
+        if self.lost_sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(key) {
+            return Err(AppError::connection(
+                "The connection was reopened, so this query tab's session was closed and any open transaction rolled back. Run again to start a new session.",
+            ));
+        }
+        let Some(path) = &self.path else { return Ok(None) };
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = sessions.entry(key.to_owned()).or_insert_with(|| {
+            Arc::new(EditorSession { path: path.clone(), conn: Mutex::new(None), in_transaction: AtomicBool::new(false) })
+        });
+        Ok(Some(session.clone()))
+    }
+
+    /// Runs `f` on session `session`'s connection in the blocking pool.
+    async fn on_session<T, F>(&self, session: Arc<EditorSession>, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        let attached = self.attached.clone();
+        tokio::task::spawn_blocking(move || session.run(&attached, f)).await.map_err(|e| AppError::io(e.to_string()))?
+    }
+
+    /// A lock timeout names its likely cause when a query tab other than `except` holds an open transaction.
+    fn explain_lock(&self, error: AppError, except: Option<&str>) -> AppError {
+        if error.message != LOCKED {
+            return error;
+        }
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        if sessions.iter().any(|(key, session)| Some(key.as_str()) != except && session.in_transaction.load(Ordering::Relaxed)) {
+            AppError::sql(LOCKED_BY_QUERY_TAB)
+        } else {
+            error
+        }
     }
 }
 
@@ -106,6 +292,74 @@ pub(crate) fn to_sql(v: &Value) -> SqlValue {
         Value::Float(f) => SqlValue::Real(*f),
         Value::Decimal(s) | Value::Text(s) | Value::DateTime(s) | Value::Json(s) => SqlValue::Text(s.clone()),
         Value::Bytes(b) => SqlValue::Blob(b.clone()),
+    }
+}
+
+/// Whether `db.name` is a `WITHOUT ROWID` table, as SQLite itself reports it (the CREATE text may mention the words
+/// in a default value or comment).
+fn without_rowid(c: &Connection, db: &str, name: &str) -> Result<bool> {
+    c.query_row("SELECT wr FROM pragma_table_list(?1) WHERE schema = ?2", [name, db], |r| r.get::<_, bool>(0))
+        .optional()
+        .map(|wr| wr.unwrap_or(false))
+        .map_err(map_err)
+}
+
+/// `pragma table_xinfo` reports `DEFAULT (expr)` without its parentheses; they are put back around anything that is
+/// not a plain literal, so the default is valid in a `DEFAULT` clause again (rebuilds and copies emit it as is).
+fn default_clause(raw: String) -> String {
+    let text = raw.trim();
+    let upper = text.to_ascii_uppercase();
+    let keyword = ["NULL", "TRUE", "FALSE", "CURRENT_TIME", "CURRENT_DATE", "CURRENT_TIMESTAMP"].contains(&upper.as_str());
+    // A bare identifier is SQLite's legacy spelling of a string default (`DEFAULT abc` stores 'abc').
+    let identifier = text.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+        && text.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let number = unsigned.starts_with(|ch: char| ch.is_ascii_digit() || ch == '.')
+        && (unsigned.parse::<f64>().is_ok()
+            || unsigned.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x"))
+                && unsigned.len() > 2
+                && unsigned[2..].chars().all(|ch| ch.is_ascii_hexdigit()));
+    let blob = text.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("x'")) && single_quoted(&text[1..]);
+    if keyword || identifier || number || single_quoted(text) || blob { raw } else { format!("({text})") }
+}
+
+/// Whether `text` is exactly one `'…'` string literal (`''` escapes a quote).
+fn single_quoted(text: &str) -> bool {
+    let Some(inner) = text.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')) else { return false };
+    !inner.replace("''", "").contains('\'')
+}
+
+/// Whether a declared type gives a column no type affinity, so SQLite stores values exactly as bound
+/// (https://www.sqlite.org/datatype3.html#determination_of_column_affinity; `ANY` in STRICT tables).
+fn without_affinity(data_type: &str) -> bool {
+    let t = data_type.trim().to_ascii_uppercase();
+    !t.contains("INT") && !["CHAR", "CLOB", "TEXT"].iter().any(|k| t.contains(k)) && (t.is_empty() || t.contains("BLOB") || t == "ANY")
+}
+
+/// The number a grid text value spells canonically (`43`, `-1.5`; not `007` or `1e3`), so a column without affinity
+/// keeps storing numbers as numbers when they are edited as text.
+fn canonical_number(text: &str) -> Option<CellValue> {
+    if let Ok(i) = text.parse::<i64>() {
+        return (i.to_string() == text).then_some(CellValue::Int(i));
+    }
+    let f = text.parse::<f64>().ok().filter(|f| f.is_finite())?;
+    (f.to_string() == text).then_some(CellValue::Float(f))
+}
+
+/// The grid sends edits as text. Columns without affinity would store that text as is, turning an edited 42 into
+/// '43' (which no longer compares equal to 43), so canonical numbers are written as numbers there.
+fn keep_numbers_numeric(changes: &mut [RowChange], columns: &[ColumnInfo]) {
+    for change in changes {
+        let (RowChange::Update { values, .. } | RowChange::Insert { values }) = change else { continue };
+        for value in values {
+            let untyped = columns.iter().any(|c| c.name == value.column && without_affinity(&c.data_type));
+            if untyped
+                && let CellValue::Text(text) = &value.value
+                && let Some(number) = canonical_number(text)
+            {
+                value.value = number;
+            }
+        }
     }
 }
 
@@ -210,8 +464,14 @@ fn validate_rebuild(c: &Connection, db: &str, info: &TableInfo) -> Result<()> {
     Ok(())
 }
 
+/// Whether the connection enforces foreign keys (a user may have turned it off with `PRAGMA foreign_keys`).
+fn foreign_keys_enabled(c: &Connection) -> Result<bool> {
+    c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).map_err(map_err)
+}
+
 fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
     let toggles_fk = statements.first().map(String::as_str) == Some(FK_OFF);
+    let enforced = foreign_keys_enabled(c)?;
     if toggles_fk {
         c.execute_batch(FK_OFF).map_err(map_err)?;
     }
@@ -229,20 +489,25 @@ fn run_ddl(c: &mut Connection, statements: &[String]) -> Result<()> {
         }
         tx.commit().map_err(map_err)
     })();
-    if toggles_fk {
+    if toggles_fk && enforced {
         c.execute_batch(FK_ON).map_err(map_err)?;
     }
     result
 }
 
 /// Runs streamed statements one by one. A failed or cancelled script must not leave the session inside its
-/// transaction or without FK enforcement, so both are restored before returning.
+/// transaction or with changed FK enforcement, so both are restored before returning. A transaction open before the
+/// script is not the script's to end, so the script is refused instead.
 fn run_statements(
     c: &mut Connection,
     statements: &mut tokio::sync::mpsc::Receiver<Result<String>>,
     stop_on_error: bool,
     cancel: &CancellationToken,
 ) -> Result<ScriptRunReport> {
+    if !c.is_autocommit() {
+        return Err(AppError::validation("The connection is inside a transaction; commit or roll it back before running a SQL file"));
+    }
+    let enforced = foreign_keys_enabled(c)?;
     let mut report = ScriptRunReport::default();
     let token = cancel.clone();
     c.progress_handler(1000, Some(move || token.is_cancelled())).map_err(map_err)?;
@@ -278,8 +543,10 @@ fn run_statements(
         match result {
             Ok(()) => report.executed += 1,
             Err(e) => {
+                // Every later statement would wait for the same lock in vain.
+                let locked = e.message == LOCKED;
                 report.failed.push(crate::transfer::failure(index, &st, e.message));
-                if stop_on_error {
+                if stop_on_error || locked {
                     break;
                 }
             }
@@ -287,8 +554,9 @@ fn run_statements(
         index += 1;
     }
     let reset = c.progress_handler(0, None::<fn() -> bool>).map_err(map_err);
-    let rollback = if !c.is_autocommit() { c.execute_batch("ROLLBACK").map_err(map_err) } else { Ok(()) };
-    let foreign_keys = c.execute_batch(FK_ON).map_err(map_err);
+    report.open_transaction_rolled_back = !c.is_autocommit();
+    let rollback = if report.open_transaction_rolled_back { c.execute_batch("ROLLBACK").map_err(map_err) } else { Ok(()) };
+    let foreign_keys = c.execute_batch(if enforced { FK_ON } else { FK_OFF }).map_err(map_err);
     reset?;
     rollback?;
     foreign_keys?;
@@ -330,17 +598,25 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         ))
     })?;
     let pk_count = raw.iter().filter(|c| c.4 > 0).count();
+    let mut primary_key: Vec<(i64, String)> = raw.iter().filter(|c| c.4 > 0).map(|c| (c.4, c.0.clone())).collect();
+    primary_key.sort();
+    let primary_key: Vec<String> = primary_key.into_iter().map(|(_, name)| name).collect();
+    let without_rowid = kind == ObjectKind::Table && without_rowid(c, db, name)?;
     let columns: Vec<ColumnInfo> = raw
         .into_iter()
-        .map(|(name, data_type, notnull, default, pk, hidden)| ColumnInfo {
-            auto_increment: pk > 0 && pk_count == 1 && data_type.eq_ignore_ascii_case("INTEGER") && upper_sql.contains("AUTOINCREMENT"),
-            nullable: !notnull && pk == 0,
-            primary_key: pk > 0,
-            generated: hidden == 2 || hidden == 3,
-            name,
-            data_type,
-            default,
-            comment: None,
+        .map(|(name, data_type, notnull, default, pk, hidden)| {
+            let rowid_alias = pk > 0 && pk_count == 1 && !without_rowid && data_type.eq_ignore_ascii_case("INTEGER");
+            ColumnInfo {
+                auto_increment: rowid_alias && upper_sql.contains("AUTOINCREMENT"),
+                // Rowid tables accept NULL in other primary key columns unless they are declared NOT NULL.
+                nullable: !notnull && !rowid_alias && !(pk > 0 && without_rowid),
+                primary_key: pk > 0,
+                generated: hidden == 2 || hidden == 3,
+                name,
+                data_type,
+                default: default.map(default_clause),
+                comment: None,
+            }
         })
         .collect();
 
@@ -388,6 +664,7 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
                     name: format!("fk_{name}_{id}"),
                     columns: Vec::new(),
                     ref_table: table,
+                    ref_schema: None,
                     ref_columns: Vec::new(),
                     on_update,
                     on_delete,
@@ -408,13 +685,13 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
 
     let row_identity = match kind {
         ObjectKind::Table => {
-            let identity = derive_identity(&columns, &identity_indexes, !upper_sql.contains("WITHOUT ROWID"));
-            if identity == RowIdentity::RowId
-                && (rowid_alias(&columns).is_none() || columns.iter().any(|c| c.name.eq_ignore_ascii_case(ROWID_COLUMN)))
-            {
-                RowIdentity::None
-            } else {
-                identity
+            // The rowid is usable when the table has one and the grid can fetch it under an unshadowed name.
+            let rowid_usable =
+                !without_rowid && rowid_alias(&columns).is_some() && !columns.iter().any(|c| c.name.eq_ignore_ascii_case(ROWID_COLUMN));
+            // SQLite cannot limit an UPDATE/DELETE to one row, so rows are never matched by value.
+            match derive_identity(&columns, &identity_indexes, rowid_usable) {
+                RowIdentity::AllColumns { .. } => RowIdentity::None,
+                identity => identity,
             }
         }
         ObjectKind::View => RowIdentity::None,
@@ -434,6 +711,7 @@ fn read_structure(c: &Connection, db: &str, name: &str) -> Result<TableInfo> {
         comment: None,
         create_sql,
         row_identity,
+        primary_key,
     })
 }
 
@@ -498,7 +776,7 @@ impl Driver for SqliteDriver {
             let schema = quote_ident(&db);
             let sql = format!(
                 "SELECT name, type FROM {schema}.sqlite_schema \
-                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                 WHERE type IN ('table', 'view') AND substr(name, 1, 7) <> 'sqlite_' ORDER BY type, name"
             );
             let mut stmt = c.prepare(&sql).map_err(map_err)?;
             let entries = stmt
@@ -524,52 +802,95 @@ impl Driver for SqliteDriver {
         .await
     }
 
-    async fn execute_script(&self, _db: Option<&str>, sql: &str, row_limit: usize, _execution_id: Option<&str>) -> Result<ScriptResult> {
-        let statements = split_statements(sql, Engine::Sqlite);
-        self.with_conn(move |c| {
-            let mut outcomes = Vec::new();
-            for (index, statement) in statements.into_iter().enumerate() {
-                match run_statement(c, &statement, row_limit) {
-                    Ok(outcome) => outcomes.push(outcome),
-                    Err(error) => {
-                        return Ok(ScriptResult { outcomes, error: Some(StatementError { index, statement, error }) });
-                    }
+    async fn execute_script(&self, _db: Option<&str>, sql: &str, row_limit: usize, execution_id: Option<&str>) -> Result<ScriptResult> {
+        let (executions, id, sql) = (self.executions.clone(), execution_id.map(str::to_owned), sql.to_owned());
+        let mut result = self.with_conn(move |c| Ok(run_script(c, &executions, id.as_deref(), &sql, row_limit))).await?;
+        if let Some(error) = &mut result.error {
+            error.error = self.explain_lock(error.error.clone(), None);
+        }
+        Ok(result)
+    }
+
+    async fn execute_in_session(
+        &self,
+        session: &str,
+        db: Option<&str>,
+        sql: &str,
+        row_limit: usize,
+        execution_id: Option<&str>,
+    ) -> Result<ScriptResult> {
+        let Some(slot) = self.session(session)? else { return self.execute_script(db, sql, row_limit, execution_id).await };
+        let (executions, id, sql) = (self.executions.clone(), execution_id.map(str::to_owned), sql.to_owned());
+        let mut result = self.on_session(slot, move |c| Ok(run_script(c, &executions, id.as_deref(), &sql, row_limit))).await?;
+        if let Some(error) = &mut result.error {
+            error.error = self.explain_lock(error.error.clone(), Some(session));
+        }
+        Ok(result)
+    }
+
+    async fn fetch_more_in_session(&self, session: &str, db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
+        let Some(slot) = self.session(session)? else { return self.fetch_more(db, statement, offset, limit).await };
+        let statement = statement.to_owned();
+        self.on_session(slot, move |c| read_more(c, &statement, offset, limit)).await.map_err(|e| self.explain_lock(e, Some(session)))
+    }
+
+    /// Rolls back the session's open transaction and closes its connection. A run still in progress keeps the
+    /// connection until it finishes; dropping it then closes it, which rolls back as well.
+    async fn close_editor_session(&self, session: &str) -> Result<()> {
+        self.lost_sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(session);
+        let Some(slot) = self.sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(session) else { return Ok(()) };
+        let conn = match slot.conn.try_lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => None,
+        };
+        if let Some(conn) = conn {
+            tokio::task::spawn_blocking(move || {
+                if !conn.is_autocommit() {
+                    conn.execute_batch("ROLLBACK").map_err(map_err)?;
                 }
-            }
-            Ok(ScriptResult { outcomes, error: None })
-        })
-        .await
+                conn.close().map_err(|(_, e)| map_err(e))
+            })
+            .await
+            .map_err(|e| AppError::io(e.to_string()))??;
+        }
+        Ok(())
+    }
+
+    fn live_editor_sessions(&self) -> Vec<String> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        // A session busy with a run certainly has a connection.
+        sessions
+            .iter()
+            .filter(|(_, session)| match session.conn.try_lock() {
+                Ok(conn) => conn.is_some(),
+                Err(_) => true,
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn adopt_lost_editor_sessions(&self, keys: Vec<String>) {
+        self.lost_sessions.lock().unwrap_or_else(PoisonError::into_inner).extend(keys);
     }
 
     async fn stream_query(&self, _db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         let (conn, sql) = (self.conn.clone(), sql.to_owned());
         tokio::task::spawn_blocking(move || {
-            let guard = conn.lock().unwrap_or_else(|p| p.into_inner());
-            let run = || -> Result<()> {
-                let mut stmt = guard.prepare(&sql).map_err(map_err)?;
-                let columns: Vec<ColumnMeta> = stmt
-                    .columns()
-                    .map(|c| ColumnMeta { name: c.name().to_owned(), type_name: c.decl_type().unwrap_or("").to_owned(), hidden: false })
-                    .collect();
-                let n = columns.len();
-                if tx.blocking_send(Ok(StreamItem::Columns(columns))).is_err() {
-                    return Ok(());
-                }
-                let mut rows = stmt.query([]).map_err(map_err)?;
-                let mut buf = Vec::with_capacity(batch);
-                while let Some(r) = rows.next().map_err(map_err)? {
-                    buf.push((0..n).map(|i| read_value(r.get_ref_unwrap(i))).collect());
-                    if buf.len() == batch && tx.blocking_send(Ok(StreamItem::Rows(std::mem::take(&mut buf)))).is_err() {
-                        return Ok(());
-                    }
-                }
-                if !buf.is_empty() {
-                    let _ = tx.blocking_send(Ok(StreamItem::Rows(buf)));
-                }
-                Ok(())
-            };
-            if let Err(e) = run() {
+            let guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Err(e) = stream_rows(&guard, &sql, batch, &tx) {
+                let _ = tx.blocking_send(Err(e));
+            }
+        });
+        Ok(rx)
+    }
+
+    async fn stream_query_in_session(&self, session: &str, db: Option<&str>, sql: &str, batch: usize) -> Result<RowStream> {
+        let Some(slot) = self.session(session)? else { return self.stream_query(db, sql, batch).await };
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (attached, sql) = (self.attached.clone(), sql.to_owned());
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = slot.run(&attached, |c| stream_rows(c, &sql, batch, &tx)) {
                 let _ = tx.blocking_send(Err(e));
             }
         });
@@ -582,16 +903,16 @@ impl Driver for SqliteDriver {
         table: &str,
         columns: &[String],
         mut rows: tokio::sync::mpsc::Receiver<Result<ImportBatch>>,
-        skip_errors: bool,
-        empty_first: bool,
+        options: ImportOptions,
     ) -> Result<ImportReport> {
+        let ImportOptions { skip_errors, empty_first, utc_timestamps: _ } = options;
         let marks = vec!["?"; columns.len()].join(", ");
         let cols = columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
         let sql = format!("INSERT INTO {}.{} ({cols}) VALUES ({marks})", quote_ident(db), quote_ident(table));
         let conn = self.conn.clone();
         let (db, table, columns) = (db.to_owned(), table.to_owned(), columns.to_vec());
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
             let info = read_structure(&guard, &db, &table)?;
             info.validate_writable_columns(columns.iter().map(String::as_str))?;
             let tx = guard.transaction().map_err(map_err)?;
@@ -607,9 +928,17 @@ impl Driver for SqliteDriver {
                         match stmt.execute(rusqlite::params_from_iter(params)) {
                             Ok(_) => report.inserted += 1,
                             Err(e) => {
+                                let message = map_err(e).message;
+                                // `ON CONFLICT ROLLBACK` or `RAISE(ROLLBACK)` ended the whole transaction, taking the rows
+                                // before it along: continuing would commit only the rest.
+                                if skip_errors && tx.is_autocommit() {
+                                    return Err(AppError::sql(format!(
+                                        "Line {line}: {message}. The table rolled back the whole import, so no rows were imported."
+                                    )));
+                                }
                                 report.failed_count += 1;
                                 if report.failed.len() < MAX_REPORTED_FAILURES {
-                                    report.failed.push(RowFailure { line, message: map_err(e).message });
+                                    report.failed.push(RowFailure { line, message });
                                 }
                                 if !skip_errors {
                                     // Dropping the transaction rolls everything back.
@@ -626,6 +955,7 @@ impl Driver for SqliteDriver {
         })
         .await
         .map_err(|e| AppError::io(e.to_string()))?
+        .map_err(|e| self.explain_lock(e, None))
     }
 
     async fn execute_statements(
@@ -636,22 +966,28 @@ impl Driver for SqliteDriver {
         cancel: CancellationToken,
     ) -> Result<ScriptRunReport> {
         let attached = db.filter(|d| *d != "main").map(str::to_owned);
-        self.with_conn(move |c| match attached {
-            None => run_statements(c, &mut statements, stop_on_error, &cancel),
-            // Statements are unqualified, so an attached database is scripted through its own connection.
-            Some(alias) => {
-                let file: String = c
-                    .query_row("SELECT file FROM pragma_database_list WHERE name = ?1", [&alias], |r| r.get(0))
-                    .map_err(|_| AppError::validation(format!("Database {alias} is not attached")))?;
-                if file.is_empty() {
-                    return Err(AppError::validation(format!("Database {alias} has no file to run the script against")));
+        let mut report = self
+            .with_conn(move |c| match attached {
+                None => run_statements(c, &mut statements, stop_on_error, &cancel),
+                // Statements are unqualified, so an attached database is scripted through its own connection.
+                Some(alias) => {
+                    let file: String = c
+                        .query_row("SELECT file FROM pragma_database_list WHERE name = ?1", [&alias], |r| r.get(0))
+                        .map_err(|_| AppError::validation(format!("Database {alias} is not attached")))?;
+                    if file.is_empty() {
+                        return Err(AppError::validation(format!("Database {alias} has no file to run the script against")));
+                    }
+                    let mut other = open_connection(&file, OpenFlags::empty())?;
+                    run_statements(&mut other, &mut statements, stop_on_error, &cancel)
                 }
-                let mut other = Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(map_err)?;
-                other.execute_batch(FK_ON).map_err(map_err)?;
-                run_statements(&mut other, &mut statements, stop_on_error, &cancel)
+            })
+            .await?;
+        for failure in &mut report.failed {
+            if failure.message == LOCKED {
+                failure.message = self.explain_lock(AppError::sql(LOCKED), None).message;
             }
-        })
-        .await
+        }
+        Ok(report)
     }
 
     async fn dump_script(&self, db: &str) -> Result<DumpScript> {
@@ -660,7 +996,7 @@ impl Driver for SqliteDriver {
             let schema = quote_ident(&db);
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
+                    "SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND substr(name, 1, 7) <> 'sqlite_' ORDER BY rowid"
                 ))
                 .map_err(map_err)?;
             let entries = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
@@ -711,20 +1047,8 @@ impl Driver for SqliteDriver {
     }
 
     async fn fetch_more(&self, _db: Option<&str>, statement: &str, offset: u64, limit: u64) -> Result<Page> {
-        let sql = crate::sql::more_rows(statement);
-        self.with_conn(move |c| {
-            let mut stmt = c.prepare(&sql).map_err(map_err)?;
-            let columns: Vec<ColumnMeta> = stmt
-                .columns()
-                .map(|col| ColumnMeta { name: col.name().to_owned(), type_name: col.decl_type().unwrap_or("").to_owned(), hidden: false })
-                .collect();
-            let n = columns.len();
-            let rows = collect(&mut stmt, [limit as i64, offset as i64], |r| {
-                Ok((0..n).map(|i| read_value(r.get_ref_unwrap(i)).to_cell()).collect())
-            })?;
-            Ok(Page { columns, rows })
-        })
-        .await
+        let statement = statement.to_owned();
+        self.with_conn(move |c| read_more(c, &statement, offset, limit)).await
     }
 
     async fn list_columns(&self, db: &str) -> Result<Vec<(String, Vec<String>)>> {
@@ -732,7 +1056,7 @@ impl Driver for SqliteDriver {
         self.with_conn(move |c| {
             let sql = format!(
                 "SELECT m.name, p.name FROM {}.sqlite_schema m JOIN pragma_table_xinfo(m.name, ?1) p \
-                 WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' AND p.hidden <> 1 ORDER BY m.name, p.cid",
+                 WHERE m.type IN ('table', 'view') AND substr(m.name, 1, 7) <> 'sqlite_' AND p.hidden <> 1 ORDER BY m.name, p.cid",
                 quote_ident(&db)
             );
             let mut stmt = c.prepare(&sql).map_err(map_err)?;
@@ -749,8 +1073,11 @@ impl Driver for SqliteDriver {
         .await
     }
 
-    async fn cancel(&self, _execution_id: &str) -> Result<()> {
-        self.interrupt.interrupt();
+    async fn cancel(&self, execution_id: &str) -> Result<()> {
+        if let Some(execution) = self.executions.lock().unwrap_or_else(PoisonError::into_inner).get(execution_id) {
+            execution.cancelled.store(true, Ordering::Relaxed);
+            execution.interrupt.interrupt();
+        }
         Ok(())
     }
 
@@ -764,34 +1091,45 @@ impl Driver for SqliteDriver {
         self.with_conn(move |c| read_page(c, &db, &table, &req)).await
     }
 
-    async fn apply_changes(&self, db: &str, table: &str, changes: &[RowChange]) -> Result<u64, ChangeError> {
-        let (db, table, changes) = (db.to_owned(), table.to_owned(), changes.to_vec());
+    async fn apply_changes(&self, db: &str, table: &str, identity: &RowIdentity, changes: &[RowChange]) -> Result<u64, ChangeError> {
+        let (db, table, identity, mut changes) = (db.to_owned(), table.to_owned(), identity.clone(), changes.to_vec());
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = conn.lock().unwrap_or_else(PoisonError::into_inner);
             let info = read_structure(&guard, &db, &table)?;
+            crate::sql::check_identity(&identity, &info.row_identity)?;
             if info.row_identity == RowIdentity::None && !changes.is_empty() {
                 return Err(AppError::validation("This table has no safely addressable row identity and is read-only").into());
             }
             info.validate_changes(&changes)?;
-            let table_ref = format!("{}.{}", quote_ident(&db), quote_ident(&table));
-            // The implicit key must use the same unshadowed alias as the page projection.
-            let dialect = crate::sql::ChangeDialect { empty_insert: "DEFAULT VALUES", null_safe_eq: "IS", single_row: "" };
-            let mut statements = crate::sql::change_statements(&changes, &table_ref, &info.row_identity, quote_ident, &dialect)?;
-            if info.row_identity == RowIdentity::RowId {
-                let alias = quote_ident(rowid_alias(&info.columns).unwrap());
-                for statement in &mut statements {
-                    if let Some((prefix, suffix)) = statement.sql.rsplit_once(" WHERE rowid =") {
-                        statement.sql = format!("{prefix} WHERE {alias} ={suffix}");
-                    }
-                }
-            }
+            keep_numbers_numeric(&mut changes, &info.columns);
+            let rowid = info.row_identity == RowIdentity::RowId;
+            let target = crate::sql::ChangeTarget {
+                table_ref: format!("{}.{}", quote_ident(&db), quote_ident(&table)),
+                identity: &info.row_identity,
+                quote: quote_ident,
+                dialect: crate::sql::ChangeDialect { empty_insert: "DEFAULT VALUES", null_safe_eq: "IS", single_row: "" },
+                byte_exact: Vec::new(),
+                // The implicit key must use the same unshadowed alias as the page projection.
+                rowid: rowid.then(|| quote_ident(rowid_alias(&info.columns).unwrap())),
+                // Rowids are reused after deletes and renumbered by VACUUM: the loaded values must still match.
+                expected_columns: if rowid {
+                    info.columns.iter().filter(|c| crate::model::matchable(&c.data_type)).map(|c| c.name.clone()).collect()
+                } else {
+                    Vec::new()
+                },
+                complete_match: true,
+            };
+            let statements = crate::sql::change_statements(&changes, &target)?;
             let tx = guard.transaction().map_err(map_err)?;
             for (index, st) in statements.iter().enumerate() {
                 let params: Vec<SqlValue> = st.binds.iter().map(to_sql).collect();
                 let affected = tx
                     .execute(&st.sql, rusqlite::params_from_iter(params))
                     .map_err(|e| ChangeError { index: Some(index), error: map_err(e) })?;
+                if st.keyed && affected > 1 {
+                    return Err(crate::sql::several(index, affected as u64));
+                }
                 if st.keyed && affected == 0 {
                     return Err(crate::sql::vanished(index));
                 }
@@ -801,6 +1139,7 @@ impl Driver for SqliteDriver {
         })
         .await
         .map_err(|e| ChangeError::from(AppError::io(e.to_string())))?
+        .map_err(|e| ChangeError { error: self.explain_lock(e.error, None), ..e })
     }
 
     async fn count_rows(&self, db: &str, table: &str, filters: &[Filter]) -> Result<u64> {
@@ -824,14 +1163,30 @@ impl Driver for SqliteDriver {
             if info.columns.iter().any(|c| c.generated) {
                 return Err(AppError::validation("Tables with generated columns cannot be altered by the table designer"));
             }
-            let mut statements = crate::design::sqlite::alter(&db, &original, &design, deps)?;
+            if TableDesign::from_info(&info) != original {
+                return Err(AppError::validation(
+                    "The table changed since the designer loaded it. Reopen the designer (or revert) to load its current structure, then make your changes again.",
+                ));
+            }
+            // A rowid not carried by an INTEGER PRIMARY KEY column must survive a rebuild under a name neither design shadows.
+            let has_alias = info.primary_key.len() == 1
+                && info.columns.iter().any(|col| col.primary_key && col.data_type.eq_ignore_ascii_case("INTEGER"));
+            let rowid = (!without_rowid(c, &db, &original.name)? && !has_alias)
+                .then(|| {
+                    ["rowid", "_rowid_", "oid"].into_iter().find(|alias| {
+                        !original.columns.iter().chain(&design.columns).any(|col| col.name.eq_ignore_ascii_case(alias))
+                    })
+                })
+                .flatten();
+            let mut statements = crate::design::sqlite::alter(&db, &original, &design, deps, rowid)?;
             if statements.first().map(String::as_str) == Some(FK_OFF) {
                 validate_rebuild(c, &db, &info)?;
                 if info.columns.iter().any(|c| c.auto_increment) && design.columns.iter().any(|c| c.auto_increment) {
                     let schema = quote_ident(&db);
                     let original_name = original.name.replace('\'', "''");
                     let name = design.name.replace('\'', "''");
-                    let saved = quote_ident(&format!("_schematadb_sequence_{}", uuid::Uuid::new_v4().simple()));
+                    // Deterministic, so planning the same change twice yields the same statements.
+                    let saved = quote_ident("_schematadb_sequence");
                     statements.insert(1, format!(
                         "CREATE TEMP TABLE {saved} AS SELECT seq FROM {schema}.sqlite_sequence WHERE name = '{original_name}'"
                     ));
@@ -853,6 +1208,26 @@ impl Driver for SqliteDriver {
     async fn apply_ddl(&self, _db: &str, statements: &[String]) -> Result<()> {
         let statements = statements.to_vec();
         self.with_conn(move |c| run_ddl(c, &statements)).await
+    }
+
+    async fn incoming_foreign_keys(&self, db: &str, table: &str) -> Result<Vec<IncomingForeignKey>> {
+        let (db, table) = (db.to_owned(), table.to_owned());
+        self.with_conn(move |c| {
+            let sql = format!(
+                "SELECT DISTINCT m.name, f.id, f.on_delete FROM {}.sqlite_schema m JOIN pragma_foreign_key_list(m.name, ?1) f \
+                 WHERE m.type = 'table' AND f.\"table\" = ?2 COLLATE NOCASE AND m.name <> ?2 COLLATE NOCASE ORDER BY m.name, f.id",
+                quote_ident(&db)
+            );
+            let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            let rows = collect(&mut stmt, [db.as_str(), table.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            })?;
+            Ok(rows
+                .into_iter()
+                .map(|(child, id, on_delete)| IncomingForeignKey { name: format!("fk_{child}_{id}"), table: child, on_delete })
+                .collect())
+        })
+        .await
     }
 
     async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()> {
@@ -880,12 +1255,24 @@ impl Driver for SqliteDriver {
             return Err(AppError::validation("The main database of a SQLite connection cannot be detached"));
         }
         let sql = format!("DETACH DATABASE {}", quote_ident(name));
-        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
+        self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await?;
+        self.attached.lock().unwrap_or_else(PoisonError::into_inner).retain(|(alias, _)| !alias.eq_ignore_ascii_case(name));
+        Ok(())
     }
 
+    /// Query-tab sessions opened later, or between their transactions, attach the file under the same alias.
     async fn attach_database(&self, path: &str, alias: &str) -> Result<()> {
         let sql = format!("ATTACH DATABASE ?1 AS {}", quote_ident(alias));
-        let path = path.to_owned();
-        self.with_conn(move |c| c.execute(&sql, [path]).map(|_| ()).map_err(map_err)).await
+        let (path, name) = (path.to_owned(), alias.to_owned());
+        let file: String = self
+            .with_conn(move |c| {
+                c.execute(&sql, [path]).map_err(map_err)?;
+                c.query_row("SELECT file FROM pragma_database_list WHERE name = ?1", [name], |r| r.get(0)).map_err(map_err)
+            })
+            .await?;
+        if !file.is_empty() {
+            self.attached.lock().unwrap_or_else(PoisonError::into_inner).push((alias.to_owned(), file));
+        }
+        Ok(())
     }
 }

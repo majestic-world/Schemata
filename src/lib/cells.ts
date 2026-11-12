@@ -36,3 +36,39 @@ export function cellText(v: CellValue): string {
 export function toTsv(rows: CellValue[][]): string {
   return rows.map((r) => r.map((v) => cellText(v).replace(/[\t\r\n]+/g, " ")).join("\t")).join("\n");
 }
+
+/** Text the cell editor starts with; NULL (shown as a placeholder) and binary previews start empty. */
+export function editorText(v: CellValue): string {
+  return v.type === "null" || v.type === "bytes" ? "" : String(v.value);
+}
+
+/**
+ * Value the cell editor saves, or null when it is not an edit. `typed` is the editor's text, or null when the user
+ * never changed it, so opening and closing the editor never writes. Text controls report every line break as `\n`:
+ * text equal to the start once its line breaks are normalized is unchanged, and a value written with `\r\n` keeps it.
+ */
+export function editedCell(start: string, typed: string | null): CellValue | null {
+  if (typed === null || typed === start.replace(/\r\n?/g, "\n")) return null;
+  return { type: "text", value: start.includes("\r\n") ? typed.replace(/\r?\n/g, "\r\n") : typed };
+}
+
+export type EditorKeyAction = "commit" | "newline" | "cancel" | "picker" | null;
+
+/**
+ * What a key does in the cell editor: Enter and Tab save, Shift+Enter or Alt+Enter insert a line break, Esc
+ * cancels, Alt+↓ opens the date picker (when there is one). Keys typed while an IME composes are left to it.
+ */
+export function editorKeyAction(
+  e: { key: string; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; isComposing: boolean },
+  hasPicker: boolean,
+): EditorKeyAction {
+  if (e.isComposing) return null;
+  if (e.key === "ArrowDown" && e.altKey) return hasPicker ? "picker" : null;
+  if (e.key === "Enter") {
+    if (e.ctrlKey || e.metaKey) return null;
+    return e.shiftKey || e.altKey ? "newline" : "commit";
+  }
+  if (e.key === "Tab") return "commit";
+  if (e.key === "Escape") return "cancel";
+  return null;
+}

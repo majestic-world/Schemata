@@ -2,8 +2,8 @@ mod common;
 
 use common::TestDb;
 use schematadb_core::{
-    CancellationToken, CellValue, ConnectParams, CopyTableTarget, Driver, Engine, ErrorKind, PageRequest, ProgressFn, SortSpec, connect,
-    copy_table,
+    CancellationToken, CellValue, ConnectParams, CopyTableTarget, Driver, Engine, ErrorKind, PageRequest, ProgressFn, SortSpec,
+    StatementOutcome, connect, copy_table,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -186,4 +186,79 @@ async fn sqlite_copy_cancellation_during_streaming_removes_the_destination() {
     assert_eq!(error.kind, ErrorKind::Cancelled);
     assert_eq!(t.driver.count_rows(&t.db, "cancel_source", &[]).await.unwrap(), 10000);
     assert!(!t.driver.list_objects(&t.db).await.unwrap().iter().any(|o| o.name == "cancel_copy"));
+}
+
+async fn select(d: &dyn Driver, db: &str, sql: &str) -> Vec<Vec<CellValue>> {
+    let result = d.execute_script(Some(db), sql, 1000, None).await.unwrap();
+    assert!(result.error.is_none(), "{:?}", result.error);
+    match result.outcomes.into_iter().next() {
+        Some(StatementOutcome::Rows { rows, .. }) => rows,
+        other => panic!("{sql} returned {other:?}"),
+    }
+}
+
+async fn fails(d: &dyn Driver, db: &str, sql: &str) -> bool {
+    d.execute_script(Some(db), sql, 1, None).await.map_or(true, |r| r.error.is_some())
+}
+
+/// MySQL/MariaDB: the copy keeps ON UPDATE, column collations, CHECK constraints, generated and INVISIBLE columns.
+async fn same_engine_copy_keeps_the_whole_definition(t: TestDb) {
+    let d = t.driver.as_ref();
+    if t.engine == Engine::Sqlite {
+        t.exec(
+            "CREATE TABLE attrs (id INTEGER PRIMARY KEY, code TEXT NOT NULL COLLATE NOCASE UNIQUE, qty INT CHECK (qty >= 0),
+                 total INT GENERATED ALWAYS AS (qty * 2) STORED, parent INT REFERENCES attrs (id)) STRICT;
+             CREATE INDEX ix_attrs_open ON attrs (code) WHERE qty > 0;
+             INSERT INTO attrs (id, code, qty, parent) VALUES (1, 'abc', 2, NULL), (2, 'def', 0, 1);",
+        )
+        .await;
+    } else {
+        t.exec(
+            "CREATE TABLE attrs (id INT PRIMARY KEY, code VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                 changed TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, qty INT,
+                 hidden_note VARCHAR(10) INVISIBLE, total INT AS (qty * 2) STORED, parent INT,
+                 CONSTRAINT attrs_qty CHECK (qty >= 0), UNIQUE KEY uq_code (code),
+                 CONSTRAINT attrs_parent FOREIGN KEY (parent) REFERENCES attrs (id));
+             INSERT INTO attrs (id, code, qty, hidden_note, parent) VALUES (1, 'abc', 2, 'secret', NULL), (2, 'ABC', 0, NULL, 1);",
+        )
+        .await;
+    }
+    let report = copy_table(d, &t.db, "attrs", d, &to(&t.db, "attrs_copy", true), no_progress(), CancellationToken::new()).await.unwrap();
+    assert_eq!(report.rows, 2);
+    let copy = d.table_info(&t.db, "attrs_copy").await.unwrap();
+    assert_eq!(copy.foreign_keys[0].ref_table, "attrs_copy", "the self-reference follows the copy");
+    if t.engine == Engine::Sqlite {
+        let all = "SELECT id, code, qty, total, parent FROM {} ORDER BY id";
+        assert_eq!(select(d, &t.db, &all.replace("{}", "attrs_copy")).await, select(d, &t.db, &all.replace("{}", "attrs")).await);
+        assert!(fails(d, &t.db, "INSERT INTO attrs_copy (id, code, qty) VALUES (3, 'ABC', 1)").await, "COLLATE NOCASE UNIQUE");
+        assert!(fails(d, &t.db, "INSERT INTO attrs_copy (id, code, qty) VALUES (3, 'ghi', -1)").await, "CHECK");
+        assert!(fails(d, &t.db, "INSERT INTO attrs_copy (id, code, qty) VALUES (3, 'ghi', 'many')").await, "STRICT");
+        let index =
+            select(d, &t.db, "SELECT sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'attrs_copy' AND sql IS NOT NULL").await;
+        assert_eq!(index, vec![vec![CellValue::Text("CREATE INDEX \"ix_attrs_copy_open\" ON \"attrs_copy\" (code) WHERE qty > 0".into())]]);
+    } else {
+        let original = d.table_info(&t.db, "attrs").await.unwrap();
+        // Constraint names are scoped to the database, so they follow the copy; index names are scoped to the table.
+        let expected = original.create_sql.replace("`attrs`", "`attrs_copy`").replace("CONSTRAINT `attrs_", "CONSTRAINT `attrs_copy_");
+        assert_eq!(copy.create_sql, expected);
+        let all = "SELECT id, code, changed, qty, hidden_note, total, parent FROM {} ORDER BY id";
+        assert_eq!(select(d, &t.db, &all.replace("{}", "attrs_copy")).await, select(d, &t.db, &all.replace("{}", "attrs")).await);
+    }
+}
+scenario!(same_engine_copy_keeps_the_whole_definition);
+
+#[tokio::test]
+async fn copies_into_another_engine_refuse_generated_columns() {
+    let t = TestDb::mysql().await;
+    t.exec("CREATE TABLE gen (id INT PRIMARY KEY, qty INT, total INT AS (qty * 2) STORED)").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.db").to_string_lossy().into_owned();
+    let target = connect(&ConnectParams::sqlite(file, true)).await.unwrap();
+    let error =
+        copy_table(t.driver.as_ref(), &t.db, "gen", target.as_ref(), &to("main", "gen", true), no_progress(), CancellationToken::new())
+            .await
+            .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert!(error.message.contains("generated column total"), "{}", error.message);
+    assert!(target.list_objects("main").await.unwrap().is_empty());
 }
