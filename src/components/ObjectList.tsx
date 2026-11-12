@@ -130,6 +130,10 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           } else if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length > 0) {
             e.preventDefault();
             if (!e.repeat) void dropObjects({ connectionId, database }, selectedObjects, qc);
+          } else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length === 1) {
+            e.preventDefault();
+            const object = rows.find((o) => o.name === selectedObjects[0].name);
+            if (object && !e.repeat) onOpen(object);
           } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.nativeEvent.isComposing) {
             const current = rows.findIndex((o) => o.name === selection?.object?.name);
             const index = typeahead(e.key, e.timeStamp, rows.map((o) => o.name), current);
