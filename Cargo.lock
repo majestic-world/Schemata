@@ -4171,7 +4171,7 @@ dependencies = [
 
 [[package]]
 name = "schematadb"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "schematadb-core",
  "serde",
@@ -4190,7 +4190,7 @@ dependencies = [
 
 [[package]]
 name = "schematadb-core"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "chrono",
