@@ -404,9 +404,10 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .designer-body { padding-bottom: 20px; }
 .design-table td { padding: 2px 4px; height: 30px; overflow: visible; border-bottom: 1px solid var(--border-soft); }
 .design-table th { padding: 0 8px; cursor: default; }
-.cell-input { width: 100%; min-width: 60px; height: 24px; padding: 0 6px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; outline: none; }
-.cell-input:hover { border-color: var(--border); background: var(--surface); }
-.cell-input:focus { border-color: var(--accent); background: var(--surface); }
+/* Designer fields: underline-only (like the Generate Data pickers), so the row background shows through while editing. */
+.cell-input { width: 100%; min-width: 60px; height: 24px; padding: 0 6px; border: 0; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; outline: none; }
+.cell-input:hover { border-bottom-color: var(--border-strong); }
+.cell-input:focus { border-bottom-color: var(--accent); box-shadow: 0 1px 0 var(--accent); }
 .cell-input.narrow { width: 90px; }
 select.cell-input { padding: 0 4px; }
 .design-table input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
