@@ -77,8 +77,11 @@ export function DataGrid({ tab }: { tab: TableTab }) {
       };
     });
   const setFailedRow = (failedRow: RowRef | null) => update(() => ({ failedRow }));
-  /** The open editor keeps the page and table info it opened on, so a background reload cannot move its row. */
-  const [editing, setEditing] = useState<{ row: number; column: string; session: number; page: Page | undefined; info: TableInfo | undefined } | null>(null);
+  /**
+   * The open editor keeps the page and table info it opened on, so a background reload cannot move its row. `targets`
+   * are the cells its text is saved to: the edited cell, plus the rest of the selection when Enter opened it there.
+   */
+  const [editing, setEditing] = useState<{ row: number; column: string; targets: CellRef[]; session: number; page: Page | undefined; info: TableInfo | undefined } | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], columns: [] });
   const editorRef = useRef<CellEditorHandle | null>(null);
   const editSession = useRef(0);
@@ -164,9 +167,12 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const total = count.data;
   const lastOffset = total !== undefined ? Math.max(0, Math.floor((total - 1) / pageSize) * pageSize) : offset;
 
-  /** Opens the cell editor; `quiet` (a plain click) skips the explanation when the cell cannot be edited. */
+  /**
+   * Opens the cell editor; `quiet` (a plain click) skips the explanation when the cell cannot be edited. `spread`
+   * (Enter, double-click) saves the text to every selected cell when the cell is part of a larger selection.
+   */
   const startEdit = useCallback(
-    (row: number, column: string, quiet = false) => {
+    (row: number, column: string, quiet = false, spread = false) => {
       if (isCommitting() || page.isPlaceholderData) return;
       if (readOnly) {
         if (!quiet) notifyError("This data is read-only", { message: tableInfo?.kind === "view" ? "Views are not editable." : "The table has no key and no column whose value can identify a row." });
@@ -181,10 +187,22 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         if (!quiet) notifyError("Binary values cannot be edited here", { message: "Set the cell to NULL or use the SQL editor." });
         return;
       }
-      setEditing({ row, column, session: ++editSession.current, page: data, info: tableInfo });
+      // Binary, generated and deleted cells in the selection keep their values.
+      const targets: CellRef[] = [{ row, column }];
+      if (spread && selection.rows.includes(row) && selection.columns.includes(column)) {
+        for (const r of selection.rows) {
+          for (const c of selection.columns) {
+            if (r === row && c === column) continue;
+            if (tableInfo?.columns.find((col) => col.name === c)?.generated) continue;
+            if (r < saved && (original(r, c).type === "bytes" || isDeleted(pending, refOf(r)))) continue;
+            targets.push({ row: r, column: c });
+          }
+        }
+      }
+      setEditing({ row, column, targets, session: ++editSession.current, page: data, info: tableInfo });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tab.id, readOnly, data, tableInfo, page.isPlaceholderData],
+    [tab.id, readOnly, data, tableInfo, page.isPlaceholderData, selection, pending],
   );
   const write = (row: number, column: string, value: CellValue) => {
     if (readOnly || isCommitting() || page.isPlaceholderData) return;
@@ -197,7 +215,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     if (readOnly || !engine || isCommitting() || page.isPlaceholderData) return;
     const r = addRow(useGridStates.getState().states[tab.id]?.pending ?? emptyPending(), tableInfo?.columns ?? [], engine);
     setPending(r.pending);
-    if (column) setEditing({ row: saved + r.row.index, column, session: ++editSession.current, page: data, info: tableInfo });
+    if (column) setEditing({ row: saved + r.row.index, column, targets: [{ row: saved + r.row.index, column }], session: ++editSession.current, page: data, info: tableInfo });
   };
   // ArrowDown past the last row adds one, unless that row is itself a new row nobody has filled in yet.
   const lastInsert = pending.inserts.at(-1);
@@ -349,7 +367,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           }}
           cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
           cellPlaceholder={(r, column) => (isUnset(pending, refOf(r), column) ? "(Default)" : undefined)}
-          onCellActivate={committing ? undefined : startEdit}
+          onCellActivate={committing ? undefined : (r, column) => startEdit(r, column, false, true)}
           onCellEdit={committing ? undefined : (r, column) => startEdit(r, column, true)}
           onAppendRow={readOnly || committing || page.isPlaceholderData || lastRowUntouched ? undefined : appendRow}
           renderEditor={(r, column) =>
@@ -360,8 +378,12 @@ export function DataGrid({ tab }: { tab: TableTab }) {
                 disabled={committing || !!tableInfo?.columns.find((c) => c.name === column)?.generated}
                 kind={dateKind(columns[colIndex(column)]?.typeName ?? "")}
                 initial={cellValue(pending, refOf(r), column, r < saved ? pageRows[r][colIndex(column)] : undefined)}
-                onDone={(v) => {
-                  if (v) write(r, column, v);
+                onDone={(typed) => {
+                  // Each cell compares the text with its own value, so cells that already hold it stay unchanged.
+                  for (const t of editing.targets) {
+                    const v = editedCell(editorText(cellValue(pending, refOf(t.row), t.column, original(t.row, t.column))), typed);
+                    if (v) write(t.row, t.column, v);
+                  }
                   setEditing(null);
                 }}
               />
@@ -391,6 +413,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
 }
 
 type CellEditorHandle = { finish: () => void };
+type CellRef = { row: number; column: string };
 
 /** Lines a multi-line value shows at once; longer text scrolls inside the editor. */
 const EDITOR_MAX_LINES = 8;
@@ -398,13 +421,14 @@ const EDITOR_LINE_HEIGHT = 18;
 
 /**
  * In-cell text editor. A textarea, so line breaks survive (an `<input>` strips them): Enter saves, Shift+Enter or
- * Alt+Enter adds a line, and a value with several lines opens over the rows below.
+ * Alt+Enter adds a line, and a value with several lines opens over the rows below. `onDone` gets the typed text, or
+ * null when nothing was typed or the edit was cancelled.
  */
 function CellEditor({ initial, kind, disabled, onDone, ref }: {
   initial: CellValue;
   kind: DateKind | null;
   disabled: boolean;
-  onDone: (v: CellValue | null) => void;
+  onDone: (typed: string | null) => void;
   ref?: Ref<CellEditorHandle>;
 }) {
   const start = editorText(initial);
@@ -419,24 +443,22 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
   const input = useRef<HTMLTextAreaElement>(null);
   const done = useRef(false);
   useLayoutEffect(() => setWidth(wrap.current?.offsetWidth), []);
-  const finish = (value: CellValue | null) => {
+  const finish = (value: string | null) => {
     if (disabled || done.current) return;
     done.current = true;
     onDone(value);
   };
-  // Unchanged text is not an edit (so Enter on a NULL cell keeps it NULL).
-  const commit = (value: string | null) => finish(editedCell(start, value));
   const change = (value: string) => {
     if (disabled || done.current) return;
     typed.current = value;
     setText(value);
   };
-  useImperativeHandle(ref, () => ({ finish: () => commit(typed.current) }));
+  useImperativeHandle(ref, () => ({ finish: () => finish(typed.current) }));
   /** Focus leaving both the editor and its picker ends the edit, saving it. */
   const onBlur = (e: FocusEvent) => {
     const to = e.relatedTarget as Node | null;
     if (to && (wrap.current?.contains(to) || picker.current?.contains(to))) return;
-    commit(typed.current);
+    finish(typed.current);
   };
   // Keys go to the picker while it is open (Esc closes it, Enter picks); the editor gets them back on Cancel.
   const openPicker = () => {
@@ -495,7 +517,7 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
             case "commit":
               // Tab also saves; the grid then moves the editor to the neighbouring cell.
               if (e.key === "Enter") e.preventDefault();
-              commit(typed.current);
+              finish(typed.current);
               break;
             case "cancel":
               finish(null);
@@ -530,7 +552,7 @@ function CellEditor({ initial, kind, disabled, onDone, ref }: {
           onBlur={onBlur}
           onPick={(value) => {
             const grid = wrap.current?.closest<HTMLElement>(".grid");
-            commit(value);
+            finish(value);
             // Accept the picked value before focus triggers blur with the previous input text.
             grid?.focus({ preventScroll: true });
           }}
