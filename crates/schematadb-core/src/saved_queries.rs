@@ -49,51 +49,82 @@ impl SavedQueries {
 
     /// Creates or overwrites a query. Names are unique (ignoring case) per connection and database.
     pub fn save(&self, request: SaveQueryRequest) -> Result<SavedQuery> {
-        let name = request.name.trim();
-        if name.is_empty() {
-            return Err(AppError::validation("Enter a name for the query."));
-        }
         let mut entries = self.entries.lock().unwrap();
         if let Some(id) = &request.id
             && !entries.iter().any(|q| &q.id == id)
         {
-            return Err(AppError::validation("This saved query no longer exists. Save it again under a name."));
+            return Err(gone());
         }
-        let taken = entries.iter().any(|q| {
-            Some(&q.id) != request.id.as_ref()
-                && q.connection_id == request.connection_id
-                && q.database == request.database
-                && q.name.to_lowercase() == name.to_lowercase()
-        });
-        if taken {
-            return Err(AppError::validation(format!("A saved query named \"{name}\" already exists here.")));
-        }
+        let name = free_name(&entries, request.id.as_deref(), &request.connection_id, request.database.as_deref(), &request.name)?;
         let saved = SavedQuery {
             id: request.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             connection_id: request.connection_id,
             database: request.database,
-            name: name.to_owned(),
+            name,
             sql: request.sql,
-            updated_at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            updated_at: now(),
         };
         let mut next = entries.clone();
         match next.iter_mut().find(|q| q.id == saved.id) {
             Some(existing) => *existing = saved.clone(),
             None => next.push(saved.clone()),
         }
-        // Memory changes only after the file holds the new list, so a failed write never shows unsaved state as saved.
-        persist_json(&self.path, &serde_json::to_vec_pretty(&next)?)?;
-        *entries = next;
+        self.commit(&mut entries, next)?;
         Ok(saved)
+    }
+
+    /// Changes only the name, so a rename never writes back an older copy of the SQL.
+    pub fn rename(&self, id: &str, name: &str) -> Result<SavedQuery> {
+        let mut entries = self.entries.lock().unwrap();
+        let current = entries.iter().find(|q| q.id == id).ok_or_else(gone)?;
+        let name = free_name(&entries, Some(id), &current.connection_id, current.database.as_deref(), name)?;
+        let mut next = entries.clone();
+        let renamed = next.iter_mut().find(|q| q.id == id).expect("checked above");
+        renamed.name = name;
+        renamed.updated_at = now();
+        let renamed = renamed.clone();
+        self.commit(&mut entries, next)?;
+        Ok(renamed)
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
         let mut entries = self.entries.lock().unwrap();
         let next: Vec<_> = entries.iter().filter(|q| q.id != id).cloned().collect();
+        self.commit(&mut entries, next)
+    }
+
+    /// Memory changes only after the file holds the new list, so a failed write never shows unsaved state as saved.
+    fn commit(&self, entries: &mut Vec<SavedQuery>, next: Vec<SavedQuery>) -> Result<()> {
         persist_json(&self.path, &serde_json::to_vec_pretty(&next)?)?;
         *entries = next;
         Ok(())
     }
+}
+
+fn gone() -> AppError {
+    AppError::validation("This saved query no longer exists. Save it again under a name.")
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The trimmed name, unless it is empty or another query of the same connection and database has it (ignoring case).
+fn free_name(entries: &[SavedQuery], id: Option<&str>, connection_id: &str, database: Option<&str>, name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::validation("Enter a name for the query."));
+    }
+    let taken = entries.iter().any(|q| {
+        Some(q.id.as_str()) != id
+            && q.connection_id == connection_id
+            && q.database.as_deref() == database
+            && q.name.to_lowercase() == name.to_lowercase()
+    });
+    if taken {
+        return Err(AppError::validation(format!("A saved query named \"{name}\" already exists here.")));
+    }
+    Ok(name.to_owned())
 }
 
 #[cfg(test)]
@@ -127,6 +158,25 @@ mod tests {
 
         reopened.delete(&first.id).unwrap();
         assert!(SavedQueries::open(&path).unwrap().list("c").is_empty());
+    }
+
+    #[test]
+    fn renaming_keeps_the_latest_sql_and_checks_the_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("queries.json");
+        let queries = SavedQueries::open(&path).unwrap();
+        let report = queries.save(request(None, Some("shop"), "Report", "SELECT 1")).unwrap();
+        queries.save(request(None, Some("shop"), "Other", "SELECT 9")).unwrap();
+        queries.save(request(Some(&report.id), Some("shop"), "Report", "SELECT 2")).unwrap();
+
+        let renamed = queries.rename(&report.id, " Sales ").unwrap();
+        assert_eq!((renamed.name.as_str(), renamed.sql.as_str()), ("Sales", "SELECT 2"));
+        assert!(queries.rename(&report.id, "other").is_err());
+        assert!(queries.rename(&report.id, " ").is_err());
+        assert!(queries.rename("gone", "Gone").is_err());
+        let reopened = SavedQueries::open(&path).unwrap().list("c");
+        let stored = reopened.iter().find(|q| q.id == report.id).unwrap();
+        assert_eq!((stored.name.as_str(), stored.sql.as_str()), ("Sales", "SELECT 2"));
     }
 
     #[test]

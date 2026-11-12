@@ -320,6 +320,11 @@ pub fn save_query(queries: State<'_, SavedQueries>, query: SaveQueryRequest) -> 
 }
 
 #[tauri::command]
+pub fn rename_saved_query(queries: State<'_, SavedQueries>, query_id: String, name: String) -> CmdResult<SavedQuery> {
+    queries.rename(&query_id, &name)
+}
+
+#[tauri::command]
 pub fn delete_saved_query(queries: State<'_, SavedQueries>, query_id: String) -> CmdResult<()> {
     queries.delete(&query_id)
 }

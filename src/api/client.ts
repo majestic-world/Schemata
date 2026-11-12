@@ -98,6 +98,7 @@ export const api = {
   listHistory: (id: string) => call<HistoryEntry[]>("list_history", { id }),
   listSavedQueries: (id: string) => call<SavedQuery[]>("list_saved_queries", { id }),
   saveQuery: (query: SaveQueryRequest) => call<SavedQuery>("save_query", { query }),
+  renameSavedQuery: (queryId: string, name: string) => call<SavedQuery>("rename_saved_query", { queryId, name }),
   deleteSavedQuery: (queryId: string) => call<void>("delete_saved_query", { queryId }),
   readTextFile: (path: string) => call<string>("read_text_file", { path }),
   writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),

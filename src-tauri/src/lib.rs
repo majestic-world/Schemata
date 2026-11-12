@@ -107,6 +107,7 @@ pub fn run() {
             commands::list_history,
             commands::list_saved_queries,
             commands::save_query,
+            commands::rename_saved_query,
             commands::delete_saved_query,
             commands::read_text_file,
             commands::write_text_file,

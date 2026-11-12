@@ -42,8 +42,8 @@ export async function renameSavedQuery(query: SavedQuery, qc: QueryClient) {
   const name = await promptAction({ title: "Rename query", message: "", confirmLabel: "Rename", input: { label: "New name", initial: query.name } });
   if (name === null || name.trim() === query.name) return;
   try {
-    // The stored SQL is kept: unsaved edits in an open tab stay unsaved.
-    const saved = await api.saveQuery({ id: query.id, connectionId: query.connectionId, database: query.database, name, sql: query.sql });
+    // Only the name changes: the stored SQL may be newer than this tree entry, and unsaved tab edits stay unsaved.
+    const saved = await api.renameSavedQuery(query.id, name);
     const { tabs, updateQuery } = useTabs.getState();
     for (const tab of tabs) if (tab.kind === "query" && tab.savedQueryId === query.id) updateQuery(tab.id, { title: saved.name });
     await qc.invalidateQueries({ queryKey: savedQueriesKey(query.connectionId) });
