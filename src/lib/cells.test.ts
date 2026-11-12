@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { editedCell, editorKeyAction, editorText } from "./cells";
+import { editTargets, editedCell, editorKeyAction, editorText } from "./cells";
 
 const keys = { shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, isComposing: false };
 
@@ -42,5 +42,22 @@ describe("cell editor keys", () => {
     expect(editorKeyAction({ ...keys, key: "Escape" }, false)).toBe("cancel");
     expect(editorKeyAction({ ...keys, key: "ArrowDown", altKey: true }, true)).toBe("picker");
     expect(editorKeyAction({ ...keys, key: "ArrowDown", altKey: true }, false)).toBeNull();
+  });
+});
+
+describe("cells an edit saves to", () => {
+  const selection = { rows: [0, 1], columns: ["a", "b"] };
+
+  it("spreads to the selected cells that accept a value when the edited cell is selected", () => {
+    expect(editTargets({ row: 1, column: "b" }, selection, (c) => !(c.row === 0 && c.column === "a"))).toEqual([
+      { row: 1, column: "b" },
+      { row: 0, column: "b" },
+      { row: 1, column: "a" },
+    ]);
+  });
+
+  it("edits only the cell itself when it lies outside the selection", () => {
+    expect(editTargets({ row: 2, column: "a" }, selection, () => true)).toEqual([{ row: 2, column: "a" }]);
+    expect(editTargets({ row: 0, column: "c" }, selection, () => true)).toEqual([{ row: 0, column: "c" }]);
   });
 });

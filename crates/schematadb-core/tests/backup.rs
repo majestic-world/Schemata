@@ -2,8 +2,8 @@ mod common;
 
 use common::TestDb;
 use schematadb_core::{
-    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, TextEncoding, connect,
-    dump_database, dump_tables, run_sql_file,
+    CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, ObjectKind, PageRequest, ProgressFn, SortSpec, TextEncoding,
+    connect, dump_database, dump_tables, run_sql_file,
 };
 use std::sync::Arc;
 
@@ -136,7 +136,7 @@ async fn per_table_dump_restores_each_table(t: TestDb) {
         assert!(run.failed.is_empty(), "{file}: {:?}", run.failed);
     }
     let tables = |o: Vec<schematadb_core::ObjectInfo>| o.into_iter().map(|o| (o.name, o.kind)).collect::<Vec<_>>();
-    let source_tables = tables(t.driver.list_objects(&t.db).await.unwrap()).into_iter().filter(|(name, _)| !name.starts_with("big_")).collect::<Vec<_>>();
+    let source_tables = tables(t.driver.list_objects(&t.db).await.unwrap()).into_iter().filter(|(_, kind)| *kind == ObjectKind::Table).collect::<Vec<_>>();
     assert_eq!(tables(target.list_objects(&db).await.unwrap()), source_tables, "tables only, no views");
     for table in ["customer", "orders"] {
         let (a, b) = (t.driver.table_info(&t.db, table).await.unwrap(), target.table_info(&db, table).await.unwrap());
@@ -153,6 +153,45 @@ async fn per_table_dump_restores_each_table(t: TestDb) {
     }
 }
 scenario!(per_table_dump_restores_each_table);
+
+/// A cancelled per-table dump replaces no file and leaves no temporary file behind.
+#[tokio::test]
+async fn cancelled_per_table_dump_leaves_the_folder_as_it_was() {
+    let t = TestDb::sqlite().await;
+    seed(&t).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("customer.sql"), "old").unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let err = dump_tables(t.driver.as_ref(), &t.db, dir.path(), &DumpOptions { structure: true, data: true }, no_progress(), cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, schematadb_core::ErrorKind::Cancelled);
+    let files: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(files, ["customer.sql"]);
+    assert_eq!(std::fs::read_to_string(dir.path().join("customer.sql")).unwrap(), "old");
+}
+
+/// SQLite: an index or trigger that names its table in another case still goes into that table's file.
+#[tokio::test]
+async fn sqlite_per_table_dump_keeps_objects_naming_the_table_in_another_case() {
+    let t = TestDb::sqlite().await;
+    t.exec(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, total INT);
+         CREATE TABLE audit (msg TEXT);
+         CREATE INDEX ix_orders_total ON ORDERS (total);
+         CREATE TRIGGER orders_audit AFTER INSERT ON Orders BEGIN INSERT INTO audit VALUES ('order'); END;",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    dump_tables(t.driver.as_ref(), &t.db, dir.path(), &DumpOptions { structure: true, data: false }, no_progress(), CancellationToken::new())
+        .await
+        .unwrap();
+    let orders = std::fs::read_to_string(dir.path().join("orders.sql")).unwrap();
+    assert!(orders.contains("CREATE INDEX ix_orders_total") && orders.contains("CREATE TRIGGER orders_audit"), "{orders}");
+    let audit = std::fs::read_to_string(dir.path().join("audit.sql")).unwrap();
+    assert!(!audit.contains("CREATE INDEX") && !audit.contains("CREATE TRIGGER"), "{audit}");
+}
 
 #[tokio::test]
 async fn sqlite_backup_of_attached_database_reads_its_own_rows() {

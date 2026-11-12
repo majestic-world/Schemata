@@ -16,7 +16,7 @@ import { GridView, ROW_HEIGHT, type GridSelection } from "./GridView";
 import { useTableInfo } from "./TableTabView";
 import { DatePicker, dateKind, type DateKind } from "./DatePicker";
 import { useConnection } from "../lib/useConnection";
-import { editedCell, editorKeyAction, editorText } from "../lib/cells";
+import { editTargets, editedCell, editorKeyAction, editorText, type CellRef } from "../lib/cells";
 import {
   addRow,
   isUnset,
@@ -28,7 +28,7 @@ import {
   isDeleted,
   isDirty,
   isEdited,
-  setCell,
+  setCells,
   type Pending,
   type RowRef,
 } from "../lib/pendingChanges";
@@ -167,18 +167,22 @@ export function DataGrid({ tab }: { tab: TableTab }) {
   const total = count.data;
   const lastOffset = total !== undefined ? Math.max(0, Math.floor((total - 1) / pageSize) * pageSize) : offset;
 
+  const isGenerated = (column: string) => !!tableInfo?.columns.find((c) => c.name === column)?.generated;
+
   /**
-   * Opens the cell editor; `quiet` (a plain click) skips the explanation when the cell cannot be edited. `spread`
-   * (Enter, double-click) saves the text to every selected cell when the cell is part of a larger selection.
+   * Opens the cell editor. `click` (a plain click, Tab) opens it quietly, skipping the explanation when the cell cannot
+   * be edited. `activate` (Enter, or a Shift+double-click that keeps the selection) explains why it cannot, and when
+   * the cell is part of a larger selection the text is saved to every selected cell.
    */
   const startEdit = useCallback(
-    (row: number, column: string, quiet = false, spread = false) => {
+    (row: number, column: string, how: "click" | "activate") => {
       if (isCommitting() || page.isPlaceholderData) return;
+      const quiet = how === "click";
       if (readOnly) {
         if (!quiet) notifyError("This data is read-only", { message: tableInfo?.kind === "view" ? "Views are not editable." : "The table has no key and no column whose value can identify a row." });
         return;
       }
-      if (tableInfo?.columns.find((c) => c.name === column)?.generated) {
+      if (isGenerated(column)) {
         if (!quiet) notifyError("Generated columns are read-only", { message: "The database computes this value." });
         return;
       }
@@ -188,26 +192,22 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         return;
       }
       // Binary, generated and deleted cells in the selection keep their values.
-      const targets: CellRef[] = [{ row, column }];
-      if (spread && selection.rows.includes(row) && selection.columns.includes(column)) {
-        for (const r of selection.rows) {
-          for (const c of selection.columns) {
-            if (r === row && c === column) continue;
-            if (tableInfo?.columns.find((col) => col.name === c)?.generated) continue;
-            if (r < saved && (original(r, c).type === "bytes" || isDeleted(pending, refOf(r)))) continue;
-            targets.push({ row: r, column: c });
-          }
-        }
-      }
+      const targets = quiet
+        ? [{ row, column }]
+        : editTargets({ row, column }, selection, (c) => !isGenerated(c.column) && !(c.row < saved && (original(c.row, c.column).type === "bytes" || isDeleted(pending, refOf(c.row)))));
       setEditing({ row, column, targets, session: ++editSession.current, page: data, info: tableInfo });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tab.id, readOnly, data, tableInfo, page.isPlaceholderData, selection, pending],
   );
-  const write = (row: number, column: string, value: CellValue) => {
+  /** Saves values to cells in one change; generated columns keep theirs. */
+  const write = (cells: readonly (CellRef & { value: CellValue })[]) => {
     if (readOnly || isCommitting() || page.isPlaceholderData) return;
-    if (tableInfo?.columns.find((c) => c.name === column)?.generated) return;
-    setPending((p) => setCell(p, refOf(row), column, value, original(row, column)));
+    const edits = cells
+      .filter((c) => !isGenerated(c.column))
+      .map((c) => ({ row: refOf(c.row), column: c.column, value: c.value, original: original(c.row, c.column) }));
+    if (edits.length === 0) return;
+    setPending((p) => setCells(p, edits));
     setFailedRow(null);
   };
   /** Adds a row prefilled with the column defaults, optionally editing `column` right away. */
@@ -288,7 +288,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
             <button className="obj-btn" disabled={selection.rows.length === 0 || committing || page.isPlaceholderData} onClick={() => removeRows(selection.rows)}>
               <Trash2 size={15} className="ob-delete" />Delete
             </button>
-            <button className="obj-btn" disabled={selection.rows.length === 0 || committing || page.isPlaceholderData || selection.columns.every((name) => tableInfo?.columns.find((c) => c.name === name)?.generated)} title="Set selected cells to NULL" onClick={() => selection.rows.forEach((r) => selection.columns.forEach((c) => write(r, c, { type: "null" })))}>
+            <button className="obj-btn" disabled={selection.rows.length === 0 || committing || page.isPlaceholderData || selection.columns.every(isGenerated)} title="Set selected cells to NULL" onClick={() => write(selection.rows.flatMap((row) => selection.columns.map((column): CellRef & { value: CellValue } => ({ row, column, value: { type: "null" } }))))}>
               <Ban size={15} />Set NULL
             </button>
             <div className="toolbar-sep" />
@@ -367,23 +367,23 @@ export function DataGrid({ tab }: { tab: TableTab }) {
           }}
           cellClass={(r, column) => (isEdited(pending, refOf(r), column) ? "cell-edited" : undefined)}
           cellPlaceholder={(r, column) => (isUnset(pending, refOf(r), column) ? "(Default)" : undefined)}
-          onCellActivate={committing ? undefined : (r, column) => startEdit(r, column, false, true)}
-          onCellEdit={committing ? undefined : (r, column) => startEdit(r, column, true)}
+          onCellActivate={committing ? undefined : (r, column) => startEdit(r, column, "activate")}
+          onCellEdit={committing ? undefined : (r, column) => startEdit(r, column, "click")}
           onAppendRow={readOnly || committing || page.isPlaceholderData || lastRowUntouched ? undefined : appendRow}
           renderEditor={(r, column) =>
             editing?.row === r && editing.column === column ? (
               <CellEditor
                 key={editing.session}
                 ref={editorRef}
-                disabled={committing || !!tableInfo?.columns.find((c) => c.name === column)?.generated}
+                disabled={committing || isGenerated(column)}
                 kind={dateKind(columns[colIndex(column)]?.typeName ?? "")}
                 initial={cellValue(pending, refOf(r), column, r < saved ? pageRows[r][colIndex(column)] : undefined)}
                 onDone={(typed) => {
                   // Each cell compares the text with its own value, so cells that already hold it stay unchanged.
-                  for (const t of editing.targets) {
-                    const v = editedCell(editorText(cellValue(pending, refOf(t.row), t.column, original(t.row, t.column))), typed);
-                    if (v) write(t.row, t.column, v);
-                  }
+                  write(editing.targets.flatMap((t) => {
+                    const value = editedCell(editorText(cellValue(pending, refOf(t.row), t.column, original(t.row, t.column))), typed);
+                    return value ? [{ ...t, value }] : [];
+                  }));
                   setEditing(null);
                 }}
               />
@@ -413,7 +413,6 @@ export function DataGrid({ tab }: { tab: TableTab }) {
 }
 
 type CellEditorHandle = { finish: () => void };
-type CellRef = { row: number; column: string };
 
 /** Lines a multi-line value shows at once; longer text scrolls inside the editor. */
 const EDITOR_MAX_LINES = 8;

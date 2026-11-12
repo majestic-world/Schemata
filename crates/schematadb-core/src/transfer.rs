@@ -1112,7 +1112,7 @@ pub async fn dump_database(
 /// Writes one restorable `.sql` file per table of `db` into `dir`, named after the table:
 /// its `DROP`/`CREATE`, rows, indexes and triggers. Views, routines and events are left out. Tables are read as in
 /// [`dump_database`], and files replace same-named ones only after every table is written, so a failed or cancelled
-/// dump leaves the folder as it was.
+/// read leaves the folder as it was; a failure while moving the files into place can leave earlier ones replaced.
 pub async fn dump_tables(
     driver: &dyn Driver,
     db: &str,
@@ -1187,53 +1187,21 @@ async fn write_dump(
     let files = match target {
         DumpTarget::File(path) => {
             let (pending, mut out) = open(path, db)?;
-            for (table, create) in &script.tables {
-                writeln!(out)?;
-                if options.structure {
-                    writeln!(out, "{create}")?;
-                }
-                if options.data {
-                    rows.write(&mut out, table).await?;
-                }
-            }
-            if options.data {
-                for s in &script.data_tail {
-                    writeln!(out, "{}", s.sql)?;
-                }
-            }
-            if options.structure {
-                writeln!(out)?;
-                for s in &script.objects {
-                    writeln!(out, "{}", s.sql)?;
-                }
-            }
+            write_tables(&mut out, &script.tables, &script, options, &mut rows, |_| true).await?;
             close(out)?;
             vec![pending]
         }
         DumpTarget::Folder(dir) => {
             let names = table_file_names(script.tables.iter().map(|(table, _)| table.as_str()));
             let mut files = Vec::with_capacity(script.tables.len());
-            for ((table, create), name) in script.tables.iter().zip(names) {
-                // SQLite matches identifiers case-insensitively: an index may name its table in another case.
-                let owned = |o: &&DumpObject| {
+            for (entry, name) in script.tables.iter().zip(names) {
+                let table = &entry.0;
+                // SQLite matches identifiers case-insensitively: a trigger keeps its table's name as the CREATE wrote it.
+                let owned = |o: &DumpObject| {
                     o.table.as_deref().is_some_and(|t| if engine == Engine::Sqlite { t.eq_ignore_ascii_case(table) } else { t == table })
                 };
                 let (pending, mut out) = open(&dir.join(name), &format!("{db}.{table}"))?;
-                writeln!(out)?;
-                if options.structure {
-                    writeln!(out, "{create}")?;
-                }
-                if options.data {
-                    rows.write(&mut out, table).await?;
-                    for s in script.data_tail.iter().filter(owned) {
-                        writeln!(out, "{}", s.sql)?;
-                    }
-                }
-                if options.structure {
-                    for s in script.objects.iter().filter(owned) {
-                        writeln!(out, "\n{}", s.sql)?;
-                    }
-                }
+                write_tables(&mut out, std::slice::from_ref(entry), &script, options, &mut rows, owned).await?;
                 close(out)?;
                 files.push(pending);
             }
@@ -1247,6 +1215,38 @@ async fn write_dump(
         file.commit()?;
     }
     Ok(DumpReport { tables: script.tables.len() as u64, rows: rows.done })
+}
+
+/// Writes `tables` (structure and rows, as `options` asks), then the dump's data tail and objects `keep` accepts.
+async fn write_tables(
+    out: &mut std::io::BufWriter<std::fs::File>,
+    tables: &[(String, String)],
+    script: &DumpScript,
+    options: &DumpOptions,
+    rows: &mut RowWriter<'_>,
+    keep: impl Fn(&DumpObject) -> bool,
+) -> Result<()> {
+    for (table, create) in tables {
+        writeln!(out)?;
+        if options.structure {
+            writeln!(out, "{create}")?;
+        }
+        if options.data {
+            rows.write(out, table).await?;
+        }
+    }
+    if options.data {
+        for s in script.data_tail.iter().filter(|o| keep(o)) {
+            writeln!(out, "{}", s.sql)?;
+        }
+    }
+    if options.structure {
+        writeln!(out)?;
+        for s in script.objects.iter().filter(|o| keep(o)) {
+            writeln!(out, "{}", s.sql)?;
+        }
+    }
+    Ok(())
 }
 
 /// Streams tables' rows into a dump as INSERT statements, counting them for progress.
@@ -1301,7 +1301,7 @@ const RESERVED_FILE_NAMES: [&str; 22] = [
 /// `<table>.sql` file names valid on every OS: characters Windows forbids become `_`, trailing dots and spaces and
 /// device names (`CON`, `NUL`, …) get a `_` suffix, and names equal ignoring case (distinct tables on a
 /// case-sensitive server, one file on Windows and macOS) are numbered `name (2).sql`.
-pub(crate) fn table_file_names<'a>(tables: impl Iterator<Item = &'a str>) -> Vec<String> {
+fn table_file_names<'a>(tables: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut used = std::collections::HashSet::new();
     tables
         .map(|table| {

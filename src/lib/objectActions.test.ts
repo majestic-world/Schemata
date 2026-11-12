@@ -192,13 +192,13 @@ describe("confirming the removal of referenced tables", () => {
     expect(empty).not.toHaveBeenCalled();
   });
 
-  it("MySQL: warns that truncating a referenced table may fail", async () => {
+  it("MySQL: warns that truncating a referenced table fails", async () => {
     connection("mySql");
     vi.spyOn(api, "incomingForeignKeys").mockResolvedValue(refs.slice(0, 1));
     const truncate = vi.spyOn(api, "truncateTable").mockResolvedValue(undefined);
     const operation = truncateTable({ ...scope, name: "customers", kind: "table" }, client);
     await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
-    expect(useConfirm.getState().request!.message).toContain('Referenced by "orders" (ON DELETE CASCADE). MySQL refuses to truncate a table other tables reference, so this may fail.');
+    expect(useConfirm.getState().request!.message).toContain('Referenced by "orders" (ON DELETE CASCADE). MySQL refuses to truncate a table other tables reference, so this will fail; use Empty Table instead.');
     useConfirm.getState().settle(null);
     await operation;
     expect(truncate).not.toHaveBeenCalled();

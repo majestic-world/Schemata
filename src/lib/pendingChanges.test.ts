@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CellValue, ColumnInfo, ColumnMeta } from "../api/types";
 import { commitPending, hasPendingEdits, useGridStates } from "../store/gridState";
-import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isEdited, isUnset, literalDefault, setCell } from "./pendingChanges";
+import { addRow, buildChangeSet, cellValue, deleteRows, emptyPending, isDirty, isEdited, isUnset, literalDefault, setCell, setCells } from "./pendingChanges";
 
 const t = (value: string): CellValue => ({ type: "text", value });
 const n = (value: number): CellValue => ({ type: "int", value });
@@ -66,6 +66,20 @@ describe("pending grid changes", () => {
       // The hidden rowid is the key; the loaded row is the visible columns.
       { kind: "update", key: [n(7)], values: [{ column: "name", value: t("y") }], expected: [{ column: "name", value: t("x") }] },
     ]);
+  });
+
+  it("applies several cell edits at once without touching the previous state", () => {
+    const before = setCell(addRow(emptyPending(), [], "mySql").pending, existing(0), "name", t("x"), t("a"));
+    const after = setCells(before, [
+      { row: existing(0), column: "name", value: t("a"), original: t("a") },
+      { row: existing(1), column: "name", value: t("z"), original: t("b") },
+      { row: existing(1), column: "qty", value: n(0), original: n(20) },
+      { row: { kind: "new", index: 0 }, column: "name", value: t("new"), original: NULL },
+    ]);
+    expect(after.updates).toEqual({ 1: { name: t("z"), qty: n(0) } });
+    expect(after.inserts).toEqual([{ name: t("new") }]);
+    expect(before.updates).toEqual({ 0: { name: t("x") } });
+    expect(before.inserts).toEqual([{}]);
   });
 });
 

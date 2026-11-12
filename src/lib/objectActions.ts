@@ -30,7 +30,8 @@ const REMOVAL_VERB: Record<Removal, { ing: string; base: string }> = {
 /**
  * What removing every row of `table` does to the tables whose foreign keys reference it, for the confirmation; empty
  * when none does. Deleting rows (SQLite always, MySQL and MariaDB when emptying) applies their ON DELETE actions (rows
- * deleted or set to NULL); MySQL and MariaDB refuse to drop or truncate a referenced table, so the operation may fail.
+ * deleted or set to NULL). MySQL and MariaDB refuse to drop a referenced table, so a drop may fail (it succeeds once
+ * the referencing tables are dropped first), and always refuse to truncate one.
  */
 export function referencesNotice(engine: Engine | null, table: string, refs: readonly IncomingForeignKey[], removal: Removal): string {
   if (refs.length === 0) return "";
@@ -40,7 +41,9 @@ export function referencesNotice(engine: Engine | null, table: string, refs: rea
     const list = refs.map((r) => `"${r.table}" (${action(r)})`).join(", ");
     const outcome = engine === null
       ? `Depending on the database, rows in ${refs.length === 1 ? "that table" : "those tables"} may be deleted or set to NULL, or ${verb.ing} "${table}" may fail.`
-      : `${ENGINE_LABEL[engine]} refuses to ${verb.base} a table other tables reference, so this may fail.`;
+      : removal === "truncate"
+        ? `${ENGINE_LABEL[engine]} refuses to truncate a table other tables reference, so this will fail; use Empty Table instead.`
+        : `${ENGINE_LABEL[engine]} refuses to ${verb.base} a table other tables reference, so this may fail.`;
     return `Referenced by ${list}. ${outcome}`;
   }
   const effects = refs.map((r) => {

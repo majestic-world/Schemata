@@ -52,6 +52,24 @@ export function editedCell(start: string, typed: string | null): CellValue | nul
   return { type: "text", value: start.includes("\r\n") ? typed.replace(/\r?\n/g, "\r\n") : typed };
 }
 
+/** A grid cell: row index (saved rows, then new ones) and column name. */
+export type CellRef = { row: number; column: string };
+
+/**
+ * Cells an edit opened on `anchor` saves its text to: the anchor, plus every other selected cell `writable` accepts
+ * when the anchor is part of a larger selection. Cells outside the selection never receive the edit.
+ */
+export function editTargets(anchor: CellRef, selection: { rows: readonly number[]; columns: readonly string[] }, writable: (cell: CellRef) => boolean): CellRef[] {
+  const targets = [anchor];
+  if (!selection.rows.includes(anchor.row) || !selection.columns.includes(anchor.column)) return targets;
+  for (const row of selection.rows) {
+    for (const column of selection.columns) {
+      if ((row !== anchor.row || column !== anchor.column) && writable({ row, column })) targets.push({ row, column });
+    }
+  }
+  return targets;
+}
+
 export type EditorKeyAction = "commit" | "newline" | "cancel" | "picker" | null;
 
 /**

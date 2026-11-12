@@ -18,18 +18,45 @@ const sameValue = (a: CellValue, b: CellValue) => JSON.stringify(a) === JSON.str
 const ownValue = (values: Record<string, CellValue> | undefined, column: string): CellValue | undefined =>
   values !== undefined && Object.hasOwn(values, column) ? values[column] : undefined;
 
+/** One cell edit for [`setCells`]: `original` is the saved value an edit back to it cancels. */
+export type CellEdit = { row: RowRef; column: string; value: CellValue; original: CellValue };
+
 export function setCell(p: Pending, row: RowRef, column: string, value: CellValue, original: CellValue): Pending {
-  if (row.kind === "new") {
-    const inserts = p.inserts.map((r, i) => (i === row.index ? { ...r, [column]: value } : r));
-    return { ...p, inserts };
+  return setCells(p, [{ row, column, value, original }]);
+}
+
+/** Applies several cell edits, copying each changed row map once, so editing many cells stays linear. */
+export function setCells(p: Pending, edits: readonly CellEdit[]): Pending {
+  let updates = p.updates;
+  let inserts = p.inserts;
+  const copiedUpdates = new Set<number>();
+  const copiedInserts = new Set<number>();
+  // Column names are arbitrary (`__proto__`): define own properties instead of assigning them.
+  const put = (values: Record<string, CellValue>, column: string, value: CellValue) =>
+    Object.defineProperty(values, column, { value, enumerable: true, writable: true, configurable: true });
+  for (const { row, column, value, original } of edits) {
+    if (row.kind === "new") {
+      if (row.index >= inserts.length) continue;
+      if (inserts === p.inserts) inserts = [...p.inserts];
+      if (!copiedInserts.has(row.index)) {
+        inserts[row.index] = { ...inserts[row.index] };
+        copiedInserts.add(row.index);
+      }
+      put(inserts[row.index], column, value);
+      continue;
+    }
+    if (updates === p.updates) updates = { ...p.updates };
+    if (!copiedUpdates.has(row.index)) {
+      updates[row.index] = { ...(updates[row.index] ?? {}) };
+      copiedUpdates.add(row.index);
+    }
+    if (sameValue(value, original)) delete updates[row.index][column];
+    else put(updates[row.index], column, value);
   }
-  const current = { ...(p.updates[row.index] ?? {}) };
-  if (sameValue(value, original)) delete current[column];
-  else Object.defineProperty(current, column, { value, enumerable: true, writable: true, configurable: true });
-  const updates = { ...p.updates };
-  if (Object.keys(current).length) updates[row.index] = current;
-  else delete updates[row.index];
-  return { ...p, updates };
+  for (const index of copiedUpdates) {
+    if (Object.keys(updates[index]).length === 0) delete updates[index];
+  }
+  return updates === p.updates && inserts === p.inserts ? p : { ...p, updates, inserts };
 }
 
 /** Characters MySQL string literals spell with a backslash; any other escaped character stands for itself. */
