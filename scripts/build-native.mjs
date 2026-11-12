@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export async function buildNative() {
   const platform = process.platform;
   const bundle = {
-    win32: { format: 'nsis', directory: 'nsis', extension: '.exe', output: 'windows' },
+    win32: { output: 'windows' },
     linux: { format: 'appimage', directory: 'appimage', extension: '.AppImage', output: 'linux' },
     darwin: { format: 'dmg', directory: 'dmg', extension: '.dmg', output: 'macos' },
   }[platform];
@@ -22,16 +22,30 @@ export async function buildNative() {
 
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const target = join(root, 'target', 'package-native', platform);
-  const bundleDirectory = join(target, 'release', 'bundle', bundle.directory);
+  const bundleDirectory = platform === 'win32' ? null : join(target, 'release', 'bundle', bundle.directory);
   const destination = join(root, 'package', bundle.output);
   const env = { ...process.env, CARGO_TARGET_DIR: target };
   const command = platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  let innoCompiler;
+  if (platform === 'win32') {
+    const onPath = spawnSync('where.exe', ['ISCC.exe'], { encoding: 'utf8' });
+    innoCompiler = onPath.status === 0 ? onPath.stdout.trim().split(/\r?\n/)[0] : undefined;
+    if (!innoCompiler) {
+      const installed = join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Inno Setup 6', 'ISCC.exe');
+      try {
+        await access(installed);
+        innoCompiler = installed;
+      } catch {
+        throw new Error('Install Inno Setup 6 (6.6 or newer) and add ISCC.exe to PATH, or use its default installation directory.');
+      }
+    }
+  }
 
   for (const args of [
     ['install', '--frozen-lockfile'],
-    ['exec', 'tauri', 'build', '--bundles', bundle.format, '--', '--locked'],
+    ['exec', 'tauri', 'build', ...(platform === 'win32' ? ['--no-bundle'] : ['--bundles', bundle.format]), '--', '--locked'],
   ]) {
-    if (args[0] === 'exec') {
+    if (args[0] === 'exec' && bundleDirectory) {
       // Only remove this script's bundle output, leaving normal Cargo builds untouched.
       await rm(bundleDirectory, { recursive: true, force: true });
     }
@@ -51,6 +65,17 @@ export async function buildNative() {
         `pnpm ${args.join(' ')} failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}).`,
       );
     }
+  }
+
+  if (platform === 'win32') {
+    const result = spawnSync(innoCompiler, [join(root, 'setup.iss')], {
+      cwd: root,
+      env,
+      stdio: 'inherit',
+    });
+    if (result.error) throw new Error('Failed to start Inno Setup.', { cause: result.error });
+    if (result.status !== 0) throw new Error(`Inno Setup failed (exit ${result.status}).`);
+    return;
   }
 
   let entries;
