@@ -23,7 +23,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Object-list row counts are estimates from `information_schema` on MySQL/MariaDB and exact counts on SQLite. On MySQL 8+, list and table-info reads disable the session's `information_schema_stats_expiry` cache on the acquired connection, so refresh reads current engine statistics instead of values cached for up to a day. Counts remain estimates, avoiding full-table scans.
 - The application version is defined only in the root `Cargo.toml` (`workspace.package.version`), inherited by `src-tauri/Cargo.toml`. Tauri's config omits `version` to inherit it from Cargo; Settings reads it with `getVersion()`. The cross-platform macOS packager reads Cargo metadata exported by its build stage instead of maintaining a separate version.
-- Release candidates use SemVer pre-release versions (`1.0.0-rc.1`). MSI only accepts numeric pre-release identifiers and RPM rejects `-` in the version, so Windows ships the NSIS setup only (`make` and CI) and Linux CI bundles `.deb` and AppImage only; CI publishes `v*-*` tags as GitHub pre-releases.
+- Release candidates use SemVer pre-release versions (`1.0.0-rc.1`). MSI only accepts numeric pre-release identifiers and RPM rejects `-` in the version, so Windows ships the NSIS setup only (`make`) and Linux builds the AppImage only.
 
 ## Row editing
 
@@ -128,7 +128,23 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Testing
 
 - Core tests exercise the public `schematadb-core` API against real engines (SQLite files, MySQL and MariaDB in Docker), running the same scenarios on all three. Assert resulting database state, returned values or produced files; generated SQL is verified by executing it, not by string matching.
+- The MySQL/MariaDB tests start reusable Docker containers `schematadb-test-mysql` (MySQL 8.4) and `schematadb-test-mariadb` (MariaDB 11.4); remove them with `docker rm -f` when done.
 - Frontend: Vitest on pure state modules (grid pending changes, import column mapping, etc.). No automated UI end-to-end tests; UI is validated manually.
+
+## Packaging
+
+- All `make` targets need GNU Make and Node 24. `make build` also needs pnpm, Rust and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for the current OS; on Windows, Inno Setup 6.6+ (`ISCC.exe` in `PATH` or `C:\Program Files (x86)\Inno Setup 6`). Docker targets (`make linux`: Ubuntu 24.04 x86_64 AppImage; `make mac`: OSXCross ARM64 `.pkg`) need only Docker with Linux containers and BuildKit (x86_64 emulation on ARM64 hosts). Temporary files stay in `target/package-native/`; installers go to `package/<os>/`.
+- Windows uses the root `setup.iss`, with `ProjectDir` resolved from the script location (`{#ProjectDir}` is an Inno preprocessor value, not a runtime constant). The installer reads its version from the Cargo-built executable and includes `LICENSE` and `THIRD_PARTY_LICENSES.txt`; the frontend, SQLite and application icon are embedded in the executable. `src-tauri/icons/icon.ico` contains multiple sizes converted from `designs/icons/app-icon-1024.png` and is also the setup icon. The installer supports English and Brazilian Portuguese, Start Menu and optional desktop shortcuts, and uninstall without deleting saved user data. If WebView2 is missing, setup downloads and installs Microsoft's Evergreen bootstrapper (needs internet). After a native build, `ISCC.exe setup.iss` recompiles only the installer, from any working directory when given the script's full path. The first Inno installation does not migrate an older NSIS installation; uninstall the NSIS version first (preserving user data).
+- `make mac` uses the Apple SDK from [`rust-linux-darwin-builder`](https://github.com/joseluisq/rust-linux-darwin-builder), subject to Apple's terms. It produces an ad-hoc signed ARM64 `.pkg` installing into `/Applications` (macOS 11+, Apple Silicon, no universal binary); not a DMG because Tauri's DMG bundler needs macOS tools. Installers have no Developer ID signature or notarization, so Gatekeeper may block them; installation was not verified on a Mac.
+- On Linux, builds need `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`; saved passwords need a Secret Service (GNOME Keyring or KWallet), otherwise the app asks for the password when connecting.
+
+## Limitations
+
+- English UI only.
+- No SSH tunnels, TLS options beyond driver defaults, user/privilege management, routine designer, visual view designer, or schema/data compare and sync.
+- Transactional grid edits and test-data replacement require a transactional table engine.
+- The designer refuses changes it cannot reproduce without losing constraints or column attributes; generated columns are read-only.
+- Disconnect a connection before changing its host, user, database, engine or SQLite file.
 
 ## Data-safety review (2026-11-12)
 
@@ -144,6 +160,6 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 ## Pending
 
-- The GitHub CI workflow (now with Clippy and release permissions) has not been exercised here. Native Linux/macOS CI jobs, `.deb`/`.dmg` output, and installation/runtime smoke tests on Linux and macOS remain unverified, as does `tauri-plugin-single-instance` on Linux/macOS.
+- There is no CI workflow. Linux/macOS builds, `.deb`/`.dmg` output, and installation/runtime smoke tests on Linux and macOS remain unverified, as does `tauri-plugin-single-instance` on Linux/macOS.
 - SQLite rowid tables accept NULL in non-INTEGER primary keys; such rows are reported as vanished on edit (fail-safe) instead of being editable.
 - Dependency audit on 2026-11-11: RustSec reports soundness warnings for Linux transitive dependencies `glib 0.18.5` (`RUSTSEC-2024-0429`, through Tauri/GTK) and `memmap2 0.5.10` (`RUSTSEC-2026-0186`, through decorum/linicon). Their patched major/minor versions are not drop-in replacements for the upstream dependency requirements. These warnings are not a clean Linux security approval. Five additional unmaintained-crate warnings remain; the audit reports no vulnerability errors.

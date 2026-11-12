@@ -21,5 +21,5 @@ Schemata is a desktop database client for Windows, Linux and macOS supporting My
 
 ## Consequences
 
-- Rendering depends on each OS webview (WebView2, WebKitGTK 4.1, WKWebView); avoid bleeding-edge CSS and smoke-test CI artifacts.
+- Rendering depends on each OS webview (WebView2, WebKitGTK 4.1, WKWebView); avoid bleeding-edge CSS and smoke-test builds on each OS.
 - Linux builds require WebKitGTK 4.1; credential storage requires a Secret Service, with a prompt-on-connect fallback.
