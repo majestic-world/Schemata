@@ -81,6 +81,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Shared `.btn` hover changes the background without replacing the variant's border color. Primary buttons keep their accent border, ghost buttons stay borderless, and neutral buttons retain their normal frame in both themes.
 - Modals use `--dialog-border` instead of the strong input border: the light theme keeps its existing frame, while dark dialogs use a subdued charcoal outline without changing field borders.
+- Settings → About includes “Open app data folder”. A parameterless backend command resolves the running app's Tauri data directory and opens it in the OS file manager; debug builds use their isolated `.dev` directory. The frontend cannot supply arbitrary paths.
 
 ## Workspace interactions
 

@@ -21,6 +21,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-decorum = "1"
 tauri-plugin-single-instance = "2"
+open = "5"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }

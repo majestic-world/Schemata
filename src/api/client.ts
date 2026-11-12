@@ -55,6 +55,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export const api = {
   doubleClickInterval: () => call<number>("double_click_interval"),
   setWindowTheme: (dark: boolean) => call<void>("set_window_theme", { dark }),
+  openAppDataDirectory: () => call<void>("open_app_data_directory"),
   listConnections: () => call<ConnectionConfig[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password: string | null) =>
     call<SaveOutcome>("save_connection", { config, password }),

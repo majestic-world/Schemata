@@ -27,7 +27,6 @@ PrivilegesRequired=admin
 OutputDir={#ProjectDir}\package\windows
 OutputBaseFilename=Schemata_{#MyAppVersion}_x64-setup
 SetupIconFile={#ProjectDir}\src-tauri\icons\icon.ico
-LicenseFile={#ProjectDir}\LICENSE
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern windows11

@@ -13,7 +13,7 @@ use schematadb_core::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 
@@ -37,6 +37,14 @@ pub fn double_click_interval() -> u32 {
 #[tauri::command]
 pub fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> CmdResult<()> {
     crate::window_chrome::set_border(&window, dark).map_err(|e| AppError::io(e.to_string()))
+}
+
+/// Opens only this running app's data directory, never a frontend-supplied path.
+#[tauri::command]
+pub fn open_app_data_directory(app: AppHandle) -> CmdResult<()> {
+    let directory = app.path().app_data_dir().map_err(|e| AppError::io(e.to_string()))?;
+    std::fs::create_dir_all(&directory).map_err(|e| AppError::io(e.to_string()))?;
+    open::that_detached(directory).map_err(|e| AppError::io(e.to_string()))
 }
 
 #[tauri::command]
