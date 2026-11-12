@@ -423,7 +423,10 @@ select.cell-input { padding: 0 4px; }
 .query-main { flex: 1; display: flex; min-height: 0; }
 .query-left { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .query-code { flex: 1; min-height: 80px; overflow: hidden; }
+/* The editor fills the pane and its content stretches to the bottom, so clicks anywhere in it keep typing focus. */
+.query-code > div { height: 100%; }
 .query-code .cm-editor { height: 100%; font-size: 13px; }
+.query-code .cm-content, .query-code .cm-gutter { min-height: 100%; }
 .query-code .cm-editor { color: var(--text); background: var(--surface); }
 .query-code .cm-cursor { border-left-color: var(--text); }
 .query-code .cm-selectionBackground, .query-code .cm-focused .cm-selectionBackground { background: var(--accent-soft); }
