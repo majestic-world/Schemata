@@ -124,6 +124,12 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
       }}>
         <div className="table-scroll object-list" tabIndex={0} aria-busy={objects.isFetching} onKeyDown={(e) => {
           if (e.defaultPrevented || !e.currentTarget.contains(e.target as Node) || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="menu"], [role="dialog"]'))) return;
+          const current = rows.findIndex((o) => o.name === selection?.object?.name);
+          const selectRow = (index: number) => {
+            const { name, kind } = rows[index];
+            select({ connectionId, database, object: { name, kind } });
+            tableRef.current?.querySelector(`tr[data-object="${CSS.escape(name)}"]`)?.scrollIntoView({ block: "nearest" });
+          };
           if (isMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
             e.preventDefault();
             selectObjects({ connectionId, database, objects: rows.map(({ name, kind }) => ({ name, kind })) });
@@ -134,15 +140,17 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
             e.preventDefault();
             const object = rows.find((o) => o.name === selectedObjects[0].name);
             if (object && !e.repeat) onOpen(object);
+          } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+            e.preventDefault();
+            if (rows.length === 0) return;
+            // Nothing selected: Down starts at the first row, Up at the last.
+            if (current < 0) selectRow(e.key === "ArrowDown" ? 0 : rows.length - 1);
+            else selectRow(Math.min(rows.length - 1, Math.max(0, current + (e.key === "ArrowDown" ? 1 : -1))));
           } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.nativeEvent.isComposing) {
-            const current = rows.findIndex((o) => o.name === selection?.object?.name);
             const index = typeahead(e.key, e.timeStamp, rows.map((o) => o.name), current);
             if (index === undefined) return;
             e.preventDefault();
-            if (index < 0) return;
-            const { name, kind } = rows[index];
-            select({ connectionId, database, object: { name, kind } });
-            tableRef.current?.querySelector(`tr[data-object="${CSS.escape(name)}"]`)?.scrollIntoView({ block: "nearest" });
+            if (index >= 0) selectRow(index);
           }
         }} onClick={(e) => {
           if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
