@@ -241,16 +241,29 @@ async fn sqlite_rebuild_preserves_dependents(t: TestDb) {
 }
 scenario!(sqlite_rebuild_preserves_dependents);
 
-async fn drops_truncates_and_renames(t: TestDb) {
-    t.exec("CREATE TABLE a (id INT PRIMARY KEY); INSERT INTO a VALUES (1), (2); CREATE TABLE b (id INT);").await;
+/// Empty Table deletes the rows and keeps the autoincrement counter; Truncate Table also resets it.
+async fn drops_empties_truncates_and_renames(t: TestDb) {
+    let auto = if t.engine == Engine::Sqlite { "INTEGER PRIMARY KEY AUTOINCREMENT" } else { "INT AUTO_INCREMENT PRIMARY KEY" };
+    t.exec(&format!("CREATE TABLE a (id {auto}, v INT); INSERT INTO a (v) VALUES (1), (2); CREATE TABLE b (id INT);")).await;
+    let next_id = async || {
+        t.exec("INSERT INTO a (v) VALUES (0)").await;
+        let req = PageRequest { offset: 0, limit: 10, sort: Some(SortSpec { column: "id".into(), desc: true }), filters: vec![] };
+        t.driver.fetch_page(&t.db, "a", &req).await.unwrap().rows[0][0].clone()
+    };
+
+    t.driver.empty_table(&t.db, "a").await.unwrap();
+    assert_eq!(t.driver.count_rows(&t.db, "a", &[]).await.unwrap(), 0);
+    assert_eq!(next_id().await, CellValue::Int(3), "emptying keeps the counter");
     t.driver.truncate_table(&t.db, "a").await.unwrap();
     assert_eq!(t.driver.count_rows(&t.db, "a", &[]).await.unwrap(), 0);
+    assert_eq!(next_id().await, CellValue::Int(1), "truncating resets the counter");
+
     t.driver.rename_table(&t.db, "a", "a2").await.unwrap();
     t.driver.drop_object(&t.db, "b", ObjectKind::Table).await.unwrap();
     let objects: Vec<String> = t.driver.list_objects(&t.db).await.unwrap().into_iter().map(|o| o.name).collect();
     assert_eq!(objects, vec!["a2"]);
 }
-scenario!(drops_truncates_and_renames);
+scenario!(drops_empties_truncates_and_renames);
 
 /// MySQL/MariaDB DDL names tables without the database; applying it must still target the chosen database,
 /// even on a connection whose default database is a different one (or none).

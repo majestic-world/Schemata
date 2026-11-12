@@ -10,7 +10,7 @@ import { TableDesigner } from "./TableDesigner";
 import { OBJECTS_TAB, useTabs, type NewTableTab, type Tab } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
 import { useConnection } from "../lib/useConnection";
-import { copyCreateStatement, designTable, dropObjects, renameTable, truncateTable } from "../lib/objectActions";
+import { copyCreateStatement, designTable, dropObjects, emptyTable, renameTable, truncateTable } from "../lib/objectActions";
 import { openTransfer } from "../store/transfer";
 import { requestCloseTabs } from "../lib/tabActions";
 import { MOD } from "../lib/platform";
@@ -153,7 +153,8 @@ function ObjectsView() {
                 <DropdownMenu.Item className="menu-item" disabled={!ref || multiple || !isTable} onSelect={() => ref && openTransfer({ kind: "import", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Import CSV…</DropdownMenu.Item>
                 <DropdownMenu.Item className="menu-item" disabled={!ref || multiple || !isTable} onSelect={() => ref && openTransfer({ kind: "generate", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Generate Data…</DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
-                <DropdownMenu.Item className="menu-item danger" disabled={!ref || multiple || !isTable} onSelect={() => ref && void truncateTable(ref, qc)}>Empty Table…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item danger" disabled={!ref || multiple || !isTable} onSelect={() => ref && void emptyTable(ref, qc)}>Empty Table…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item danger" disabled={!ref || multiple || !isTable} onSelect={() => ref && void truncateTable(ref, qc)}>Truncate Table…</DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>

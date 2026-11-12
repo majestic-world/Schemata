@@ -244,6 +244,11 @@ pub async fn drop_object(sessions: State<'_, Sessions>, id: String, db: String, 
 }
 
 #[tauri::command]
+pub async fn empty_table(sessions: State<'_, Sessions>, id: String, db: String, name: String) -> CmdResult<()> {
+    sessions.driver(&id).await?.empty_table(&db, &name).await
+}
+
+#[tauri::command]
 pub async fn truncate_table(sessions: State<'_, Sessions>, id: String, db: String, name: String) -> CmdResult<()> {
     sessions.driver(&id).await?.truncate_table(&db, &name).await
 }

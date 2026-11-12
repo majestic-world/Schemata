@@ -1239,9 +1239,27 @@ impl Driver for SqliteDriver {
         self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
     }
 
-    async fn truncate_table(&self, db: &str, name: &str) -> Result<()> {
+    async fn empty_table(&self, db: &str, name: &str) -> Result<()> {
         let sql = format!("DELETE FROM {}.{}", quote_ident(db), quote_ident(name));
         self.with_conn(move |c| c.execute_batch(&sql).map_err(map_err)).await
+    }
+
+    /// SQLite has no TRUNCATE: deletes every row and resets the AUTOINCREMENT counter, in one transaction.
+    async fn truncate_table(&self, db: &str, name: &str) -> Result<()> {
+        let schema = quote_ident(db);
+        let delete = format!("DELETE FROM {schema}.{}", quote_ident(name));
+        let has_sequence = format!("SELECT count(*) FROM {schema}.sqlite_schema WHERE name = 'sqlite_sequence'");
+        let reset = format!("DELETE FROM {schema}.sqlite_sequence WHERE name = ?1");
+        let name = name.to_owned();
+        self.with_conn(move |c| {
+            let tx = c.transaction().map_err(map_err)?;
+            tx.execute_batch(&delete).map_err(map_err)?;
+            if tx.query_row(&has_sequence, [], |r| r.get::<_, i64>(0)).map_err(map_err)? > 0 {
+                tx.execute(&reset, [name]).map_err(map_err)?;
+            }
+            tx.commit().map_err(map_err)
+        })
+        .await
     }
 
     async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()> {

@@ -137,6 +137,7 @@ pub fn run() {
             commands::apply_table_design,
             commands::incoming_foreign_keys,
             commands::drop_object,
+            commands::empty_table,
             commands::truncate_table,
             commands::rename_table,
             commands::fetch_more,

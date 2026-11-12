@@ -4,7 +4,7 @@ import { api } from "../api/client";
 import { useConfirm } from "../store/confirm";
 import { OBJECTS_TAB, useTabs } from "../store/tabs";
 import { useWorkspace } from "../store/workspace";
-import { dropObjects, renameTable, truncateTable } from "./objectActions";
+import { dropObjects, emptyTable, renameTable, truncateTable } from "./objectActions";
 import { useDesignerDrafts } from "../store/designerDrafts";
 import { useGridStates } from "../store/gridState";
 import { setCell } from "./pendingChanges";
@@ -177,16 +177,28 @@ describe("confirming the removal of referenced tables", () => {
     { table: "audit", name: "fk_audit_0", onDelete: "NO ACTION" },
   ];
 
-  it("SQLite: says which rows emptying the table deletes or sets to NULL", async () => {
-    connection("sqlite");
+  it.each(["sqlite", "mySql"] as const)("%s: says which rows emptying the table deletes or sets to NULL", async (engine) => {
+    connection(engine);
     vi.spyOn(api, "incomingForeignKeys").mockResolvedValue(refs);
-    const truncate = vi.spyOn(api, "truncateTable").mockResolvedValue(undefined);
-    const operation = truncateTable({ ...scope, name: "customers", kind: "table" }, client);
+    const empty = vi.spyOn(api, "emptyTable").mockResolvedValue(undefined);
+    const operation = emptyTable({ ...scope, name: "customers", kind: "table" }, client);
     await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
     const message = useConfirm.getState().request!.message;
     expect(message).toContain('rows in "orders" that reference it will be deleted (ON DELETE CASCADE)');
     expect(message).toContain('references to it in "notes" will be set to NULL (ON DELETE SET NULL)');
     expect(message).toContain('emptying it fails while rows in "audit" reference it (ON DELETE NO ACTION)');
+    useConfirm.getState().settle(null);
+    await operation;
+    expect(empty).not.toHaveBeenCalled();
+  });
+
+  it("MySQL: warns that truncating a referenced table may fail", async () => {
+    connection("mySql");
+    vi.spyOn(api, "incomingForeignKeys").mockResolvedValue(refs.slice(0, 1));
+    const truncate = vi.spyOn(api, "truncateTable").mockResolvedValue(undefined);
+    const operation = truncateTable({ ...scope, name: "customers", kind: "table" }, client);
+    await vi.waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+    expect(useConfirm.getState().request!.message).toContain('Referenced by "orders" (ON DELETE CASCADE). MySQL refuses to truncate a table other tables reference, so this may fail.');
     useConfirm.getState().settle(null);
     await operation;
     expect(truncate).not.toHaveBeenCalled();

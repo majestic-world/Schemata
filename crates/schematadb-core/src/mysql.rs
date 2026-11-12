@@ -1632,6 +1632,12 @@ DELIMITER ;",
         Ok(())
     }
 
+    async fn empty_table(&self, db: &str, name: &str) -> Result<()> {
+        let sql = format!("DELETE FROM {}.{}", quote_ident(db), quote_ident(name));
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;
+        Ok(())
+    }
+
     async fn truncate_table(&self, db: &str, name: &str) -> Result<()> {
         let sql = format!("TRUNCATE TABLE {}.{}", quote_ident(db), quote_ident(name));
         sqlx::raw_sql(AssertSqlSafe(sql)).execute(&self.pool).await.map_err(map_err)?;

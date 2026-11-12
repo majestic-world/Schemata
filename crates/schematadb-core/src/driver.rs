@@ -128,7 +128,11 @@ pub trait Driver: Send + Sync {
     /// Runs DDL produced by [`Driver::plan_table`]; a failure leaves the table as it was.
     async fn apply_ddl(&self, db: &str, statements: &[String]) -> Result<()>;
     async fn drop_object(&self, db: &str, name: &str, kind: ObjectKind) -> Result<()>;
-    /// Deletes every row, keeping the structure.
+    /// Deletes every row with `DELETE`, keeping the structure and the autoincrement counter. Foreign keys referencing
+    /// the table apply their ON DELETE actions.
+    async fn empty_table(&self, db: &str, name: &str) -> Result<()>;
+    /// Deletes every row and resets the autoincrement counter, keeping the structure. MySQL/MariaDB use `TRUNCATE`,
+    /// which refuses a table other tables' foreign keys reference; SQLite deletes the rows and its counter.
     async fn truncate_table(&self, db: &str, name: &str) -> Result<()>;
     async fn rename_table(&self, db: &str, from: &str, to: &str) -> Result<()>;
     /// Applies grid changes in one transaction; returns the number of applied changes. `identity` is the row identity

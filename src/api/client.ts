@@ -83,6 +83,7 @@ export const api = {
     call<void>("apply_table_design", { id, db, original, design, statements }),
   incomingForeignKeys: (id: string, db: string, table: string) => call<IncomingForeignKey[]>("incoming_foreign_keys", { id, db, table }),
   dropObject: (id: string, db: string, name: string, kind: ObjectKind) => call<void>("drop_object", { id, db, name, kind }),
+  emptyTable: (id: string, db: string, name: string) => call<void>("empty_table", { id, db, name }),
   truncateTable: (id: string, db: string, name: string) => call<void>("truncate_table", { id, db, name }),
   renameTable: (id: string, db: string, from: string, to: string) => call<void>("rename_table", { id, db, from, to }),
   fetchMore: (id: string, session: string, db: string | null, statement: string, offset: number, limit: number) =>

@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
-import { copyCreateStatement, dropObjects, renameTable, truncateTable, type ObjectRef } from "../lib/objectActions";
+import { copyCreateStatement, dropObjects, emptyTable, renameTable, truncateTable, type ObjectRef } from "../lib/objectActions";
 import { MOD } from "../lib/platform";
 import { copyTable } from "../store/tableClipboard";
 import { useTabs, type TableView } from "../store/tabs";
@@ -42,7 +42,12 @@ export function ObjectContextMenu({ object, children }: { object: ObjectRef; chi
         ]
       : []),
     "separator",
-    ...(isTable ? [{ label: "Empty Table…", disabled: multiple, danger: true, onSelect: () => void truncateTable(object, qc) }] : []),
+    ...(isTable
+      ? [
+          { label: "Empty Table…", disabled: multiple, danger: true, onSelect: () => void emptyTable(object, qc) },
+          { label: "Truncate Table…", disabled: multiple, danger: true, onSelect: () => void truncateTable(object, qc) },
+        ]
+      : []),
     { label: multiple ? `Delete ${targets.length} Objects…` : isTable ? "Delete Table…" : "Delete View…", danger: true, onSelect: () => void dropObjects({ connectionId, database }, targets, qc) },
   ];
 

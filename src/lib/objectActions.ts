@@ -18,23 +18,29 @@ function refreshObjects(qc: QueryClient, o: { connectionId: string; database: st
   void qc.invalidateQueries({ queryKey: ["count", o.connectionId, o.database] });
 }
 
-/** Removing a table's rows: dropping it, or emptying it. */
-type Removal = "drop" | "empty";
+/** Removing a table's rows: dropping it, emptying it (`DELETE`) or truncating it (MySQL `TRUNCATE`). */
+type Removal = "drop" | "empty" | "truncate";
+
+const REMOVAL_VERB: Record<Removal, { ing: string; base: string }> = {
+  drop: { ing: "deleting", base: "delete" },
+  empty: { ing: "emptying", base: "empty" },
+  truncate: { ing: "truncating", base: "truncate" },
+};
 
 /**
  * What removing every row of `table` does to the tables whose foreign keys reference it, for the confirmation; empty
- * when none does. SQLite applies their ON DELETE actions (rows deleted or set to NULL); MySQL and MariaDB refuse to
- * drop or empty a referenced table, so the operation may fail.
+ * when none does. Deleting rows (SQLite always, MySQL and MariaDB when emptying) applies their ON DELETE actions (rows
+ * deleted or set to NULL); MySQL and MariaDB refuse to drop or truncate a referenced table, so the operation may fail.
  */
 export function referencesNotice(engine: Engine | null, table: string, refs: readonly IncomingForeignKey[], removal: Removal): string {
   if (refs.length === 0) return "";
-  const verb = removal === "drop" ? "deleting" : "emptying";
+  const verb = REMOVAL_VERB[removal];
   const action = (r: IncomingForeignKey) => `ON DELETE ${r.onDelete.toUpperCase()}`;
-  if (engine !== "sqlite") {
+  if (engine !== "sqlite" && removal !== "empty") {
     const list = refs.map((r) => `"${r.table}" (${action(r)})`).join(", ");
     const outcome = engine === null
-      ? `Depending on the database, rows in ${refs.length === 1 ? "that table" : "those tables"} may be deleted or set to NULL, or ${verb} "${table}" may fail.`
-      : `${ENGINE_LABEL[engine]} refuses to ${removal === "drop" ? "delete" : "empty"} a table other tables reference, so this may fail.`;
+      ? `Depending on the database, rows in ${refs.length === 1 ? "that table" : "those tables"} may be deleted or set to NULL, or ${verb.ing} "${table}" may fail.`
+      : `${ENGINE_LABEL[engine]} refuses to ${verb.base} a table other tables reference, so this may fail.`;
     return `Referenced by ${list}. ${outcome}`;
   }
   const effects = refs.map((r) => {
@@ -46,7 +52,7 @@ export function referencesNotice(engine: Engine | null, table: string, refs: rea
       case "SET DEFAULT":
         return `references to it in "${r.table}" will be set to their default (${action(r)})`;
       default:
-        return `${verb} it fails while rows in "${r.table}" reference it (${action(r)})`;
+        return `${verb.ing} it fails while rows in "${r.table}" reference it (${action(r)})`;
     }
   });
   return `Other tables reference "${table}": ${effects.join("; ")}.`;
@@ -114,21 +120,41 @@ export async function dropObjects(scope: Pick<ObjectRef, "connectionId" | "datab
   }
 }
 
-export async function truncateTable(o: ObjectRef, qc: QueryClient) {
+/** Empty Table: deletes every row with `DELETE`, keeping the structure and the autoincrement counter. */
+export async function emptyTable(o: ObjectRef, qc: QueryClient) {
   const references = await referencesNotes(qc, o, [o.name], "empty");
   const ok = await confirmAction({
     title: "Empty table",
-    message: `Delete every row of "${o.name}"? The structure is kept. This cannot be undone.${references}`,
+    message: `Delete every row of "${o.name}"? The structure and the auto-increment counter are kept. This cannot be undone.${references}`,
     confirmLabel: "Empty Table",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api.emptyTable(o.connectionId, o.database, o.name);
+    refreshObjects(qc, o);
+    notify("Table emptied", o.name);
+  } catch (e) {
+    notifyError(`Could not empty ${o.name}`, e);
+  }
+}
+
+/** Truncate Table: deletes every row and resets the autoincrement counter, keeping the structure. */
+export async function truncateTable(o: ObjectRef, qc: QueryClient) {
+  const references = await referencesNotes(qc, o, [o.name], "truncate");
+  const ok = await confirmAction({
+    title: "Truncate table",
+    message: `Delete every row of "${o.name}" and reset its auto-increment counter? The structure is kept. This cannot be undone.${references}`,
+    confirmLabel: "Truncate Table",
     danger: true,
   });
   if (!ok) return;
   try {
     await api.truncateTable(o.connectionId, o.database, o.name);
     refreshObjects(qc, o);
-    notify("Table emptied", o.name);
+    notify("Table truncated", o.name);
   } catch (e) {
-    notifyError(`Could not empty ${o.name}`, e);
+    notifyError(`Could not truncate ${o.name}`, e);
   }
 }
 
