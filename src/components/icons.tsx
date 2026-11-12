@@ -136,6 +136,51 @@ export function SettingsIcon({ size = 32 }: P) {
   );
 }
 
+/** Manila folder with its front flap open: opens a `.sql` file. */
+export function OpenFileIcon({ size = 16 }: P) {
+  const s = size <= 18;
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <defs>
+        <Grad id={`ic-open-back-${size}`} from="#f0b93c" to="#d4951c" />
+        <Grad id={`ic-open-front-${size}`} from="#ffe39a" to="#f2b73a" />
+      </defs>
+      <path d="M3 7a2 2 0 0 1 2-2h7.5l3 3H26a2 2 0 0 1 2 2v16H5a2 2 0 0 1-2-2z" fill={`url(#ic-open-back-${size})`} stroke="#a8720e" strokeWidth={s ? 2 : 1.2} strokeLinejoin="round" />
+      <path d="M8 13h22.5l-4 13H3.5z" fill={`url(#ic-open-front-${size})`} stroke="#a8720e" strokeWidth={s ? 2 : 1.2} strokeLinejoin="round" />
+      {!s && <path d="M9.5 15h19" stroke="#fff" strokeOpacity=".6" strokeWidth="1.2" />}
+    </svg>
+  );
+}
+
+/** Floppy disk: saves the query. */
+export function SaveFileIcon({ size = 16 }: P) {
+  const s = size <= 18;
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <defs><Grad id={`ic-save-${size}`} from="#4f92ec" to="#2360ba" /></defs>
+      <path d="M6 4h17l5 5v17a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill={`url(#ic-save-${size})`} stroke="#184a8f" strokeWidth={s ? 2 : 1.2} strokeLinejoin="round" />
+      <path d="M10 4h12v8H10z" fill="#e3e9f0" stroke="#184a8f" strokeWidth={s ? 1.6 : 1} />
+      <rect x="17.5" y="5.5" width="3" height="5" fill="#184a8f" />
+      <rect x="8" y="17" width="16" height="11" rx="1" fill="#fff" />
+      {!s && <path d="M11 21h10M11 24.5h10" stroke="#a5bddb" strokeWidth="1.2" />}
+    </svg>
+  );
+}
+
+/** Clock face: the executed-query history. */
+export function HistoryIcon({ size = 16 }: P) {
+  const s = size <= 18;
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <defs><Grad id={`ic-history-${size}`} from="#ffffff" to="#d9e4ef" /></defs>
+      <circle cx="16" cy="16" r="12.5" fill={`url(#ic-history-${size})`} stroke="#2b7be0" strokeWidth={s ? 3 : 2} />
+      {!s && <path d="M16 6.5v2M16 23.5v2M6.5 16h2M23.5 16h2" stroke="#7d95b0" strokeWidth="1.4" strokeLinecap="round" />}
+      <path d="M16 9.5V16l4.5 3" stroke="#24364a" strokeWidth={s ? 2.8 : 2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="16" cy="16" r={s ? 1.8 : 1.4} fill="#e9822b" />
+    </svg>
+  );
+}
+
 /** Engines shown as a white mark on a colored tile. SQLite uses its own colored logo instead. */
 const TILED: Record<Exclude<Engine, "sqlite">, { from: string; to: string; logo: Logo }> = {
   mySql: { from: "#1a8fb4", to: "#00618a", logo: MYSQL_LOGO },

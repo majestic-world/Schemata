@@ -5,9 +5,9 @@ import { MariaSQL, MySQL, SQLite, sql as sqlLang } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, Upload, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Play, Square, TextSelect, Upload, X } from "lucide-react";
 import { openTransfer } from "../store/transfer";
-import { DatabaseIcon } from "./icons";
+import { DatabaseIcon, HistoryIcon, OpenFileIcon, SaveFileIcon } from "./icons";
 import { MOD } from "../lib/platform";
 import { api, toAppError } from "../api/client";
 import type { Engine, StatementOutcome } from "../api/types";
@@ -153,9 +153,9 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
           </select>
         </label>
         <div className="grow" />
-        <button className="obj-btn" onClick={openFile}><FolderOpen size={15} className="ob-design" />Open</button>
-        <button className="obj-btn" onClick={save} title={tab.filePath ? `Save to ${fileName(tab.filePath)} (${MOD}+S)` : `Save to Saved Queries (${MOD}+S)`}><Save size={15} className="ob-open" />Save</button>
-        <button className={`obj-btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><History size={15} className="ob-open" />History</button>
+        <button className="obj-btn" onClick={openFile}><OpenFileIcon />Open</button>
+        <button className="obj-btn" onClick={save} title={tab.filePath ? `Save to ${fileName(tab.filePath)} (${MOD}+S)` : `Save to Saved Queries (${MOD}+S)`}><SaveFileIcon />Save</button>
+        <button className={`obj-btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><HistoryIcon />History</button>
       </div>
       <div className="query-main">
         <div className="query-left">
