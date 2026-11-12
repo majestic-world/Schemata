@@ -41,12 +41,15 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
   const [resultsHeight, setResultsHeight] = useState(300);
 
   const databases = useQuery({ queryKey: ["databases", tab.connectionId], queryFn: () => api.listDatabases(tab.connectionId) });
-  const columns = useQuery({
-    queryKey: ["columns", tab.connectionId, tab.database],
-    queryFn: () => api.listColumns(tab.connectionId, tab.database!),
-    enabled: !!tab.database,
-    staleTime: 60_000,
-  });
+  const columnsQuery = useCallback(
+    (database: string) => ({
+      queryKey: ["columns", tab.connectionId, database],
+      queryFn: () => api.listColumns(tab.connectionId, database),
+      staleTime: 60_000,
+    }),
+    [tab.connectionId],
+  );
+  const columns = useQuery({ ...columnsQuery(tab.database ?? ""), enabled: !!tab.database });
   const schema = useMemo(() => Object.fromEntries(columns.data ?? []), [columns.data]);
 
   const execute = useCallback(
@@ -117,8 +120,11 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
       const dialect = dialectFor(engine);
       return [
         sqlLang({ dialect, schema, upperCaseKeywords: true }),
-        // lang-sql completes columns only after `table.`; this adds the statement's table columns unqualified.
-        dialect.language.data.of({ autocomplete: columnCompletionSource(engine, schema) }),
+        // lang-sql completes columns only after `table.`; this adds the statement's table columns unqualified,
+        // loading tables qualified with another database (`archive.products`) from that database.
+        dialect.language.data.of({
+          autocomplete: columnCompletionSource(engine, tab.database, (database) => qc.fetchQuery(columnsQuery(database))),
+        }),
         Prec.highest(
           keymap.of([
             { key: "Mod-Enter", run: () => (void execute(false), true) },
@@ -129,7 +135,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
       ];
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conn?.engine, schema, execute],
+    [conn?.engine, schema, execute, tab.database, columnsQuery],
   );
 
   return (
