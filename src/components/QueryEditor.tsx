@@ -19,6 +19,7 @@ import { notify, notifyError } from "../store/toasts";
 import { GridView } from "./GridView";
 import { plural } from "../lib/format";
 import { isReadOnlyQuery, statementAt } from "../lib/statements";
+import { columnCompletionSource } from "../lib/sqlCompletion";
 
 export const ROW_LIMIT = 1000;
 const SQL_FILTERS = [{ name: "SQL script", extensions: ["sql"] }];
@@ -116,16 +117,22 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
   };
 
   const extensions = useMemo(
-    () => [
-      sqlLang({ dialect: dialectFor(conn?.engine ?? "mySql"), schema, upperCaseKeywords: true }),
-      Prec.highest(
-        keymap.of([
-          { key: "Mod-Enter", run: () => (void execute(false), true) },
-          { key: "Shift-Mod-Enter", run: () => (void execute(true), true) },
-          { key: "Mod-s", run: () => (void saveFile(), true) },
-        ]),
-      ),
-    ],
+    () => {
+      const engine = conn?.engine ?? "mySql";
+      const dialect = dialectFor(engine);
+      return [
+        sqlLang({ dialect, schema, upperCaseKeywords: true }),
+        // lang-sql completes columns only after `table.`; this adds the statement's table columns unqualified.
+        dialect.language.data.of({ autocomplete: columnCompletionSource(engine, schema) }),
+        Prec.highest(
+          keymap.of([
+            { key: "Mod-Enter", run: () => (void execute(false), true) },
+            { key: "Shift-Mod-Enter", run: () => (void execute(true), true) },
+            { key: "Mod-s", run: () => (void saveFile(), true) },
+          ]),
+        ),
+      ];
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [conn?.engine, schema, execute, tab.sql, tab.filePath],
   );
