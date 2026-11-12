@@ -42,7 +42,18 @@ fn lock_app_directory(directory: &Path) -> std::io::Result<PersistenceLock> {
     Ok(PersistenceLock { _file: file })
 }
 
+/// Debug builds (`pnpm tauri dev`, `cargo run`) are the test version. They get their own identifier, which Tauri
+/// turns into separate config/data directories, WebView2 profile and window state, and which also names their
+/// credential-store service. The installed release never sees a test connection and vice versa.
+const DEV_BUILD: bool = cfg!(debug_assertions);
+
+fn runtime_identifier(base: &str, dev_build: bool) -> String {
+    if dev_build { format!("{base}.dev") } else { base.to_owned() }
+}
+
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    context.config_mut().identifier = runtime_identifier(&context.config().identifier, DEV_BUILD);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // The frontend owns initial visibility; restoring it would reveal an unfinished webview.
@@ -53,9 +64,11 @@ pub fn run() {
             app.manage(lock_app_directory(&config_directory)?);
             let connections = config_directory.join("connections.json");
             let history = app.path().app_data_dir()?.join("history.json");
-            adopt_legacy_file(&connections)?;
-            adopt_legacy_file(&history)?;
-            let store = ConnectionStore::open(&connections, Box::new(KeyringSecrets))?;
+            if !DEV_BUILD {
+                adopt_legacy_file(&connections)?;
+                adopt_legacy_file(&history)?;
+            }
+            let store = ConnectionStore::open(&connections, Box::new(KeyringSecrets::new(app.config().identifier.clone())))?;
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
             if let Some(window) = app.get_webview_window("main") {
@@ -129,13 +142,19 @@ pub fn run() {
             commands::preview_generated,
             commands::generate_data,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Schemata");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::lock_app_directory;
+    use super::{lock_app_directory, runtime_identifier};
+
+    #[test]
+    fn dev_and_release_builds_never_share_an_identifier() {
+        assert_eq!(runtime_identifier("dev.schematadb.app", false), "dev.schematadb.app");
+        assert_eq!(runtime_identifier("dev.schematadb.app", true), "dev.schematadb.app.dev");
+    }
 
     #[test]
     fn persistence_lock_rejects_another_instance_until_shutdown() {

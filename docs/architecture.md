@@ -95,6 +95,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - The Create table dialog's "Add `created_at` and `updated_at`" choice (`schematadb.designerPrefs`, off by default) persists and applies to later new tables until changed; it appends two nullable `DATETIME` columns, skipping names the design already has.
 - Appearance: `schematadb.appearance` persists the light/dark choice in frontend storage. `main.tsx` applies it to the document root before React renders, so panes and portal-based dialogs share the same CSS tokens. The SQL editor also switches its CodeMirror theme for syntax highlighting.
 - The app was first named ProjectCat (`dev.projectcat.app`). On startup it copies `connections.json`/`history.json` from the legacy directory when the new one lacks them; each password moves from the legacy keyring service the first time it is read, and deleting a connection removes it from both services.
+- Dev and release data are isolated. Debug builds (`pnpm tauri dev`, `cargo run`) append `.dev` to the Tauri identifier (`dev.schematadb.app.dev`), which separates config/data directories, WebView2 profile, window state and the credential-store service from the installed release. Neither build reads or copies the other's connections or passwords, and the legacy ProjectCat migration runs only in release builds. They can run at the same time because each has its own instance lock.
 
 ## MySQL vs MariaDB
 

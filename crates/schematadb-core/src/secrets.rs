@@ -9,13 +9,30 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, id: &str) -> Result<()>;
 }
 
-const SERVICE: &str = "dev.schematadb.app";
-/// Service used while the app was called ProjectCat; passwords found there move to [`SERVICE`] on first read.
+/// Service of the installed release. Only it may adopt passwords from [`LEGACY_SERVICE`]; any other service
+/// (the dev build's) starts empty and never reads the release's credentials.
+const PRODUCTION_SERVICE: &str = "dev.schematadb.app";
+/// Service used while the app was called ProjectCat; passwords found there move to [`PRODUCTION_SERVICE`] on first read.
 const LEGACY_SERVICE: &str = "dev.projectcat.app";
 
 /// OS credential store: Windows Credential Manager, macOS Keychain or Linux Secret Service.
-#[derive(Default)]
-pub struct KeyringSecrets;
+pub struct KeyringSecrets {
+    service: String,
+}
+
+impl KeyringSecrets {
+    pub fn new(service: impl Into<String>) -> Self {
+        Self { service: service.into() }
+    }
+
+    fn legacy_service(&self) -> Option<&'static str> {
+        (self.service == PRODUCTION_SERVICE).then_some(LEGACY_SERVICE)
+    }
+
+    fn entry(&self, service: &str, id: &str) -> Result<keyring::Entry> {
+        keyring::Entry::new(service, id).map_err(keyring_err)
+    }
+}
 
 fn keyring_err(e: keyring::Error) -> AppError {
     AppError::io(format!("Credential store unavailable: {e}"))
@@ -23,10 +40,11 @@ fn keyring_err(e: keyring::Error) -> AppError {
 
 impl SecretStore for KeyringSecrets {
     fn get(&self, id: &str) -> Result<Option<String>> {
-        match keyring::Entry::new(SERVICE, id).map_err(keyring_err)?.get_password() {
+        match self.entry(&self.service, id)?.get_password() {
             Ok(p) => Ok(Some(p)),
             Err(keyring::Error::NoEntry) => {
-                let legacy = keyring::Entry::new(LEGACY_SERVICE, id).map_err(keyring_err)?;
+                let Some(legacy_service) = self.legacy_service() else { return Ok(None) };
+                let legacy = self.entry(legacy_service, id)?;
                 match legacy.get_password() {
                     Ok(p) => {
                         self.set(id, &p)?;
@@ -41,11 +59,11 @@ impl SecretStore for KeyringSecrets {
         }
     }
     fn set(&self, id: &str, secret: &str) -> Result<()> {
-        keyring::Entry::new(SERVICE, id).map_err(keyring_err)?.set_password(secret).map_err(keyring_err)
+        self.entry(&self.service, id)?.set_password(secret).map_err(keyring_err)
     }
     fn delete(&self, id: &str) -> Result<()> {
-        for service in [SERVICE, LEGACY_SERVICE] {
-            match keyring::Entry::new(service, id).map_err(keyring_err)?.delete_credential() {
+        for service in std::iter::once(self.service.as_str()).chain(self.legacy_service()) {
+            match self.entry(service, id)?.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => {}
                 Err(e) => return Err(keyring_err(e)),
             }
