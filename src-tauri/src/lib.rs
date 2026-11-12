@@ -1,9 +1,9 @@
 mod commands;
+mod persistence;
 mod window_chrome;
 
+use persistence::{InstallationProfile, lock_app_directory};
 use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
-use std::fs::{File, OpenOptions};
-use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 #[cfg(windows)]
@@ -11,52 +11,12 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Settings3, ICor
 #[cfg(windows)]
 use windows_core::Interface;
 
-/// App identifier used while the app was called ProjectCat.
-const LEGACY_IDENTIFIER: &str = "dev.projectcat.app";
-
-/// Copies `path` from the ProjectCat-era app directory (a sibling named after the old identifier) when it does
-/// not exist yet, so saved connections and history survive the rename.
-fn adopt_legacy_file(path: &Path) -> std::io::Result<()> {
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Ok(()) };
-    let Some(legacy) = dir.parent().map(|root| root.join(LEGACY_IDENTIFIER).join(name)) else { return Ok(()) };
-    if path.exists() || !legacy.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(dir)?;
-    std::fs::copy(legacy, path).map(|_| ())
-}
-
-/// Held by Tauri state until shutdown, before reading or migrating any persistent files.
-struct PersistenceLock {
-    _file: File,
-}
-
-fn lock_app_directory(directory: &Path) -> std::io::Result<PersistenceLock> {
-    std::fs::create_dir_all(directory)?;
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(directory.join("instance.lock"))?;
-    file.try_lock().map_err(|error| {
-        std::io::Error::other(format!(
-            "Cannot lock Schemata's configuration directory. Another Schemata instance may already be running; close it before starting this instance. {error}"
-        ))
-    })?;
-    Ok(PersistenceLock { _file: file })
-}
-
-/// Debug builds (`pnpm tauri dev`, `cargo run`) are the test version. They get their own identifier, which Tauri
-/// turns into separate config/data directories, WebView2 profile and window state, and which also names their
-/// credential-store service. The installed release never sees a test connection and vice versa.
-const DEV_BUILD: bool = cfg!(debug_assertions);
-
-fn runtime_identifier(base: &str, dev_build: bool) -> String {
-    if dev_build { format!("{base}.dev") } else { base.to_owned() }
-}
-
 pub fn run() {
     let mut context = tauri::generate_context!();
-    context.config_mut().identifier = runtime_identifier(&context.config().identifier, DEV_BUILD);
+    let profile = InstallationProfile::current().expect("Failed to resolve Schemata's installation profile");
+    profile.configure(context.config_mut());
     tauri::Builder::default()
-        // Registered first: a second launch (keyed on the runtime identifier, so dev and release stay apart) exits
-        // and brings the running window forward. The instance lock in setup still guards the data directory.
+        // Each installation has its own instance identity and data-directory lock.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -73,10 +33,7 @@ pub fn run() {
             app.manage(lock_app_directory(&config_directory)?);
             let connections = config_directory.join("connections.json");
             let history = app.path().app_data_dir()?.join("history.json");
-            if !DEV_BUILD {
-                adopt_legacy_file(&connections)?;
-                adopt_legacy_file(&history)?;
-            }
+            // No migrations or fallback reads: a missing profile always starts empty.
             let store = ConnectionStore::open(&connections, Box::new(KeyringSecrets::new(app.config().identifier.clone())))?;
             app.manage(Sessions::new(store));
             app.manage(commands::Operations::default());
@@ -164,29 +121,3 @@ pub fn run() {
         .expect("error while running Schemata");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{lock_app_directory, runtime_identifier};
-
-    #[test]
-    fn dev_and_release_builds_never_share_an_identifier() {
-        assert_eq!(runtime_identifier("dev.schematadb.app", false), "dev.schematadb.app");
-        assert_eq!(runtime_identifier("dev.schematadb.app", true), "dev.schematadb.app.dev");
-    }
-
-    #[test]
-    fn persistence_lock_rejects_another_instance_until_shutdown() {
-        let directory = std::env::temp_dir().join(format!("schemata-instance-lock-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let connections = directory.join("connections.json");
-        std::fs::write(&connections, b"existing connections").unwrap();
-        let first = lock_app_directory(&directory).unwrap();
-        let error = lock_app_directory(&directory).err().expect("a second instance must not acquire the lock");
-        assert!(error.to_string().contains("Another Schemata instance"));
-        assert_eq!(std::fs::read(&connections).unwrap(), b"existing connections");
-        drop(first);
-        let next = lock_app_directory(&directory).unwrap();
-        drop(next);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-}

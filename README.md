@@ -56,6 +56,12 @@ Windows uses the root `setup.iss`, with `ProjectDir` resolved from the script lo
 - The designer refuses changes it cannot reproduce without losing constraints or column attributes; generated columns are read-only.
 - Disconnect a connection before changing its host, user, database, engine or SQLite file.
 
+## App data
+
+On Windows, each installation stores its files in `%APPDATA%\schemata\<hash>`, where `<hash>` is the 32-character hexadecimal MD5 of the canonical executable directory (UTF-8, lowercased on Windows). Connections, history, window state and WebView2 preferences share that root; passwords stay in the OS credential store under an installation-specific namespace. Open the active profile from **Settings → App data → Open folder**.
+
+Different installation directories are isolated, including normal development and installed builds. Updates in the same directory retain data; moving the app starts a new profile. Old data directories are never imported automatically. To reset, close the app, delete its hashed profile, then reopen: it starts clean. This does not delete any databases outside that profile or old credentials from the OS vault.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Third-party crates, npm packages and logos keep their own permissive licenses ([THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt), also in **Settings → About → Licenses…**). After changing dependencies, run `pnpm notices`; CI fails on `pnpm notices --check` while the file is stale. Database logos are trademarks of their owners.

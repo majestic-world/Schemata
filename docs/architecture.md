@@ -70,7 +70,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 - The main window starts hidden. React reveals it after mounting the shell, loading fonts and allowing a render frame, without a fixed startup delay.
 - The window-state plugin does not restore visibility; otherwise a previously visible window would bypass frontend readiness. Size and position are still restored, and startup remains maximized.
 - Connection restoration runs in the background and does not block showing the shell.
-- A second launch of the same build (keyed on the runtime identifier, so dev and release stay apart) exits through `tauri-plugin-single-instance` and brings the running window forward. The instance lock still guards the data directory.
+- A second launch from the same installation directory exits through `tauri-plugin-single-instance` and brings that installation's running window forward. Different installation directories have independent identities and locks and can run concurrently.
 
 ## Toolbar icons
 
@@ -81,7 +81,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Shared `.btn` hover changes the background without replacing the variant's border color. Primary buttons keep their accent border, ghost buttons stay borderless, and neutral buttons retain their normal frame in both themes.
 - Modals use `--dialog-border` instead of the strong input border: the light theme keeps its existing frame, while dark dialogs use a subdued charcoal outline without changing field borders.
-- Settings includes an “App data” section below About, with an “Open folder” button. A parameterless backend command resolves the running app's Tauri data directory and opens it in the OS file manager; debug builds use their isolated `.dev` directory. The frontend cannot supply arbitrary paths.
+- Settings includes an “App data” section below About, with an “Open folder” button. A parameterless backend command opens the running installation's hashed profile in the OS file manager. The frontend cannot supply arbitrary paths.
 
 ## Workspace interactions
 
@@ -111,14 +111,15 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 ## Persistence
 
-- Connection definitions: JSON in the app-config directory, never containing passwords.
-- Passwords: OS credential store via `keyring`, keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect. A failed read while saving a connection (e.g. a locked keyring) keeps password saving enabled and reports a warning. Connections with password saving disabled never read an old stored credential. Deleting a connection that had a saved password reports a credential-store failure after the connection itself is removed.
-- Query history: app-data directory, atomically replaced; damaged history is preserved without preventing startup. A process-lifetime profile lock prevents concurrent application instances from overwriting saved state. Window size/position: Tauri window-state plugin. Panel sizes and tree state: persisted frontend stores.
+- All file persistence uses one installation profile: `%APPDATA%\schemata\<hash>` on Windows (the platform's data directory on Linux/macOS). `<hash>` is the 32-character lowercase hexadecimal MD5 of the canonical executable directory's UTF-8 path, used only as a directory identifier, not for security; Windows strips verbatim prefixes through `dunce::canonicalize` and lowercases the path before hashing. AppImage builds use the original AppImage location, not the temporary mount directory. The executable filename, application version and current working directory do not affect the profile.
+- The root is configured through Tauri's `appDirectoriesOverride` before plugins or windows initialize. Config, data and local data resolve to that root; cache/log files stay below it. This also puts Windows WebView2's profile (frontend preferences, favorites, workspace and theme) and the window-state plugin's JSON under the installation profile. Connection definitions and query history are JSON files in that root; connection files never contain passwords. History is replaced atomically, and damaged history is preserved without preventing startup.
+- Passwords stay in the OS credential store via `keyring`, with a service namespace containing the installation hash and entries keyed by connection id. If the store is unavailable, the password is not saved and the user is prompted on connect. A failed read while saving keeps password saving enabled and reports a warning. Connections with password saving disabled never read an old stored credential. Deleting a connection reports a credential-store failure after the connection itself is removed.
+- A process-lifetime profile lock prevents concurrent instances from overwriting saved state. Window size/position uses Tauri window-state; panel sizes and tree state use persisted frontend stores within the WebView profile.
 - Favorites (`schematadb.favorites`) and tree filters (`schematadb.treeFilter`, without the search text) persist in frontend storage. Favorites follow table renames and are dropped with the object.
 - The Create table dialog's "Add `created_at` and `updated_at`" choice (`schematadb.designerPrefs`, off by default) persists and applies to later new tables until changed; it appends two nullable `DATETIME` columns, skipping names the design already has.
 - Appearance: `schematadb.appearance` persists the light/dark choice in frontend storage. `main.tsx` applies it to the document root before React renders, so panes and portal-based dialogs share the same CSS tokens, and calls `set_window_theme` so Windows 11 paints the frameless window's DWM border in that theme's `--border` color (light at startup until the frontend calls it, before the window is shown). The SQL editor also switches its CodeMirror theme for syntax highlighting.
-- The app was first named ProjectCat (`dev.projectcat.app`). On startup it copies `connections.json`/`history.json` from the legacy directory when the new one lacks them; each password moves from the legacy keyring service the first time it is read, and deleting a connection removes it from both services.
-- Dev and release data are isolated. Debug builds (`pnpm tauri dev`, `cargo run`) append `.dev` to the Tauri identifier (`dev.schematadb.app.dev`), which separates config/data directories, WebView2 profile, window state and the credential-store service from the installed release. Neither build reads or copies the other's connections or passwords, and the legacy ProjectCat migration runs only in release builds. They can run at the same time because each has its own instance lock.
+- No legacy imports, migrations, fallback directories or keyring fallback reads. Old ProjectCat, old release and old `.dev` directories are left untouched and ignored. Close the app before deleting its hashed profile: the next launch recreates clean defaults with no connections, query history or restored Windows frontend preferences. Old keyring entries may remain in the OS vault, but no connection ids are restored to reference them.
+- Isolation follows the installation directory, not the debug/release flag. Builds in different directories are isolated; builds launched from the same directory intentionally share one profile. Moving the app creates a new empty profile; updating the executable in the same directory retains the existing profile.
 
 ## MySQL vs MariaDB
 
