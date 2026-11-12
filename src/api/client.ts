@@ -20,6 +20,8 @@ import type {
   ObjectKind,
   TableDesign,
   HistoryEntry,
+  SavedQuery,
+  SaveQueryRequest,
   ExportSource,
   ExportFormat,
   CsvReadOptions,
@@ -94,6 +96,9 @@ export const api = {
   closeEditorSession: (id: string, session: string) => call<void>("close_editor_session", { id, session }),
   listColumns: (id: string, db: string) => call<[string, string[]][]>("list_columns", { id, db }),
   listHistory: (id: string) => call<HistoryEntry[]>("list_history", { id }),
+  listSavedQueries: (id: string) => call<SavedQuery[]>("list_saved_queries", { id }),
+  saveQuery: (query: SaveQueryRequest) => call<SavedQuery>("save_query", { query }),
+  deleteSavedQuery: (queryId: string) => call<void>("delete_saved_query", { queryId }),
   readTextFile: (path: string) => call<string>("read_text_file", { path }),
   writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),
   exportData: (id: string, db: string, source: ExportSource, format: ExportFormat, path: string, operationId: string) =>

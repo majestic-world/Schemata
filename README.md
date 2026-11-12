@@ -58,7 +58,7 @@ Windows uses the root `setup.iss`, with `ProjectDir` resolved from the script lo
 
 ## App data
 
-On Windows, each installation stores its files in `%APPDATA%\schemata\<hash>`, where `<hash>` is the 32-character hexadecimal MD5 of the canonical executable directory (UTF-8, lowercased on Windows). Connections, history, window state and WebView2 preferences share that root; passwords stay in the OS credential store under an installation-specific namespace. Open the active profile from **Settings → App data → Open folder**.
+On Windows, each installation stores its files in `%APPDATA%\schemata\<hash>`, where `<hash>` is the 32-character hexadecimal MD5 of the canonical executable directory (UTF-8, lowercased on Windows). Connections, query history, saved queries, window state and WebView2 preferences share that root; passwords stay in the OS credential store under an installation-specific namespace. Open the active profile from **Settings → App data → Open folder**.
 
 Different installation directories are isolated, including normal development and installed builds. Updates in the same directory retain data; moving the app starts a new profile. Old data directories are never imported automatically. To reset, close the app, delete its hashed profile, then reopen: it starts clean. This does not delete any databases outside that profile or old credentials from the OS vault.
 

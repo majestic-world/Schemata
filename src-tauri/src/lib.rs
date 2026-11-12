@@ -3,7 +3,7 @@ mod persistence;
 mod window_chrome;
 
 use persistence::{InstallationProfile, lock_app_directory};
-use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, Sessions};
+use schematadb_core::{ConnectionStore, KeyringSecrets, QueryHistory, SavedQueries, Sessions};
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 #[cfg(windows)]
@@ -33,6 +33,7 @@ pub fn run() {
             app.manage(lock_app_directory(&config_directory)?);
             let connections = config_directory.join("connections.json");
             let history = app.path().app_data_dir()?.join("history.json");
+            let saved_queries = app.path().app_data_dir()?.join("queries.json");
             // No migrations or fallback reads: a missing profile always starts empty.
             let store = ConnectionStore::open(&connections, Box::new(KeyringSecrets::new(app.config().identifier.clone())))?;
             app.manage(Sessions::new(store));
@@ -65,6 +66,7 @@ pub fn run() {
                 window.maximize()?;
             }
             app.manage(QueryHistory::open(&history)?);
+            app.manage(SavedQueries::open(&saved_queries)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -103,6 +105,9 @@ pub fn run() {
             commands::close_editor_session,
             commands::list_columns,
             commands::list_history,
+            commands::list_saved_queries,
+            commands::save_query,
+            commands::delete_saved_query,
             commands::read_text_file,
             commands::write_text_file,
             commands::cancel_operation,

@@ -2,8 +2,8 @@
 
 use schematadb_core::{
     AppError, ChangeError, CharsetInfo, ConnectParams, ConnectionConfig, CreateDatabase, DatabaseInfo, Filter, HistoryEntry,
-    IncomingForeignKey, ObjectInfo, ObjectKind, Page, PageRequest, QueryHistory, RowChange, RowIdentity, SaveOutcome, ScriptResult,
-    Sessions, TableDesign, TableInfo, connect,
+    IncomingForeignKey, ObjectInfo, ObjectKind, Page, PageRequest, QueryHistory, RowChange, RowIdentity, SaveOutcome, SaveQueryRequest,
+    SavedQueries, SavedQuery, ScriptResult, Sessions, TableDesign, TableInfo, connect,
 };
 use schematadb_core::{
     CancellationToken, ColumnGenerator, CopyTableReport, CopyTableTarget, CsvImport, CsvPreview, CsvReadOptions, DumpOptions, DumpReport,
@@ -307,6 +307,21 @@ pub async fn list_columns(sessions: State<'_, Sessions>, id: String, db: String)
 #[tauri::command]
 pub fn list_history(history: State<'_, QueryHistory>, id: String) -> Vec<HistoryEntry> {
     history.list(&id)
+}
+
+#[tauri::command]
+pub fn list_saved_queries(queries: State<'_, SavedQueries>, id: String) -> Vec<SavedQuery> {
+    queries.list(&id)
+}
+
+#[tauri::command]
+pub fn save_query(queries: State<'_, SavedQueries>, query: SaveQueryRequest) -> CmdResult<SavedQuery> {
+    queries.save(query)
+}
+
+#[tauri::command]
+pub fn delete_saved_query(queries: State<'_, SavedQueries>, query_id: String) -> CmdResult<()> {
+    queries.delete(&query_id)
 }
 
 #[tauri::command]

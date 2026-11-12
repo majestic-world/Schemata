@@ -4,7 +4,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { MariaSQL, MySQL, SQLite, sql as sqlLang } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, CheckCircle2, FolderOpen, History, Play, Save, Square, TextSelect, Upload, X } from "lucide-react";
 import { openTransfer } from "../store/transfer";
 import { DatabaseIcon } from "./icons";
@@ -20,6 +20,7 @@ import { GridView } from "./GridView";
 import { plural } from "../lib/format";
 import { isReadOnlyQuery, statementAt } from "../lib/statements";
 import { columnCompletionSource } from "../lib/sqlCompletion";
+import { saveQueryTab } from "../lib/savedQueries";
 
 export const ROW_LIMIT = 1000;
 const SQL_FILTERS = [{ name: "SQL script", extensions: ["sql"] }];
@@ -94,16 +95,10 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
 
   const stop = () => run?.executionId && void api.cancelExecution(run.connectionId, run.executionId).catch((e) => notifyError("Could not cancel", e));
 
-  const saveFile = async () => {
-    try {
-      const path = tab.filePath ?? (await saveDialog({ filters: SQL_FILTERS, defaultPath: `${tab.title}.sql` }));
-      if (typeof path !== "string") return;
-      await api.writeTextFile(path, tab.sql);
-      update(tab.id, { filePath: path, title: fileName(path), savedSql: tab.sql });
-      notify("Saved", fileName(path));
-    } catch (e) {
-      notifyError("Could not save the file", e);
-    }
+  const save = () => {
+    // Read the tab at save time: the keymap outlives renders.
+    const current = useTabs.getState().tabs.find((t) => t.id === tab.id);
+    if (current?.kind === "query") void saveQueryTab(current, qc);
   };
   const openFile = async () => {
     const path = await openDialog({ filters: SQL_FILTERS, multiple: false, directory: false });
@@ -128,13 +123,13 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
           keymap.of([
             { key: "Mod-Enter", run: () => (void execute(false), true) },
             { key: "Shift-Mod-Enter", run: () => (void execute(true), true) },
-            { key: "Mod-s", run: () => (void saveFile(), true) },
+            { key: "Mod-s", run: () => (save(), true) },
           ]),
         ),
       ];
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conn?.engine, schema, execute, tab.sql, tab.filePath],
+    [conn?.engine, schema, execute],
   );
 
   return (
@@ -153,7 +148,7 @@ export function QueryEditor({ tab }: { tab: QueryTab }) {
         </label>
         <div className="grow" />
         <button className="obj-btn" onClick={openFile}><FolderOpen size={15} className="ob-design" />Open</button>
-        <button className="obj-btn" onClick={saveFile} title={`Save (${MOD}+S)`}><Save size={15} className="ob-open" />Save</button>
+        <button className="obj-btn" onClick={save} title={tab.filePath ? `Save to ${fileName(tab.filePath)} (${MOD}+S)` : `Save to Saved Queries (${MOD}+S)`}><Save size={15} className="ob-open" />Save</button>
         <button className={`obj-btn${showHistory ? " active-filter" : ""}`} onClick={() => setShowHistory((v) => !v)}><History size={15} className="ob-open" />History</button>
       </div>
       <div className="query-main">

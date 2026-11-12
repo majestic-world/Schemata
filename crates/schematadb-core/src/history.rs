@@ -1,7 +1,6 @@
-use crate::store::persist_json;
+use crate::store::{load_json_list, persist_json};
 use crate::{Result, ScriptResult, StatementOutcome};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,22 +27,7 @@ pub struct QueryHistory {
 
 impl QueryHistory {
     pub fn open(path: &Path) -> Result<Self> {
-        let entries = match std::fs::read(path) {
-            Ok(raw) => match serde_json::from_slice(&raw) {
-                Ok(entries) => entries,
-                Err(_) => {
-                    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-                    let mut backup = tempfile::Builder::new().prefix("history-corrupt-").suffix(".json").tempfile_in(dir)?;
-                    backup.write_all(&raw)?;
-                    backup.as_file().sync_all()?;
-                    backup.keep().map_err(|error| error.error)?;
-                    Vec::new()
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Self { path: path.to_owned(), entries: Mutex::new(entries) })
+        Ok(Self { path: path.to_owned(), entries: Mutex::new(load_json_list(path, "history")?) })
     }
 
     pub fn record(&self, connection_id: &str, sql: &str, ok: bool, duration_ms: u64) -> Result<()> {

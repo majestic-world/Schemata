@@ -165,3 +165,23 @@ pub(crate) fn persist_json(path: &Path, contents: &[u8]) -> Result<()> {
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
+
+/// Reads a JSON list. A missing file is empty; an unreadable one is copied to `<prefix>-corrupt-*.json` beside it
+/// and treated as empty, so its contents survive the next [`persist_json`] instead of blocking startup.
+pub(crate) fn load_json_list<T: serde::de::DeserializeOwned>(path: &Path, prefix: &str) -> Result<Vec<T>> {
+    match std::fs::read(path) {
+        Ok(raw) => match serde_json::from_slice(&raw) {
+            Ok(entries) => Ok(entries),
+            Err(_) => {
+                let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+                let mut backup = tempfile::Builder::new().prefix(&format!("{prefix}-corrupt-")).suffix(".json").tempfile_in(dir)?;
+                backup.write_all(&raw)?;
+                backup.as_file().sync_all()?;
+                backup.keep().map_err(|error| error.error)?;
+                Ok(Vec::new())
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}

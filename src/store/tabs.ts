@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "../api/client";
-import type { ObjectKind } from "../api/types";
+import type { ObjectKind, SavedQuery } from "../api/types";
 import { useGridStates } from "./gridState";
 import { useDesignerDrafts } from "./designerDrafts";
 import { useQueryResults } from "./queryResults";
@@ -28,6 +28,8 @@ export type QueryTab = {
   database: string | null;
   title: string;
   filePath: string | null;
+  /** The saved query this tab edits; Save overwrites it. */
+  savedQueryId: string | null;
   sql: string;
   /** Text as last saved/opened; differs from `sql` when the tab has unsaved changes. */
   savedSql: string;
@@ -45,6 +47,8 @@ type TabsState = {
   openTable: (t: Omit<TableTab, "kind" | "id" | "view">, view?: TableView) => void;
   newTable: (connectionId: string, database: string) => void;
   newQuery: (q: { connectionId: string; database: string | null; sql?: string; title?: string; filePath?: string | null }) => void;
+  /** Activates the tab already editing a saved query, or opens one. */
+  openSavedQuery: (q: SavedQuery) => void;
   updateQuery: (id: string, p: Partial<Omit<QueryTab, "kind" | "id">>) => void;
   /** Replaces a tab in place (e.g. a new-table designer by the created table). */
   replace: (id: string, t: Omit<TableTab, "kind" | "id" | "view">, view: TableView) => void;
@@ -98,9 +102,18 @@ export const useTabs = create<TabsState>((set, get) => ({
         database: q.database,
         title: q.title ?? `Untitled Query ${n}`,
         filePath: q.filePath ?? null,
+        savedQueryId: null,
         sql: q.sql ?? "",
         savedSql: q.filePath ? (q.sql ?? "") : "",
       };
+      return { tabs: [...s.tabs, tab], active: id };
+    }),
+  openSavedQuery: (q) =>
+    set((s) => {
+      const existing = s.tabs.find((t) => t.kind === "query" && t.savedQueryId === q.id);
+      if (existing) return { active: existing.id };
+      const id = `query:${crypto.randomUUID()}`;
+      const tab: QueryTab = { kind: "query", id, connectionId: q.connectionId, database: q.database, title: q.name, filePath: null, savedQueryId: q.id, sql: q.sql, savedSql: q.sql };
       return { tabs: [...s.tabs, tab], active: id };
     }),
   updateQuery: (id, p) => set((s) => ({ tabs: s.tabs.map((t) => (t.id === id && t.kind === "query" ? { ...t, ...p } : t)) })),

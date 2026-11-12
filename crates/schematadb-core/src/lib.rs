@@ -8,6 +8,7 @@ mod generate;
 mod history;
 mod model;
 mod mysql;
+mod saved_queries;
 mod secrets;
 mod sessions;
 mod splitter;
@@ -27,6 +28,7 @@ pub use generate::{
 };
 pub use history::{HistoryEntry, QueryHistory};
 pub use model::*;
+pub use saved_queries::{SaveQueryRequest, SavedQueries, SavedQuery};
 pub use secrets::{KeyringSecrets, MemorySecrets, SecretStore};
 pub use sessions::{Sessions, params_for};
 pub use splitter::{Splitter, split_statements};

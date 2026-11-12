@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus, Loader2, Star } from "lucide-react";
+import { ChevronRight, FileCode2, Plus, Loader2, Star } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api/client";
-import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind } from "../api/types";
+import type { ConnectionConfig, Engine, ObjectInfo, ObjectKind, SavedQuery } from "../api/types";
 import { DatabaseIcon, EngineIcon, TableIcon, ViewIcon } from "./icons";
 import { useConnections } from "../store/connections";
 import { useWorkspace } from "../store/workspace";
@@ -21,6 +21,7 @@ import { treeNodeKey } from "../lib/treeNodes";
 import { useTreeFilter } from "../store/treeFilter";
 import { isFavorite, useFavorites } from "../store/favorites";
 import { createTreeClickNavigation } from "../lib/treeClickNavigation";
+import { deleteSavedQuery, renameSavedQuery, savedQueriesKey } from "../lib/savedQueries";
 
 /** Selecting a database or object in the tree shows it in the Objects tab. */
 const showObjects = () => useTabs.getState().activate(OBJECTS_TAB);
@@ -224,6 +225,7 @@ function ConnectionNode({ config }: { config: ConnectionConfig }) {
         </div>
       </Menu>
       {expanded && shownDatabases?.map((db) => <DatabaseNode key={db.name} connectionId={config.id} engine={config.engine} database={db.name} />)}
+      {expanded && <QueriesGroup connectionId={config.id} database={null} depth={1} />}
       {expanded && search && shownDatabases?.length === 0 && <div className="tree-empty">No databases match “{search}”</div>}
     </>
   );
@@ -306,6 +308,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
         <>
           <GroupNode connectionId={connectionId} database={database} kind="table" objects={objects.data} />
           <GroupNode connectionId={connectionId} database={database} kind="view" objects={objects.data} />
+          <QueriesGroup connectionId={connectionId} database={database} depth={2} />
         </>
       )}
     </>
@@ -386,5 +389,61 @@ function ObjectNode({ connectionId, database, object }: { connectionId: string; 
         />
       </div>
     </ObjectContextMenu>
+  );
+}
+
+/** Saved queries of a database; with `database: null`, those of the connection that run without one (shown only if any). */
+function QueriesGroup({ connectionId, database, depth }: { connectionId: string; database: string | null; depth: number }) {
+  const key = treeNodeKey.queries(connectionId, database);
+  const expanded = useWorkspace((s) => !!s.expanded[key]);
+  const setExpanded = useWorkspace((s) => s.setExpanded);
+  const favoritesOnly = useTreeFilter((s) => s.favoritesOnly);
+  const saved = useQuery({ queryKey: savedQueriesKey(connectionId), queryFn: () => api.listSavedQueries(connectionId) });
+  const queries = saved.data?.filter((q) => q.database === database) ?? [];
+  if (favoritesOnly || (database === null && queries.length === 0)) return null;
+  const items: MenuItem[] = [{ label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) }];
+  return (
+    <>
+      <Menu items={items}>
+        <div>
+          <Row
+            nodeKey={key}
+            depth={depth}
+            expandable
+            expanded={expanded}
+            icon={<FileCode2 size={15} className="tab-glyph query" />}
+            label="Queries"
+            trailing={<span className="count">{queries.length}</span>}
+            onToggle={() => setExpanded(key, !expanded)}
+          />
+        </div>
+      </Menu>
+      {expanded && queries.map((q) => <SavedQueryNode key={q.id} query={q} depth={depth + 1} />)}
+    </>
+  );
+}
+
+function SavedQueryNode({ query, depth }: { query: SavedQuery; depth: number }) {
+  const qc = useQueryClient();
+  const open = () => useTabs.getState().openSavedQuery(query);
+  const items: MenuItem[] = [
+    { label: "Open Query", onSelect: open },
+    { label: "Rename Query…", onSelect: () => void renameSavedQuery(query, qc) },
+    "separator",
+    { label: "Delete Query…", danger: true, onSelect: () => void deleteSavedQuery(query, qc) },
+  ];
+  return (
+    <Menu items={items}>
+      <div>
+        <Row
+          nodeKey={treeNodeKey.savedQuery(query.id)}
+          depth={depth}
+          expandable={false}
+          icon={<FileCode2 size={15} className="tab-glyph query" />}
+          label={query.name}
+          onDoubleClick={open}
+        />
+      </div>
+    </Menu>
   );
 }

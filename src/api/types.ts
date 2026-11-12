@@ -161,6 +161,9 @@ export type TableDesign = {
 };
 
 export type HistoryEntry = { connectionId: string; sql: string; ok: boolean; durationMs: number; at: number };
+/** A named script kept in the app data directory for one connection and, optionally, its database. */
+export type SavedQuery = { id: string; connectionId: string; database: string | null; name: string; sql: string; updatedAt: number };
+export type SaveQueryRequest = { id: string | null; connectionId: string; database: string | null; name: string; sql: string };
 
 export type TextEncoding = "utf8" | "utf8Bom" | "windows1252";
 export type CsvOptions = { delimiter: string; quote: string; header: boolean; encoding: TextEncoding; nullText: string };
