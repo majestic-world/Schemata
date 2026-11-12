@@ -576,6 +576,10 @@ select.cell-input { padding: 0 4px; }
 .settings-about p { margin: 4px 0 0; user-select: text; }
 .settings-about .grow { flex: 1; min-width: 0; }
 .settings-about .btn { align-self: flex-start; }
+.settings-data { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+.settings-data h2 { margin: 0; font-size: var(--fs); font-weight: 600; }
+.settings-data p { margin: 4px 0 0; }
+.settings-data .btn { flex: none; }
 .licenses-dialog .dialog-body { display: flex; padding: 12px; }
 .licenses-text { flex: 1; height: min(60vh, 560px); margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; outline: none; }
 .review-name { margin-bottom: 10px; }

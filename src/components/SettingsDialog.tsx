@@ -39,13 +39,17 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             </span>
           </div>
           <p className="muted">© 2026 Majestic World · MIT License</p>
-          <p>
-            <button className="link-btn" onClick={() => api.openAppDataDirectory().catch((e) => notifyError("Could not open app data folder", e))}>
-              <FolderOpen size={13} aria-hidden />Open app data folder
-            </button>
-          </p>
         </div>
         <button className="btn sm" onClick={() => setLicensesOpen(true)}>Licenses…</button>
+      </section>
+      <section className="settings-data" aria-labelledby="settings-data-title">
+        <div className="grow">
+          <h2 id="settings-data-title">App data</h2>
+          <p className="hint">Connections, query history and app settings.</p>
+        </div>
+        <button className="btn sm" title="Open app data folder" onClick={() => api.openAppDataDirectory().catch((e) => notifyError("Could not open app data folder", e))}>
+          <FolderOpen size={14} aria-hidden />Open folder
+        </button>
       </section>
       <LicensesDialog open={licensesOpen} onClose={() => setLicensesOpen(false)} />
     </Dialog>
