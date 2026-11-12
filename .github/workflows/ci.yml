@@ -79,8 +79,9 @@ jobs:
           releaseDraft: true
           # Tags such as v1.0.0-rc.1 are published as pre-releases.
           prerelease: ${{ contains(github.ref_name, '-') }}
-          # MSI rejects non-numeric pre-release versions (1.0.0-rc.1); Windows ships the NSIS setup only, like `make`.
-          args: ${{ runner.os == 'Windows' && '--bundles nsis' || '' }}
+          # Pre-release versions (1.0.0-rc.1) break two formats: MSI needs numeric pre-release identifiers and RPM
+          # rejects '-'. Windows ships the NSIS setup only, like `make`; Linux the .deb and AppImage it uploads.
+          args: ${{ runner.os == 'Windows' && '--bundles nsis' || runner.os == 'Linux' && '--bundles deb,appimage' || '' }}
       # After the bundle, so the frontend dist that tauri::generate_context! embeds exists.
       - name: Clippy (workspace)
         if: runner.os == 'Windows'

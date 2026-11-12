@@ -23,7 +23,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 
 - Object-list row counts are estimates from `information_schema` on MySQL/MariaDB and exact counts on SQLite. On MySQL 8+, list and table-info reads disable the session's `information_schema_stats_expiry` cache on the acquired connection, so refresh reads current engine statistics instead of values cached for up to a day. Counts remain estimates, avoiding full-table scans.
 - The application version is defined only in the root `Cargo.toml` (`workspace.package.version`), inherited by `src-tauri/Cargo.toml`. Tauri's config omits `version` to inherit it from Cargo; Settings reads it with `getVersion()`. The cross-platform macOS packager reads Cargo metadata exported by its build stage instead of maintaining a separate version.
-- Release candidates use SemVer pre-release versions (`1.0.0-rc.1`). MSI only accepts numeric pre-release identifiers, so Windows ships the NSIS setup only (`make` and CI); CI publishes `v*-*` tags as GitHub pre-releases.
+- Release candidates use SemVer pre-release versions (`1.0.0-rc.1`). MSI only accepts numeric pre-release identifiers and RPM rejects `-` in the version, so Windows ships the NSIS setup only (`make` and CI) and Linux CI bundles `.deb` and AppImage only; CI publishes `v*-*` tags as GitHub pre-releases.
 
 ## Row editing
 
