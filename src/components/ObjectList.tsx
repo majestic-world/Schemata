@@ -14,6 +14,7 @@ import { dropObjects } from "../lib/objectActions";
 import { useTabs } from "../store/tabs";
 import { openTransfer } from "../store/transfer";
 import { Menu, type MenuItem } from "./Menu";
+import { createTypeahead } from "../lib/typeahead";
 
 type SortKey = "name" | "rows" | "modified" | "comment";
 
@@ -50,6 +51,7 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   const search = useWorkspace((s) => s.search.trim().toLowerCase());
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
   const tableRef = useRef<HTMLTableElement>(null);
+  const [typeahead] = useState(createTypeahead);
   const connectionId = selection?.connectionId;
   const database = selection?.database;
   const objects = useQuery({
@@ -128,6 +130,15 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
           } else if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && selectedObjects.length > 0) {
             e.preventDefault();
             if (!e.repeat) void dropObjects({ connectionId, database }, selectedObjects, qc);
+          } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.nativeEvent.isComposing) {
+            const current = rows.findIndex((o) => o.name === selection?.object?.name);
+            const index = typeahead(e.key, e.timeStamp, rows.map((o) => o.name), current);
+            if (index === undefined) return;
+            e.preventDefault();
+            if (index < 0) return;
+            const { name, kind } = rows[index];
+            select({ connectionId, database, object: { name, kind } });
+            tableRef.current?.querySelector(`tr[data-object="${CSS.escape(name)}"]`)?.scrollIntoView({ block: "nearest" });
           }
         }} onClick={(e) => {
           if (selection?.object && e.target instanceof Element && e.currentTarget.contains(e.target) && !e.target.closest("tbody tr")) {
