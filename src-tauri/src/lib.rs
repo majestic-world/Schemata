@@ -112,6 +112,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::double_click_interval,
+            commands::set_window_theme,
             commands::list_connections,
             commands::save_connection,
             commands::duplicate_connection,

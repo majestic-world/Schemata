@@ -33,6 +33,12 @@ pub fn double_click_interval() -> u32 {
     }
 }
 
+/// Matches the window frame border to the UI theme (Windows 11; a no-op elsewhere).
+#[tauri::command]
+pub fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> CmdResult<()> {
+    crate::window_chrome::set_border(&window, dark).map_err(|e| AppError::io(e.to_string()))
+}
+
 #[tauri::command]
 pub fn list_connections(sessions: State<'_, Sessions>) -> Vec<ConnectionConfig> {
     sessions.store().list()
