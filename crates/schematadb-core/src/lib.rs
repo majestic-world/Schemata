@@ -33,9 +33,9 @@ pub use splitter::{Splitter, split_statements};
 pub use sql::is_read_only_query;
 pub use store::{ConnectionConfig, ConnectionStore, SaveOutcome};
 pub use transfer::{
-    BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, DumpOptions, DumpReport, DumpScript,
+    BATCH, CancellationToken, ColumnMapping, CsvImport, CsvOptions, CsvPreview, CsvReadOptions, DumpObject, DumpOptions, DumpReport, DumpScript,
     ExportFormat, ExportReport, ExportSource, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, Progress, ProgressFn,
     RowFailure, RowStream, ScriptRunReport, SqlExportOptions, SqlFileScan, StatementFailure, StreamItem, TextEncoding, dump_database,
-    export, import_csv, preview_csv, read_sql_text, run_sql_file, scan_sql_file, write_text_atomic,
+    dump_tables, export, import_csv, preview_csv, read_sql_text, run_sql_file, scan_sql_file, write_text_atomic,
 };
 pub use value::{CellValue, Value};

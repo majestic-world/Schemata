@@ -179,9 +179,10 @@ impl<W: Write> Write for Encoded<W> {
 }
 
 /// Output written to a uniquely named temporary file next to the destination and moved into place only on
-/// success, so a failed or cancelled export never destroys an existing file. Dropping it removes the file.
+/// success, so a failed or cancelled export never destroys an existing file. Dropping it removes the file. It holds
+/// no open handle, so a per-table dump can keep one for every table until all are written.
 struct PendingFile {
-    tmp: tempfile::NamedTempFile,
+    tmp: tempfile::TempPath,
     path: std::path::PathBuf,
 }
 
@@ -191,7 +192,7 @@ impl PendingFile {
         let prefix = format!(".{}.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
         let tmp = tempfile::Builder::new().prefix(&prefix).suffix(".partial").tempfile_in(dir)?;
         let file = tmp.reopen()?;
-        Ok((PendingFile { tmp, path: path.to_owned() }, std::io::BufWriter::new(file)))
+        Ok((PendingFile { tmp: tmp.into_temp_path(), path: path.to_owned() }, std::io::BufWriter::new(file)))
     }
 
     fn commit(self) -> Result<()> {
@@ -1052,6 +1053,13 @@ pub struct DumpReport {
     pub rows: u64,
 }
 
+/// A complete SQL chunk of a dump. `table` names the table it belongs to (its indexes, triggers and autoincrement
+/// counter), so a per-table dump writes it into that table's file.
+pub struct DumpObject {
+    pub sql: String,
+    pub table: Option<String>,
+}
+
 /// Engine-specific parts of a dump, each item a complete SQL chunk (statement terminators included).
 pub struct DumpScript {
     /// Session setup, written first.
@@ -1059,9 +1067,9 @@ pub struct DumpScript {
     /// Tables in a creation-safe order with their `DROP ...; CREATE ...;` text.
     pub tables: Vec<(String, String)>,
     /// Statements that depend on the data being present (e.g. SQLite's autoincrement counters).
-    pub data_tail: Vec<String>,
+    pub data_tail: Vec<DumpObject>,
     /// Indexes, views and triggers, in dependency order.
-    pub objects: Vec<String>,
+    pub objects: Vec<DumpObject>,
     pub epilogue: Vec<String>,
 }
 
@@ -1080,6 +1088,13 @@ pub(crate) async fn open_read_session(driver: &dyn Driver, key: &str, db: &str, 
     }
 }
 
+/// Where a dump goes: one file, or a folder that gets one file per table.
+#[derive(Clone, Copy)]
+enum DumpTarget<'a> {
+    File(&'a Path),
+    Folder(&'a Path),
+}
+
 /// Writes a `.sql` dump of `db` that the engine's own CLI (or [`run_sql_file`]) can restore. On MySQL/MariaDB every
 /// table is read in one session, inside one consistent snapshot and with TIMESTAMPs in UTC (the dump's prologue sets
 /// `time_zone = '+00:00'` to match).
@@ -1091,16 +1106,42 @@ pub async fn dump_database(
     progress: ProgressFn,
     cancel: CancellationToken,
 ) -> Result<DumpReport> {
+    dump(driver, db, DumpTarget::File(path), options, progress, cancel).await
+}
+
+/// Writes one restorable `.sql` file per table of `db` into `dir`, named after the table:
+/// its `DROP`/`CREATE`, rows, indexes and triggers. Views, routines and events are left out. Tables are read as in
+/// [`dump_database`], and files replace same-named ones only after every table is written, so a failed or cancelled
+/// dump leaves the folder as it was.
+pub async fn dump_tables(
+    driver: &dyn Driver,
+    db: &str,
+    dir: &Path,
+    options: &DumpOptions,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<DumpReport> {
+    dump(driver, db, DumpTarget::Folder(dir), options, progress, cancel).await
+}
+
+async fn dump(
+    driver: &dyn Driver,
+    db: &str,
+    target: DumpTarget<'_>,
+    options: &DumpOptions,
+    progress: ProgressFn,
+    cancel: CancellationToken,
+) -> Result<DumpReport> {
     if !options.structure && !options.data {
         return Err(AppError::validation("Choose structure, data or both"));
     }
     if driver.engine() == Engine::Sqlite || !options.data {
-        return write_dump(driver, db, path, options, None, progress, cancel).await;
+        return write_dump(driver, db, target, options, None, progress, cancel).await;
     }
     let session = format!("schemata-dump-{}", uuid::Uuid::new_v4());
     let dumped = async {
         open_read_session(driver, &session, db, true).await?;
-        write_dump(driver, db, path, options, Some(&session), progress, cancel).await
+        write_dump(driver, db, target, options, Some(&session), progress, cancel).await
     }
     .await;
     // Ends the snapshot's transaction, also after an error or a cancel.
@@ -1111,7 +1152,7 @@ pub async fn dump_database(
 async fn write_dump(
     driver: &dyn Driver,
     db: &str,
-    path: &Path,
+    target: DumpTarget<'_>,
     options: &DumpOptions,
     session: Option<&str>,
     progress: ProgressFn,
@@ -1125,69 +1166,159 @@ async fn write_dump(
             total += driver.count_rows(db, table, &[]).await?;
         }
     }
-    let (pending, mut out) = PendingFile::create(path)?;
-    writeln!(out, "-- Schemata dump of {db} ({})\n", driver.server_version())?;
-    for s in &script.prologue {
-        writeln!(out, "{s}")?;
-    }
-    let mut done = 0u64;
-    progress(Progress { done, total: Some(total) });
-    for (table, create) in &script.tables {
+    let mut rows = RowWriter { driver, db, session, cancel: &cancel, progress: &progress, done: 0, total };
+    progress(Progress { done: 0, total: Some(total) });
+    let open = |path: &Path, title: &str| -> Result<(PendingFile, std::io::BufWriter<std::fs::File>)> {
+        let (pending, mut out) = PendingFile::create(path)?;
+        writeln!(out, "-- Schemata dump of {title} ({})\n", driver.server_version())?;
+        for s in &script.prologue {
+            writeln!(out, "{s}")?;
+        }
+        Ok((pending, out))
+    };
+    let close = |mut out: std::io::BufWriter<std::fs::File>| -> Result<()> {
         writeln!(out)?;
-        if options.structure {
-            writeln!(out, "{create}")?;
+        for s in &script.epilogue {
+            writeln!(out, "{s}")?;
         }
-        if !options.data {
-            continue;
+        drop(out.into_inner().map_err(|e| AppError::io(e.to_string()))?);
+        Ok(())
+    };
+    let files = match target {
+        DumpTarget::File(path) => {
+            let (pending, mut out) = open(path, db)?;
+            for (table, create) in &script.tables {
+                writeln!(out)?;
+                if options.structure {
+                    writeln!(out, "{create}")?;
+                }
+                if options.data {
+                    rows.write(&mut out, table).await?;
+                }
+            }
+            if options.data {
+                for s in &script.data_tail {
+                    writeln!(out, "{}", s.sql)?;
+                }
+            }
+            if options.structure {
+                writeln!(out)?;
+                for s in &script.objects {
+                    writeln!(out, "{}", s.sql)?;
+                }
+            }
+            close(out)?;
+            vec![pending]
         }
-        let info = driver.table_info(db, table).await?;
-        let sql = select_all(engine, db, &info);
-        let mut stream = match session {
-            Some(session) => driver.stream_query_in_session(session, Some(db), &sql, BATCH).await?,
-            None => driver.stream_query(Some(db), &sql, BATCH).await?,
+        DumpTarget::Folder(dir) => {
+            let names = table_file_names(script.tables.iter().map(|(table, _)| table.as_str()));
+            let mut files = Vec::with_capacity(script.tables.len());
+            for ((table, create), name) in script.tables.iter().zip(names) {
+                // SQLite matches identifiers case-insensitively: an index may name its table in another case.
+                let owned = |o: &&DumpObject| {
+                    o.table.as_deref().is_some_and(|t| if engine == Engine::Sqlite { t.eq_ignore_ascii_case(table) } else { t == table })
+                };
+                let (pending, mut out) = open(&dir.join(name), &format!("{db}.{table}"))?;
+                writeln!(out)?;
+                if options.structure {
+                    writeln!(out, "{create}")?;
+                }
+                if options.data {
+                    rows.write(&mut out, table).await?;
+                    for s in script.data_tail.iter().filter(owned) {
+                        writeln!(out, "{}", s.sql)?;
+                    }
+                }
+                if options.structure {
+                    for s in script.objects.iter().filter(owned) {
+                        writeln!(out, "\n{}", s.sql)?;
+                    }
+                }
+                close(out)?;
+                files.push(pending);
+            }
+            files
+        }
+    };
+    if cancel.is_cancelled() {
+        return Err(AppError::cancelled());
+    }
+    for file in files {
+        file.commit()?;
+    }
+    Ok(DumpReport { tables: script.tables.len() as u64, rows: rows.done })
+}
+
+/// Streams tables' rows into a dump as INSERT statements, counting them for progress.
+struct RowWriter<'a> {
+    driver: &'a dyn Driver,
+    db: &'a str,
+    session: Option<&'a str>,
+    cancel: &'a CancellationToken,
+    progress: &'a ProgressFn,
+    done: u64,
+    total: u64,
+}
+
+impl RowWriter<'_> {
+    async fn write(&mut self, out: &mut impl Write, table: &str) -> Result<()> {
+        let engine = self.driver.engine();
+        let info = self.driver.table_info(self.db, table).await?;
+        let sql = select_all(engine, self.db, &info);
+        let mut stream = match self.session {
+            Some(session) => self.driver.stream_query_in_session(session, Some(self.db), &sql, BATCH).await?,
+            None => self.driver.stream_query(Some(self.db), &sql, BATCH).await?,
         };
         let mut columns = Vec::new();
         loop {
             let item = tokio::select! {
-                _ = cancel.cancelled() => return Err(AppError::cancelled()),
+                _ = self.cancel.cancelled() => return Err(AppError::cancelled()),
                 item = stream.recv() => item,
             };
             match item {
-                None => break,
+                None => return Ok(()),
                 Some(Err(e)) => return Err(e),
                 Some(Ok(StreamItem::Columns(mut c))) => {
                     hide_generated(&mut c, &info);
                     columns = c;
                 }
                 Some(Ok(StreamItem::Rows(rows))) => {
-                    insert_statements(&mut out, engine, table, &columns, &rows)?;
-                    done += rows.len() as u64;
-                    progress(Progress { done, total: Some(total) });
+                    insert_statements(out, engine, table, &columns, &rows)?;
+                    self.done += rows.len() as u64;
+                    (self.progress)(Progress { done: self.done, total: Some(self.total) });
                 }
             }
         }
     }
-    if options.data {
-        for s in &script.data_tail {
-            writeln!(out, "{s}")?;
-        }
-    }
-    if options.structure {
-        writeln!(out)?;
-        for s in &script.objects {
-            writeln!(out, "{s}")?;
-        }
-    }
-    writeln!(out)?;
-    for s in &script.epilogue {
-        writeln!(out, "{s}")?;
-    }
-    drop(out.into_inner().map_err(|e| AppError::io(e.to_string()))?);
-    if cancel.is_cancelled() {
-        return Err(AppError::cancelled());
-    }
-    pending.commit()?;
-    Ok(DumpReport { tables: script.tables.len() as u64, rows: done })
+}
+
+/// Windows device names, which no file may use as its name (with or without an extension).
+const RESERVED_FILE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
+    "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// `<table>.sql` file names valid on every OS: characters Windows forbids become `_`, trailing dots and spaces and
+/// device names (`CON`, `NUL`, …) get a `_` suffix, and names equal ignoring case (distinct tables on a
+/// case-sensitive server, one file on Windows and macOS) are numbered `name (2).sql`.
+pub(crate) fn table_file_names<'a>(tables: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut used = std::collections::HashSet::new();
+    tables
+        .map(|table| {
+            let mut stem: String = table.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
+            let base = stem.split('.').next().unwrap_or_default().to_ascii_uppercase();
+            if stem.is_empty() || stem.ends_with(['.', ' ']) || RESERVED_FILE_NAMES.contains(&base.trim_end()) {
+                stem.push('_');
+            }
+            let mut name = format!("{stem}.sql");
+            let mut n = 2;
+            while !used.insert(name.to_lowercase()) {
+                name = format!("{stem} ({n}).sql");
+                n += 1;
+            }
+            name
+        })
+        .collect()
 }
 
 /// Orders views so that each comes after the views its definition mentions.
@@ -1201,4 +1332,15 @@ pub(crate) fn order_views(mut views: Vec<(String, String)>, mention: impl Fn(&st
         ordered.push(views.remove(ready));
     }
     ordered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table_file_names;
+
+    #[test]
+    fn table_file_names_are_valid_and_unique_on_every_os() {
+        let names = table_file_names(["orders", "Orders", "a/b:c?", "con", "nul.log", "dots..", "", "orders"].into_iter());
+        assert_eq!(names, ["orders.sql", "Orders (2).sql", "a_b_c_.sql", "con_.sql", "nul.log_.sql", "dots.._.sql", "_.sql", "orders (3).sql"]);
+    }
 }

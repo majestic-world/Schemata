@@ -4,7 +4,7 @@ Desktop database client for MySQL, MariaDB and SQLite, inspired by Navicat. Wind
 
 - Saved connections (passwords in the OS credential store), schema tree, object list and inspector
 - Data grid with editing, table designer with DDL preview, SQL editor
-- CSV/JSON/SQL export, CSV import, `.sql` file execution, database backup/restore
+- CSV/JSON/SQL export, CSV import, `.sql` file execution, database backup/restore (one file, or one file per table)
 - Copy tables (structure and data) between databases with Ctrl+C / Ctrl+V in the tree
 - Realistic test data generation per column (names, emails, addresses, lorem ipsum, dates, foreign keys…)
 - Light and Navicat-inspired dark themes, switched in **Settings** (saved and restored on startup)

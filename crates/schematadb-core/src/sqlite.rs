@@ -1,7 +1,7 @@
 use crate::design::sqlite::{FK_OFF, FK_ON};
 use crate::model::derive_identity;
 use crate::transfer::{
-    DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
+    DumpObject, DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
 };
 use crate::{
     AppError, CellValue, ChangeError, ColumnInfo, ColumnMeta, CreateDatabase, DatabaseInfo, Driver, Engine, ErrorKind, Filter,
@@ -996,28 +996,27 @@ impl Driver for SqliteDriver {
             let schema = quote_ident(&db);
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT type, name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND substr(name, 1, 7) <> 'sqlite_' ORDER BY rowid"
+                    "SELECT type, name, tbl_name, sql FROM {schema}.sqlite_schema WHERE sql IS NOT NULL AND substr(name, 1, 7) <> 'sqlite_' ORDER BY rowid"
                 ))
                 .map_err(map_err)?;
-            let entries = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+            let entries = collect(&mut stmt, [], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            })?;
             let mut tables = Vec::new();
             let mut objects = Vec::new();
-            for (kind, name, sql) in entries {
-                if kind == "table" {
-                    tables.push((
+            for (kind, name, owner, sql) in entries {
+                match kind.as_str() {
+                    "table" => tables.push((
                         name.clone(),
                         format!(
                             "DROP TABLE IF EXISTS {};
 {sql};",
                             quote_ident(&name)
                         ),
-                    ));
-                } else {
-                    objects.push(if kind == "view" {
-                        format!("DROP VIEW IF EXISTS {};\n{sql};", quote_ident(&name))
-                    } else {
-                        format!("{sql};")
-                    });
+                    )),
+                    "view" => objects.push(DumpObject { sql: format!("DROP VIEW IF EXISTS {};\n{sql};", quote_ident(&name)), table: None }),
+                    // Indexes and triggers belong to the table they are defined on.
+                    _ => objects.push(DumpObject { sql: format!("{sql};"), table: Some(owner) }),
                 }
             }
             let has_sequence: bool = c
@@ -1030,9 +1029,13 @@ impl Driver for SqliteDriver {
             if has_sequence {
                 let mut stmt = c.prepare(&format!("SELECT name, seq FROM {schema}.sqlite_sequence")).map_err(map_err)?;
                 let seqs = collect(&mut stmt, [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-                data_tail.push("DELETE FROM sqlite_sequence;".to_owned());
+                // Per table, so restoring some tables never resets the counters of the others.
                 for (name, seq) in seqs {
-                    data_tail.push(format!("INSERT INTO sqlite_sequence (name, seq) VALUES ('{}', {seq});", name.replace('\'', "''")));
+                    let literal = name.replace('\'', "''");
+                    data_tail.push(DumpObject {
+                        sql: format!("DELETE FROM sqlite_sequence WHERE name = '{literal}';\nINSERT INTO sqlite_sequence (name, seq) VALUES ('{literal}', {seq});"),
+                        table: Some(name),
+                    });
                 }
             }
             Ok(DumpScript {

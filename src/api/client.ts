@@ -102,8 +102,8 @@ export const api = {
     call<ScriptRunReport>("run_sql_file", { id, db, path, encoding, stopOnError, operationId }),
   /** Checks that a `.sql` file decodes in `encoding` and lists the databases it switches to or creates. */
   scanSqlFile: (path: string, encoding: TextEncoding, engine: Engine) => call<SqlFileScan>("scan_sql_file", { path, encoding, engine }),
-  backupDatabase: (id: string, db: string, path: string, options: { structure: boolean; data: boolean }, operationId: string) =>
-    call<{ tables: number; rows: number }>("backup_database", { id, db, path, options, operationId }),
+  backupDatabase: (id: string, db: string, path: string, perTable: boolean, options: { structure: boolean; data: boolean }, operationId: string) =>
+    call<{ tables: number; rows: number }>("backup_database", { id, db, path, perTable, options, operationId }),
   copyTable: (sourceId: string, sourceDb: string, table: string, targetId: string, target: CopyTableTarget, operationId: string) =>
     call<{ rows: number }>("copy_table", { sourceId, sourceDb, table, targetId, target, operationId }),
   suggestGenerators: (id: string, db: string, table: string) => call<ColumnGenerator[]>("suggest_generators", { id, db, table }),

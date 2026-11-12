@@ -481,12 +481,20 @@ function BackupDialog({ req }: { req: Extract<TransferRequest, { kind: "backup" 
   const close = () => useTransfer.getState().open(null);
   const [structure, setStructure] = useState(true);
   const [data, setData] = useState(req.data);
+  const [perTable, setPerTable] = useState(req.perTable);
   const op = useOperation<Awaited<ReturnType<typeof api.backupDatabase>>>();
   const start = async () => {
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const path = await saveDialog({ defaultPath: `${req.database}-${stamp}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
-    if (typeof path !== "string") return;
-    await op.run((id) => api.backupDatabase(req.connectionId, req.database, path, { structure, data }, id));
+    let path: string | null;
+    if (perTable) {
+      const dir = await openDialog({ directory: true, multiple: false, title: "Folder for the table files" });
+      path = typeof dir === "string" ? dir : null;
+    } else {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const file = await saveDialog({ defaultPath: `${req.database}-${stamp}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
+      path = typeof file === "string" ? file : null;
+    }
+    if (path === null) return;
+    await op.run((id) => api.backupDatabase(req.connectionId, req.database, path, perTable, { structure, data }, id));
   };
   return (
     <Dialog
@@ -506,7 +514,12 @@ function BackupDialog({ req }: { req: Extract<TransferRequest, { kind: "backup" 
     >
       {op.phase.state === "form" && (
         <div className="form">
-          <p className="dialog-text">Writes a .sql file with tables, views, indexes, foreign keys and triggers that can be restored here or with the database's own tools.</p>
+          {perTable ? (
+            <p className="dialog-text">Writes one .sql file per table to a folder, named after the table, with its structure, rows, indexes and triggers. Files with the same name are replaced. Views, routines and events are not included.</p>
+          ) : (
+            <p className="dialog-text">Writes a .sql file with tables, views, indexes, foreign keys and triggers that can be restored here or with the database's own tools.</p>
+          )}
+          <label className="check"><input type="checkbox" checked={perTable} onChange={(e) => setPerTable(e.target.checked)} />One file per table</label>
           <label className="check"><input type="checkbox" checked={structure} onChange={(e) => setStructure(e.target.checked)} />Structure (CREATE statements)</label>
           <label className="check"><input type="checkbox" checked={data} onChange={(e) => setData(e.target.checked)} />Data (INSERT statements)</label>
         </div>

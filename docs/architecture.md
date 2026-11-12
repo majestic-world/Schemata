@@ -61,6 +61,7 @@ Invariants the core and UI rely on. The stack and module split are in [ADR 0001]
 ## Dumps
 
 - Backups are plain `.sql` files compatible with the engine's own CLI tools. MySQL/MariaDB: foreign-key checks off during load, batched multi-row INSERTs, views after tables, triggers last; every table is read on one session inside one `START TRANSACTION WITH CONSISTENT SNAPSHOT`, with TIMESTAMPs in UTC, and that session is closed afterwards even on error or cancel. SQLite: schema SQL from `sqlite_schema` plus INSERTs in one transaction.
+- "One file per table" in the backup dialog (also Objects ▸ … ▸ Export Each Table to SQL…) writes `<table>.sql` per table into a chosen folder, read the same way (one snapshot). Each file restores on its own: prologue, `DROP`/`CREATE`, rows, then the table's own indexes, triggers and SQLite autoincrement counter; views, routines and events are left out. File names replace characters Windows forbids, suffix device names (`CON`, `NUL`, …) and number names equal ignoring case. Same-named files are replaced only after every table is written. SQLite dumps restore autoincrement counters per table (`DELETE … WHERE name = …` then `INSERT`), never clearing other tables' counters.
 - Restoring over an existing database requires typing its name. The file is checked first; `USE` and `CREATE DATABASE` statements are listed in the confirmation, since statements after them run in that database. "Delete existing rows first" in data generation confirms, naming every table whose foreign keys reference the target.
 
 ## Startup visibility

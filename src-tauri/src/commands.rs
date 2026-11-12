@@ -406,6 +406,7 @@ pub async fn scan_sql_file(path: PathBuf, encoding: TextEncoding, engine: Engine
     schematadb_core::scan_sql_file(&path, encoding, engine).await
 }
 
+/// Backs up `db` to the file `path`, or with `per_table` to one file per table in the folder `path`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn backup_database(
@@ -415,12 +416,17 @@ pub async fn backup_database(
     id: String,
     db: String,
     path: PathBuf,
+    per_table: bool,
     options: DumpOptions,
     operation_id: String,
 ) -> CmdResult<DumpReport> {
     let driver = sessions.driver(&id).await?;
     let (progress, cancel) = begin(&app, &ops, &operation_id);
-    let result = schematadb_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await;
+    let result = if per_table {
+        schematadb_core::dump_tables(driver.as_ref(), &db, &path, &options, progress, cancel).await
+    } else {
+        schematadb_core::dump_database(driver.as_ref(), &db, &path, &options, progress, cancel).await
+    };
     end(&ops, &operation_id);
     result
 }

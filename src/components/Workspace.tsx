@@ -141,18 +141,19 @@ function ObjectsView() {
           <button className="obj-btn" disabled={!selection?.database || selectedObjects.length === 0} onClick={() => selection?.database && void dropObjects({ connectionId: selection.connectionId, database: selection.database }, selectedObjects, qc)}><Trash2 size={15} className="ob-delete" />{multiple ? `Delete ${selectedObjects.length} Objects` : `Delete ${obj?.kind === "view" ? "View" : "Table"}`}</button>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <button className="obj-btn" aria-label="More actions" disabled={!ref || multiple}><MoreHorizontal size={16} /></button>
+              <button className="obj-btn" aria-label="More actions" disabled={!selection?.database}><MoreHorizontal size={16} /></button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="menu" align="start">
-                <DropdownMenu.Item className="menu-item" disabled={!isTable} onSelect={() => ref && void renameTable(ref, qc)}>Rename Table… (F6)</DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" onSelect={() => ref && void copyCreateStatement(ref)}>Copy CREATE Statement</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!ref || multiple || !isTable} onSelect={() => ref && void renameTable(ref, qc)}>Rename Table… (F6)</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!ref || multiple} onSelect={() => ref && void copyCreateStatement(ref)}>Copy CREATE Statement</DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
-                <DropdownMenu.Item className="menu-item" onSelect={() => ref && openTransfer({ kind: "export", connectionId: ref.connectionId, database: ref.database, source: { kind: "table", table: ref.name }, label: ref.name })}>Export…</DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" disabled={!isTable} onSelect={() => ref && openTransfer({ kind: "import", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Import CSV…</DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" disabled={!isTable} onSelect={() => ref && openTransfer({ kind: "generate", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Generate Data…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!ref || multiple} onSelect={() => ref && openTransfer({ kind: "export", connectionId: ref.connectionId, database: ref.database, source: { kind: "table", table: ref.name }, label: ref.name })}>Export…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" onSelect={() => selection?.database && openTransfer({ kind: "backup", connectionId: selection.connectionId, database: selection.database, data: true, perTable: true })}>Export Each Table to SQL…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!ref || multiple || !isTable} onSelect={() => ref && openTransfer({ kind: "import", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Import CSV…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" disabled={!ref || multiple || !isTable} onSelect={() => ref && openTransfer({ kind: "generate", connectionId: ref.connectionId, database: ref.database, table: ref.name })}>Generate Data…</DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
-                <DropdownMenu.Item className="menu-item danger" disabled={!isTable} onSelect={() => ref && void truncateTable(ref, qc)}>Empty Table…</DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item danger" disabled={!ref || multiple || !isTable} onSelect={() => ref && void truncateTable(ref, qc)}>Empty Table…</DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>

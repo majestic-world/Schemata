@@ -274,7 +274,7 @@ function DatabaseNode({ connectionId, engine, database }: { connectionId: string
     { label: "New Query", onSelect: () => useTabs.getState().newQuery({ connectionId, database }) },
     { label: "New Table…", onSelect: () => useTabs.getState().newTable(connectionId, database) },
     { label: "Run SQL File…", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
-    { label: "Backup…", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: true }) },
+    { label: "Backup…", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: true, perTable: false }) },
     { label: "Restore Backup…", onSelect: () => openTransfer({ kind: "restore", connectionId, database }) },
     { label: "Refresh", onSelect: () => void qc.invalidateQueries({ queryKey: ["objects", connectionId, database] }) },
     { label: pasteLabel, disabled: !copied, onSelect: () => pasteTable({ connectionId, database }) },

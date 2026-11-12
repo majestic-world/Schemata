@@ -5,7 +5,7 @@ export type TransferRequest =
   | { kind: "export"; connectionId: string; database: string; source: ExportSource; label: string }
   | { kind: "import"; connectionId: string; database: string; table: string }
   | { kind: "runSql"; connectionId: string; database: string }
-  | { kind: "backup"; connectionId: string; database: string; data: boolean }
+  | { kind: "backup"; connectionId: string; database: string; data: boolean; perTable: boolean }
   | { kind: "restore"; connectionId: string; database: string | null }
   | { kind: "copyTable"; source: TableRef; target: { connectionId: string; database: string } }
   | { kind: "generate"; connectionId: string; database: string; table: string };

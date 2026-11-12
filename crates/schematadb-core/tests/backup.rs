@@ -3,7 +3,7 @@ mod common;
 use common::TestDb;
 use schematadb_core::{
     CancellationToken, CellValue, ConnectParams, Driver, DumpOptions, Engine, PageRequest, ProgressFn, SortSpec, TextEncoding, connect,
-    dump_database, run_sql_file,
+    dump_database, dump_tables, run_sql_file,
 };
 use std::sync::Arc;
 
@@ -111,6 +111,48 @@ async fn structure_only_dump_has_no_rows(t: TestDb) {
     }
 }
 scenario!(structure_only_dump_has_no_rows);
+
+/// One file per table: each restores on its own, in any order, with its rows, indexes, foreign keys, trigger and
+/// autoincrement counter; views stay out.
+async fn per_table_dump_restores_each_table(t: TestDb) {
+    seed(&t).await;
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("tables");
+    std::fs::create_dir(&out).unwrap();
+    let report =
+        dump_tables(t.driver.as_ref(), &t.db, &out, &DumpOptions { structure: true, data: true }, no_progress(), CancellationToken::new())
+            .await
+            .unwrap();
+    assert_eq!((report.tables, report.rows), (3, 6));
+    let mut files: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    files.sort();
+    assert_eq!(files, ["audit.sql", "customer.sql", "orders.sql"]);
+
+    let (target, db) = empty_target(&t, &dir).await;
+    for file in ["orders.sql", "customer.sql", "audit.sql"] {
+        let run = run_sql_file(target.as_ref(), &db, &out.join(file), TextEncoding::Utf8, true, no_progress(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(run.failed.is_empty(), "{file}: {:?}", run.failed);
+    }
+    let tables = |o: Vec<schematadb_core::ObjectInfo>| o.into_iter().map(|o| (o.name, o.kind)).collect::<Vec<_>>();
+    let source_tables = tables(t.driver.list_objects(&t.db).await.unwrap()).into_iter().filter(|(name, _)| !name.starts_with("big_")).collect::<Vec<_>>();
+    assert_eq!(tables(target.list_objects(&db).await.unwrap()), source_tables, "tables only, no views");
+    for table in ["customer", "orders"] {
+        let (a, b) = (t.driver.table_info(&t.db, table).await.unwrap(), target.table_info(&db, table).await.unwrap());
+        assert_eq!(a.columns, b.columns, "{table} columns");
+        assert_eq!(a.indexes, b.indexes, "{table} indexes");
+        assert_eq!(a.foreign_keys, b.foreign_keys, "{table} foreign keys");
+        assert_eq!(rows(t.driver.as_ref(), &t.db, table, "id").await, rows(target.as_ref(), &db, table, "id").await, "{table} rows");
+    }
+    target.execute_script(Some(&db), "INSERT INTO orders (customer_id, total) VALUES (2, 1.00)", 1, None).await.unwrap();
+    assert_eq!(rows(target.as_ref(), &db, "audit", "msg").await, vec![vec![CellValue::Text("order 4".into())]]);
+
+    if t.server.is_some() {
+        t.driver.execute_script(None, &format!("DROP DATABASE `{db}`"), 1, None).await.unwrap();
+    }
+}
+scenario!(per_table_dump_restores_each_table);
 
 #[tokio::test]
 async fn sqlite_backup_of_attached_database_reads_its_own_rows() {

@@ -104,8 +104,8 @@ export function ObjectList({ actions, onOpen }: { actions?: React.ReactNode; onO
   const backgroundItems: MenuItem[] = [
     { label: "New Table", onSelect: () => useTabs.getState().newTable(connectionId, database) },
     { label: "Execute Sql File", onSelect: () => openTransfer({ kind: "runSql", connectionId, database }) },
-    { label: "Dump Sql File", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: false }) },
-    { label: "Dump Sql With Data", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: true }) },
+    { label: "Dump Sql File", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: false, perTable: false }) },
+    { label: "Dump Sql With Data", onSelect: () => openTransfer({ kind: "backup", connectionId, database, data: true, perTable: false }) },
   ];
 
   return (

@@ -1,6 +1,6 @@
 use crate::model::derive_identity;
 use crate::transfer::{
-    DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
+    DumpObject, DumpScript, ImportBatch, ImportOptions, ImportReport, MAX_REPORTED_FAILURES, RowFailure, RowStream, ScriptRunReport, StreamItem,
 };
 use crate::{
     AppError, CellValue, ChangeError, CharsetInfo, ColumnInfo, ColumnMeta, ConnectParams, CreateDatabase, DatabaseInfo, Driver, Engine,
@@ -1110,8 +1110,9 @@ impl Driver for MySqlDriver {
             }
         }
         // Routines first: a view may call a stored function, while routine bodies are only checked when they run.
-        let mut objects_sql = self.dump_routines(db).await?;
-        objects_sql.extend(crate::transfer::order_views(views, quote_ident).into_iter().map(|(_, sql)| sql));
+        let unowned = |sql: String| DumpObject { sql, table: None };
+        let mut objects_sql: Vec<DumpObject> = self.dump_routines(db).await?.into_iter().map(unowned).collect();
+        objects_sql.extend(crate::transfer::order_views(views, quote_ident).into_iter().map(|(_, sql)| unowned(sql)));
         let triggers = sqlx::query(
             "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT \
              FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, ACTION_ORDER",
@@ -1128,16 +1129,17 @@ impl Driver for MySqlDriver {
                 text(r, 3)?.unwrap_or_default(),
                 text(r, 4)?.unwrap_or_default(),
             );
-            objects_sql.push(format!(
+            let sql = format!(
                 "DROP TRIGGER IF EXISTS {0};
 DELIMITER ;;
 CREATE TRIGGER {0} {timing} {event} ON {1} FOR EACH ROW {body};;
 DELIMITER ;",
                 quote_ident(&name),
                 quote_ident(&table)
-            ));
+            );
+            objects_sql.push(DumpObject { sql, table: Some(table) });
         }
-        objects_sql.extend(self.dump_events(db).await?);
+        objects_sql.extend(self.dump_events(db).await?.into_iter().map(unowned));
         Ok(DumpScript {
             // As mysqldump: values are written in UTC and restored as given (zero ids and dates included).
             prologue: vec![
