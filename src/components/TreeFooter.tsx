@@ -24,7 +24,6 @@ export function TreeFooter({ connections }: { connections: ConnectionConfig[] })
         <input
           placeholder="Search"
           aria-label="Search databases"
-          spellCheck={false}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.key === "Escape" && setSearch("")}

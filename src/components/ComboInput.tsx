@@ -61,7 +61,6 @@ export function ComboInput({ value, options, onChange, label, className = "cell-
     <>
       <input
         ref={input}
-        spellCheck={false}
         className={className}
         value={value}
         aria-label={label}

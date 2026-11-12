@@ -568,7 +568,6 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
                 }}
                 placeholder="new_table"
                 autoFocus
-                spellCheck={false}
                 aria-label="Table name"
               />
             </label>
