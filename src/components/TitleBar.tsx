@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIcon from "../assets/app-icon.svg";
+import { useAppVersion } from "../lib/useAppVersion";
 
 /** Hover time on the maximize button before the Windows 11 Snap Layouts flyout opens, as the native caption does. */
 const SNAP_HOVER_MS = 620;
@@ -16,6 +17,7 @@ const GLYPH = { minimize: "\uE921", maximize: "\uE922", restore: "\uE923", close
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
+  const version = useAppVersion();
   const snapTimer = useRef<number>(undefined);
 
   useEffect(() => {
@@ -32,7 +34,9 @@ export function TitleBar() {
   return (
     <div className={`titlebar${focused ? "" : " inactive"}`} data-tauri-drag-region>
       <img className="titlebar-icon" src={appIcon} alt="" draggable={false} />
-      <span className="titlebar-title">Schemata</span>
+      <span className="titlebar-title">
+        Schemata{version.data && <span className="titlebar-version"> v{version.data}</span>}
+      </span>
       <div className="titlebar-controls">
         <button className="caption-btn" tabIndex={-1} aria-label="Minimize" onClick={() => void win.minimize()}>
           {GLYPH.minimize}

@@ -1,15 +1,14 @@
 import { useState } from "react";
 import { Moon, Sun } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { getVersion } from "@tauri-apps/api/app";
 import appIcon from "../assets/app-icon.svg";
+import { useAppVersion } from "../lib/useAppVersion";
 import { useAppearance } from "../store/appearance";
 import { Dialog } from "./Dialog";
 import { LicensesDialog } from "./LicensesDialog";
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { theme, setTheme } = useAppearance();
-  const version = useQuery({ queryKey: ["app-version"], queryFn: getVersion, enabled: open, staleTime: Infinity });
+  const version = useAppVersion();
   const [licensesOpen, setLicensesOpen] = useState(false);
 
   return (
