@@ -130,6 +130,10 @@ describe("column edits keep the design consistent", () => {
     expect(names(moved.design)).toEqual(["a", "d", "b", "c", "e"]);
     expect(moved.selected).toEqual([2, 3]);
     expect(canMoveColumns([3, 4], 5, 1)).toBe(false);
+    // Unselected columns pushed aside by the move are reported at their new positions too.
+    moved = moveColumns({ ...five, columns: ["a", "b", "c", "d"].map(col) }, [2], -1);
+    expect(names(moved.design)).toEqual(["a", "c", "b", "d"]);
+    expect(moved.moved).toEqual([0, 2, 1, 3]);
     expect(canMoveColumns([], 5, 1)).toBe(false);
   });
 

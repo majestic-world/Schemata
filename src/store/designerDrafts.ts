@@ -72,10 +72,13 @@ export function removeColumns(design: TableDesign, indices: readonly number[]): 
 
 /**
  * Moves the selected columns one position up (`-1`) or down (`1`), keeping their order. A column already at the
- * edge, or blocked by a selected column that could not move, stays. Returns the selection's new positions.
+ * edge, or blocked by a selected column that could not move, stays. Returns the selection's new positions and
+ * `moved`, every column's new position by its old one (for positions kept outside the selection).
  */
-export function moveColumns(design: TableDesign, selected: readonly number[], delta: -1 | 1): { design: TableDesign; selected: number[] } {
+export function moveColumns(design: TableDesign, selected: readonly number[], delta: -1 | 1): { design: TableDesign; selected: number[]; moved: number[] } {
   const columns = [...design.columns];
+  /** Old position of the column now at each position. */
+  const origin = columns.map((_, i) => i);
   const order = [...new Set(selected)].filter((i) => i < columns.length).sort((a, b) => (a - b) * -delta);
   const taken = new Set<number>();
   for (const i of order) {
@@ -85,9 +88,12 @@ export function moveColumns(design: TableDesign, selected: readonly number[], de
       continue;
     }
     [columns[i], columns[j]] = [columns[j], columns[i]];
+    [origin[i], origin[j]] = [origin[j], origin[i]];
     taken.add(j);
   }
-  return { design: { ...design, columns }, selected: [...taken].sort((a, b) => a - b) };
+  const moved = origin.map(() => 0);
+  origin.forEach((old, now) => (moved[old] = now));
+  return { design: { ...design, columns }, selected: [...taken].sort((a, b) => a - b), moved };
 }
 
 /** Whether `moveColumns` would move any selected column. */

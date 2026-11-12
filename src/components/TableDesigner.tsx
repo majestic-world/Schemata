@@ -203,16 +203,19 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
     }
   };
   const moveSelected = (delta: -1 | 1) => {
-    const before = [...selectedColumns].sort((a, b) => a - b);
-    let after = before;
+    let next = picked;
     restructure((d) => {
-      const result = moveColumns(d, before, delta);
-      after = result.selected;
+      const result = moveColumns(d, selectedColumns, delta);
+      // The anchor follows its column, whether or not it is still selected.
+      next = { rows: result.selected, anchor: picked.anchor === null ? null : result.moved[picked.anchor] ?? null };
       return result.design;
     });
-    // Moving keeps the selection's order, so the anchor row is at the same rank among the moved rows.
-    const rank = picked.anchor === null ? -1 : before.indexOf(picked.anchor);
-    setPicked({ rows: after, anchor: rank < 0 ? picked.anchor : after[rank] });
+    setPicked(next);
+  };
+  /** Revert replaces the columns, so positions no longer name the selected columns. */
+  const revert = () => {
+    useDesignerDrafts.getState().revert(tabId);
+    setPicked({ rows: [], anchor: null });
   };
   const deleteSelected = () => {
     restructure((d) => removeColumns(d, selectedColumns));
@@ -339,7 +342,7 @@ export function TableDesigner({ tabId, connectionId, database, engine, table, on
           </>
         )}
         <div className="grow" />
-        {table && <button className="btn" disabled={!dirty || busy} onClick={() => useDesignerDrafts.getState().revert(tabId)}><Undo2 size={15} />Revert</button>}
+        {table && <button className="btn" disabled={!dirty || busy} onClick={revert}><Undo2 size={15} />Revert</button>}
         <button className="btn primary" disabled={busy || !dirty || (!!table && !design.name.trim())} onClick={() => void startReview()} title={`${MOD}+S`}><Save size={15} />{table ? "Save Changes" : "Create Table"}</button>
       </div>
       <div className="sheet-tabs" role="tablist">
