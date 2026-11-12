@@ -122,6 +122,12 @@ export function App() {
       const blurFocused = () => {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       };
+      // Select-all only where the app implements it (grid, object list) or inside text fields and editors; never
+      // the webview's select-all of the whole page.
+      if (key === "a") {
+        if (!(e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.closest("input, textarea")))) e.preventDefault();
+        return;
+      }
       if (key === "k") {
         e.preventDefault();
         document.getElementById("global-search")?.focus();
