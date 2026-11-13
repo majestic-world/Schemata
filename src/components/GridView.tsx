@@ -265,14 +265,16 @@ export function GridView(props: Props) {
             requestAnimationFrame(() => !scrollRef.current?.contains(document.activeElement) && scrollRef.current?.focus({ preventScroll: true }));
             return;
           }
-          const findKey = (e.key === "F3" && !e.ctrlKey && !e.metaKey && !e.altKey) || ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f");
+          const inEditor = e.target instanceof Element && !!e.target.closest("input, textarea, select, [contenteditable]");
+          // Not inside a cell editor: moving focus to the find field would blur it and save the edit in progress.
+          const findKey = !inEditor && ((e.key === "F3" && !e.ctrlKey && !e.metaKey && !e.altKey) || ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f"));
           if (findKey && props.findSlot && visible.length > 0) {
             e.preventDefault();
             if (e.key === "F3" && matches.length > 0) stepFind(e.shiftKey ? -1 : 1);
             else openFind();
             return;
           }
-          if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) {
+          if (inEditor) {
             // Closing the cell editor removes the focused input; give focus back so navigation continues. Modified
             // Enter keeps the editor open (Shift+Enter and Alt+Enter add a line break).
             if ((e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
@@ -280,7 +282,7 @@ export function GridView(props: Props) {
           }
           if (e.key === "Escape" && findOpen) {
             e.preventDefault();
-            setFindOpen(false);
+            closeFind();
             return;
           }
           if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
@@ -440,6 +442,8 @@ export function GridView(props: Props) {
               if (first !== undefined) revealColumn(first);
             }}
             onKeyDown={(e) => {
+              // Enter that confirms an IME composition must not step the match.
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter" || e.key === "F3") {
                 e.preventDefault();
                 stepFind(e.shiftKey ? -1 : 1);

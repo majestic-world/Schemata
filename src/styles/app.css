@@ -373,6 +373,8 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .grid-empty { position: absolute; inset: 60px 0 auto 0; }
 /* Find-column field: as minimal as the tree footer search, at the end of the grid's toolbar or footer. */
 .grid-find-slot { display: flex; margin-left: auto; }
+/* Empty while the field is closed; as a flex item it would still add a gap. */
+.grid-find-slot:empty { display: none; }
 .grid-find { display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 2px 0 10px; border-left: 1px solid var(--border-strong); color: var(--text-faint); }
 .grid-find:focus-within { color: var(--accent-text); }
 .grid-find input { width: 130px; height: 24px; padding: 0 2px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: var(--fs-sm); }
