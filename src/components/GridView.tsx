@@ -55,6 +55,22 @@ function widthFor(c: ColumnMeta): number {
   return Math.min(320, Math.max(140, c.name.length * 9 + 40));
 }
 
+/** Longest type label kept whole; longer ones (big ENUM/SET lists) are truncated rather than widening the column. */
+const MAX_TYPE_LABEL = 200;
+let measureCtx: CanvasRenderingContext2D | null = null;
+function textWidth(text: string, font: string): number {
+  measureCtx ??= document.createElement("canvas").getContext("2d");
+  if (!measureCtx) return 0;
+  measureCtx.font = font;
+  return Math.ceil(measureCtx.measureText(text).width);
+}
+/** Smallest header width that shows the full name and type: cell padding, name, sort arrow, gaps and type label. */
+function headerMinWidth(c: ColumnMeta, nameFont: string, typeFont: string): number {
+  const name = textWidth(c.name, nameFont);
+  const type = Math.min(MAX_TYPE_LABEL, textWidth(c.typeName, typeFont));
+  return 16 + name + 18 + 5 + type + 2;
+}
+
 export function GridView(props: Props) {
   const { columns: meta, rows, savedRowCount = rows.length, rowNumberOffset = 0 } = props;
   const [anchor, setAnchor] = useState<Pos | null>(null);
@@ -66,10 +82,16 @@ export function GridView(props: Props) {
   const visible = useMemo(() => meta.map((c, idx) => ({ c, idx })).filter((x) => !x.c.hidden), [meta]);
   const placeholderRow = rows.length === 0 && !!props.onAppendRow && visible.length > 0;
   const rowCount = placeholderRow ? 1 : rows.length;
-  const columns = useMemo<ColumnDef<CellValue[]>[]>(
-    () => visible.map(({ c, idx }) => ({ id: c.name, header: c.name, size: widthFor(c), accessorFn: (row) => row[idx], meta: c })),
-    [visible],
-  );
+  const columns = useMemo<ColumnDef<CellValue[]>[]>(() => {
+    // Fonts of `.th-name` (bold, body size) and `.th-type` (11px).
+    const body = getComputedStyle(document.body);
+    const nameFont = `600 ${body.fontSize} ${body.fontFamily}`;
+    const typeFont = `400 11px ${body.fontFamily}`;
+    return visible.map(({ c, idx }) => {
+      const minSize = headerMinWidth(c, nameFont, typeFont);
+      return { id: c.name, header: c.name, size: Math.max(widthFor(c), minSize), minSize, accessorFn: (row) => row[idx], meta: c };
+    });
+  }, [visible]);
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel(), columnResizeMode: "onChange", defaultColumn: { minSize: 60, maxSize: 900 } });
   const virtualizer = useVirtualizer({
     count: rows.length,

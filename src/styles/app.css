@@ -352,7 +352,8 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .grid-th.sortable:hover { background: var(--grid-header-hover); }
 .grid-th.found { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 -2px 0 var(--accent); }
 .grid-th.found .th-type { color: var(--accent-text); }
-.th-name { overflow: hidden; text-overflow: ellipsis; }
+/* Columns fit name plus type; only an over-long type label (big ENUM/SET) is truncated, never the name. */
+.th-name { flex: none; overflow: hidden; text-overflow: ellipsis; }
 .th-type { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; }
 .resizer:hover, .resizer.on { background: var(--accent); }
