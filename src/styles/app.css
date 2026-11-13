@@ -345,10 +345,13 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .filter-row .input { margin-left: 6px; }
 .filter-join { width: 46px; text-align: right; font-size: var(--fs-sm); }
 .filter-actions { display: flex; gap: 6px; padding-left: 52px; }
+.grid-host { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .grid { flex: 1; overflow: auto; position: relative; outline: none; min-height: 0; }
 .grid-header { position: sticky; top: 0; z-index: 2; display: flex; background: linear-gradient(var(--header-top), var(--grid-header-bottom)); border-bottom: 1px solid var(--border); }
 .grid-th { position: relative; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-right: 1px solid var(--border-soft); font-weight: 600; white-space: nowrap; overflow: hidden; flex: none; }
 .grid-th.sortable:hover { background: var(--grid-header-hover); }
+.grid-th.found { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 -2px 0 var(--accent); }
+.grid-th.found .th-type { color: var(--accent-text); }
 .th-name { overflow: hidden; text-overflow: ellipsis; }
 .th-type { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; }
@@ -363,10 +366,20 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .grid-cell.number { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .grid-cell.null { color: var(--text-faint); font-style: italic; font-size: 11.5px; }
 .grid-cell.bytes { color: var(--binary); font-family: var(--font-mono); font-size: 11.5px; }
+.grid-cell.found { box-shadow: inset 1px 0 0 var(--accent), inset -1px 0 0 var(--accent); }
 .grid-cell.selected { background: var(--cell-selection); box-shadow: inset 0 0 0 1px var(--accent); }
 /* Keep glyph overhang and fractional-pixel antialiasing inside the clipping box. */
 .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; padding-right: 2px; }
 .grid-empty { position: absolute; inset: 60px 0 auto 0; }
+.grid-find {
+  position: absolute; top: 34px; right: 18px; z-index: 5; display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 4px 0 10px;
+  color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.grid-find:focus-within { border-color: var(--accent); }
+.grid-find input { width: 180px; height: 100%; padding: 0 6px; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; }
+.grid-find-count { min-width: 64px; padding-right: 4px; text-align: right; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.grid-find-count.none { color: var(--danger); }
 .grid-row.row-new { background: var(--pending-insert); }
 .grid-row.row-deleted { background: var(--pending-delete); }
 .grid-row.row-deleted .cell-text { text-decoration: line-through; color: var(--text-muted); }

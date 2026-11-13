@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import type { CellValue, ColumnMeta, SortSpec } from "../api/types";
 import { displayCell, toTsv } from "../lib/cells";
 import { notify } from "../store/toasts";
@@ -175,170 +175,264 @@ export function GridView(props: Props) {
     else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth;
   };
 
+  // Find column (Ctrl+F / F3): scrolls to the matching column and highlights it; other columns stay visible. The
+  // query survives closing, so reopening selects it for a quick retype.
+  const [findOpen, setFindOpen] = useState(false);
+  const [find, setFind] = useState("");
+  const [findAt, setFindAt] = useState(0);
+  const findRef = useRef<HTMLInputElement>(null);
+  const matchesFor = (query: string): number[] => {
+    const needle = query.trim().toLowerCase();
+    return needle ? visible.flatMap((v, c) => (v.c.name.toLowerCase().includes(needle) ? [c] : [])) : [];
+  };
+  const matches = findOpen ? matchesFor(find) : [];
+  const foundAt = Math.min(findAt, matches.length - 1);
+  const found = matches.length > 0 ? matches[foundAt] : null;
+  /** Scrolls a column to the middle of the data area, right of the row numbers. */
+  const revealColumn = (c: number) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const left = 50 + headers.slice(0, c).reduce((s, h) => s + h.getSize(), 0);
+    el.scrollLeft = left + headers[c].getSize() / 2 - (50 + (el.clientWidth - 50) / 2);
+  };
+  const openFind = () => {
+    if (!findOpen) {
+      setFindOpen(true);
+      const m = matchesFor(find);
+      if (m.length > 0) revealColumn(m[Math.min(findAt, m.length - 1)]);
+    }
+    requestAnimationFrame(() => {
+      findRef.current?.focus();
+      findRef.current?.select();
+    });
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    scrollRef.current?.focus({ preventScroll: true });
+  };
+  const stepFind = (dir: 1 | -1) => {
+    if (matches.length === 0) return;
+    const at = (foundAt + dir + matches.length) % matches.length;
+    setFindAt(at);
+    revealColumn(matches[at]);
+  };
+
   return (
-    <div
-      className="grid"
-      ref={scrollRef}
-      tabIndex={0}
-      onKeyDown={(e) => {
-        // Tab moves to the next cell of the row, wrapping to the first (Shift+Tab: backwards), and opens it for
-        // editing; an open editor saves first. Cells that cannot be edited (binary) are only selected.
-        if (e.key === "Tab" && focus && visible.length > 0 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          const n = visible.length;
-          const next = { r: focus.r, c: (focus.c + (e.shiftKey ? n - 1 : 1)) % n };
-          setAnchor(next);
-          setFocus(next);
-          scrollIntoView(next);
-          props.onCellEdit?.(next.r, visible[next.c].c.name);
-          // A cell that cannot be edited opens no editor; keep the keyboard in the grid.
-          requestAnimationFrame(() => !scrollRef.current?.contains(document.activeElement) && scrollRef.current?.focus({ preventScroll: true }));
-          return;
-        }
-        if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) {
-          // Closing the cell editor removes the focused input; give focus back so navigation continues. Modified
-          // Enter keeps the editor open (Shift+Enter and Alt+Enter add a line break).
-          if ((e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
-          return;
-        }
-        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
-          e.preventDefault();
-          if (rows.length > 0 && visible.length > 0) {
-            setAnchor({ r: 0, c: 0 });
-            setFocus({ r: rows.length - 1, c: visible.length - 1 });
+    <div className="grid-host">
+      <div
+        className="grid"
+        ref={scrollRef}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          // Tab moves to the next cell of the row, wrapping to the first (Shift+Tab: backwards), and opens it for
+          // editing; an open editor saves first. Cells that cannot be edited (binary) are only selected.
+          if (e.key === "Tab" && focus && visible.length > 0 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            const n = visible.length;
+            const next = { r: focus.r, c: (focus.c + (e.shiftKey ? n - 1 : 1)) % n };
+            setAnchor(next);
+            setFocus(next);
+            scrollIntoView(next);
+            props.onCellEdit?.(next.r, visible[next.c].c.name);
+            // A cell that cannot be edited opens no editor; keep the keyboard in the grid.
+            requestAnimationFrame(() => !scrollRef.current?.contains(document.activeElement) && scrollRef.current?.focus({ preventScroll: true }));
+            return;
           }
-          return;
-        }
-        if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && props.onDeleteRows && rect) {
+          const findKey = (e.key === "F3" && !e.ctrlKey && !e.metaKey && !e.altKey) || ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f");
+          if (findKey && visible.length > 0) {
+            e.preventDefault();
+            if (e.key === "F3" && findOpen && find.trim()) stepFind(e.shiftKey ? -1 : 1);
+            else openFind();
+            return;
+          }
+          if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) {
+            // Closing the cell editor removes the focused input; give focus back so navigation continues. Modified
+            // Enter keeps the editor open (Shift+Enter and Alt+Enter add a line break).
+            if ((e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) || e.key === "Escape") requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
+            return;
+          }
+          if (e.key === "Escape" && findOpen) {
+            e.preventDefault();
+            setFindOpen(false);
+            return;
+          }
+          if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+            e.preventDefault();
+            if (rows.length > 0 && visible.length > 0) {
+              setAnchor({ r: 0, c: 0 });
+              setFocus({ r: rows.length - 1, c: visible.length - 1 });
+            }
+            return;
+          }
+          if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && props.onDeleteRows && rect) {
+            e.preventDefault();
+            if (e.repeat) return;
+            const selected: number[] = [];
+            for (let r = rect.r0; r <= Math.min(rect.r1, rows.length - 1); r++) selected.push(r);
+            props.onDeleteRows(selected);
+            setAnchor(null);
+            setFocus(null);
+            return;
+          }
+          if (e.key === "Enter" && focus && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+            e.preventDefault();
+            const name = visible[focus.c].c.name;
+            if (placeholderRow) props.onAppendRow?.(name);
+            else props.onCellActivate?.(focus.r, name);
+            return;
+          }
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+            e.preventDefault();
+            void copy();
+            return;
+          }
+          // Like Navicat, moving down from the last row (or the placeholder row) adds a new row.
+          if (e.key === "ArrowDown" && props.onAppendRow && focus && focus.r === rowCount - 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            props.onAppendRow();
+            const next = { r: rows.length, c: focus.c };
+            setAnchor(next);
+            setFocus(next);
+            scrollIntoView(next);
+            return;
+          }
+          const next = moveTarget(e);
+          if (!next) return;
           e.preventDefault();
-          if (e.repeat) return;
-          const selected: number[] = [];
-          for (let r = rect.r0; r <= Math.min(rect.r1, rows.length - 1); r++) selected.push(r);
-          props.onDeleteRows(selected);
-          setAnchor(null);
-          setFocus(null);
-          return;
-        }
-        if (e.key === "Enter" && focus && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-          e.preventDefault();
-          const name = visible[focus.c].c.name;
-          if (placeholderRow) props.onAppendRow?.(name);
-          else props.onCellActivate?.(focus.r, name);
-          return;
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
-          e.preventDefault();
-          void copy();
-          return;
-        }
-        // Like Navicat, moving down from the last row (or the placeholder row) adds a new row.
-        if (e.key === "ArrowDown" && props.onAppendRow && focus && focus.r === rowCount - 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-          e.preventDefault();
-          props.onAppendRow();
-          const next = { r: rows.length, c: focus.c };
-          setAnchor(next);
-          setFocus(next);
+          if (e.shiftKey && anchor) setFocus(next);
+          else {
+            setAnchor(next);
+            setFocus(next);
+          }
           scrollIntoView(next);
-          return;
-        }
-        const next = moveTarget(e);
-        if (!next) return;
-        e.preventDefault();
-        if (e.shiftKey && anchor) setFocus(next);
-        else {
-          setAnchor(next);
-          setFocus(next);
-        }
-        scrollIntoView(next);
-      }}
-    >
-      <div className="grid-header" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
-        <div className="grid-rownum head" />
-        {headers.map((h) => {
-          const c = h.column.columnDef.meta as ColumnMeta;
-          return (
-            <div
-              key={h.id}
-              className={`grid-th${props.onSort ? " sortable" : ""}`}
-              style={{ width: h.getSize() }}
-              onClick={() => props.onSort?.(c.name)}
-              title={`${c.name} ${c.typeName}`}
-            >
-              <span className="th-name">{c.name}</span>
-              {props.sort?.column === c.name && (props.sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} />)}
-              <span className="th-type">{c.typeName}</span>
-              <span className={`resizer${h.column.getIsResizing() ? " on" : ""}`} onMouseDown={h.getResizeHandler()} onClick={(e) => e.stopPropagation()} />
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" }}>
-        {virtualizer.getVirtualItems().map((vr) => {
-          const r = vr.index;
-          return (
-            <div
-              key={vr.key}
-              className={`grid-row${r % 2 ? " odd" : ""} ${props.rowClass?.(r) ?? ""}`}
-              style={{ transform: `translateY(${vr.start - HEADER_HEIGHT}px)`, height: ROW_HEIGHT }}
-            >
-              <div className="grid-rownum">{r < savedRowCount ? rowNumberOffset + r + 1 : "*"}</div>
-              {headers.map((h, c) => {
-                const name = visible[c].c.name;
-                const editor = props.renderEditor?.(r, name);
-                const placeholder = props.cellPlaceholder?.(r, name);
-                const d = placeholder !== undefined ? { text: placeholder, tone: "null" } : displayCell(valueAt(r, c));
-                const selected = rect && r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
-                return (
-                  <div
-                    key={h.id}
-                    className={`grid-cell ${d.tone}${selected ? " selected" : ""}${editor ? " editing" : ""} ${props.cellClass?.(r, name) ?? ""}`}
-                    style={{ width: h.getSize() }}
-                    title={d.text.length > 40 ? d.text : undefined}
-                    data-cell={`${r}:${name}`}
-                    onMouseDown={(e) => {
-                      if (e.button !== 0 || editor) return;
-                      if (e.shiftKey && anchor) setFocus({ r, c });
-                      else {
-                        setAnchor({ r, c });
-                        setFocus({ r, c });
-                      }
-                      dragging.current = true;
-                    }}
-                    onMouseEnter={() => dragging.current && setFocus({ r, c })}
-                    onClick={(e) => {
-                      if (!editor && !e.shiftKey && !e.ctrlKey && !e.metaKey) props.onCellEdit?.(r, name);
-                    }}
-                    onDoubleClick={() => { if (!editor) props.onCellActivate?.(r, name); }}
-                  >
-                    {editor ?? <span className="cell-text">{d.text}</span>}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
-        {placeholderRow && (
-          <div className="grid-row" style={{ height: ROW_HEIGHT }}>
-            <div className="grid-rownum">*</div>
-            {headers.map((h, c) => (
+        }}
+      >
+        <div className="grid-header" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
+          <div className="grid-rownum head" />
+          {headers.map((h, i) => {
+            const c = h.column.columnDef.meta as ColumnMeta;
+            return (
               <div
                 key={h.id}
-                className={`grid-cell null${focus?.r === 0 && focus.c === c ? " selected" : ""}`}
+                className={`grid-th${props.onSort ? " sortable" : ""}${found === i ? " found" : ""}`}
                 style={{ width: h.getSize() }}
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  setAnchor({ r: 0, c });
-                  setFocus({ r: 0, c });
-                }}
-                onDoubleClick={() => props.onAppendRow?.(visible[c].c.name)}
+                onClick={() => props.onSort?.(c.name)}
+                title={`${c.name} ${c.typeName}`}
               >
-                <span className="cell-text">(N/A)</span>
+                <span className="th-name">{c.name}</span>
+                {props.sort?.column === c.name && (props.sort.desc ? <ArrowDown size={13} /> : <ArrowUp size={13} />)}
+                <span className="th-type">{c.typeName}</span>
+                <span className={`resizer${h.column.getIsResizing() ? " on" : ""}`} onMouseDown={h.getResizeHandler()} onClick={(e) => e.stopPropagation()} />
               </div>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
+        <div style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" }}>
+          {virtualizer.getVirtualItems().map((vr) => {
+            const r = vr.index;
+            return (
+              <div
+                key={vr.key}
+                className={`grid-row${r % 2 ? " odd" : ""} ${props.rowClass?.(r) ?? ""}`}
+                style={{ transform: `translateY(${vr.start - HEADER_HEIGHT}px)`, height: ROW_HEIGHT }}
+              >
+                <div className="grid-rownum">{r < savedRowCount ? rowNumberOffset + r + 1 : "*"}</div>
+                {headers.map((h, c) => {
+                  const name = visible[c].c.name;
+                  const editor = props.renderEditor?.(r, name);
+                  const placeholder = props.cellPlaceholder?.(r, name);
+                  const d = placeholder !== undefined ? { text: placeholder, tone: "null" } : displayCell(valueAt(r, c));
+                  const selected = rect && r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
+                  return (
+                    <div
+                      key={h.id}
+                      className={`grid-cell ${d.tone}${found === c ? " found" : ""}${selected ? " selected" : ""}${editor ? " editing" : ""} ${props.cellClass?.(r, name) ?? ""}`}
+                      style={{ width: h.getSize() }}
+                      title={d.text.length > 40 ? d.text : undefined}
+                      data-cell={`${r}:${name}`}
+                      onMouseDown={(e) => {
+                        if (e.button !== 0 || editor) return;
+                        if (e.shiftKey && anchor) setFocus({ r, c });
+                        else {
+                          setAnchor({ r, c });
+                          setFocus({ r, c });
+                        }
+                        dragging.current = true;
+                      }}
+                      onMouseEnter={() => dragging.current && setFocus({ r, c })}
+                      onClick={(e) => {
+                        if (!editor && !e.shiftKey && !e.ctrlKey && !e.metaKey) props.onCellEdit?.(r, name);
+                      }}
+                      onDoubleClick={() => { if (!editor) props.onCellActivate?.(r, name); }}
+                    >
+                      {editor ?? <span className="cell-text">{d.text}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {placeholderRow && (
+            <div className="grid-row" style={{ height: ROW_HEIGHT }}>
+              <div className="grid-rownum">*</div>
+              {headers.map((h, c) => (
+                <div
+                  key={h.id}
+                  className={`grid-cell null${focus?.r === 0 && focus.c === c ? " selected" : ""}`}
+                  style={{ width: h.getSize() }}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    setAnchor({ r: 0, c });
+                    setFocus({ r: 0, c });
+                  }}
+                  onDoubleClick={() => props.onAppendRow?.(visible[c].c.name)}
+                >
+                  <span className="cell-text">(N/A)</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {rows.length === 0 && !placeholderRow && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
       </div>
-      {rows.length === 0 && !placeholderRow && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
+      {findOpen && (
+        <div className="grid-find" role="search">
+          <Search size={13} />
+          <input
+            ref={findRef}
+            value={find}
+            placeholder="Find column"
+            aria-label="Find column"
+            spellCheck={false}
+            onChange={(e) => {
+              const query = e.target.value;
+              setFind(query);
+              setFindAt(0);
+              const first = matchesFor(query)[0];
+              if (first !== undefined) revealColumn(first);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "F3") {
+                e.preventDefault();
+                stepFind(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                closeFind();
+              } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+                e.preventDefault();
+                e.currentTarget.select();
+              }
+            }}
+          />
+          {find.trim() && (
+            <span className={`grid-find-count${matches.length ? "" : " none"}`}>{matches.length ? `${foundAt + 1} of ${matches.length}` : "No results"}</span>
+          )}
+          {/* Buttons keep the keyboard in the input. */}
+          <button className="icon-btn" aria-label="Previous match (Shift+F3)" title="Previous match (Shift+F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(-1)}><ChevronUp size={14} /></button>
+          <button className="icon-btn" aria-label="Next match (F3)" title="Next match (F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(1)}><ChevronDown size={14} /></button>
+          <button className="icon-btn" aria-label="Close (Esc)" title="Close (Esc)" onMouseDown={(e) => e.preventDefault()} onClick={closeFind}><X size={14} /></button>
+        </div>
+      )}
     </div>
   );
 }
