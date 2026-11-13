@@ -1,4 +1,5 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { createPortal } from "react-dom";
 import { getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Search, X } from "lucide-react";
@@ -42,6 +43,8 @@ type Props = {
   emptyText?: string;
   /** The scrolling grid element. */
   ref?: Ref<HTMLDivElement>;
+  /** Where the find-column field (Ctrl+F / F3) is rendered, e.g. the end of a toolbar; no field or shortcut without it. */
+  findSlot?: HTMLElement | null;
 };
 
 type Pos = { r: number; c: number };
@@ -197,8 +200,9 @@ export function GridView(props: Props) {
     else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth;
   };
 
-  // Find column (Ctrl+F / F3): scrolls to the matching column and highlights it; other columns stay visible. The
-  // query survives closing, so reopening selects it for a quick retype.
+  // Find column (Ctrl+F / F3, field rendered into `findSlot`): hidden until a shortcut opens it; scrolls to the
+  // matching column and highlights it while open, other columns stay visible. The query survives closing, so
+  // reopening selects it for a quick retype.
   const [findOpen, setFindOpen] = useState(false);
   const [find, setFind] = useState("");
   const [findAt, setFindAt] = useState(0);
@@ -223,6 +227,7 @@ export function GridView(props: Props) {
       const m = matchesFor(find);
       if (m.length > 0) revealColumn(m[Math.min(findAt, m.length - 1)]);
     }
+    // The field mounts on the next render.
     requestAnimationFrame(() => {
       findRef.current?.focus();
       findRef.current?.select();
@@ -240,7 +245,7 @@ export function GridView(props: Props) {
   };
 
   return (
-    <div className="grid-host">
+    <>
       <div
         className="grid"
         ref={scrollRef}
@@ -261,9 +266,9 @@ export function GridView(props: Props) {
             return;
           }
           const findKey = (e.key === "F3" && !e.ctrlKey && !e.metaKey && !e.altKey) || ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f");
-          if (findKey && visible.length > 0) {
+          if (findKey && props.findSlot && visible.length > 0) {
             e.preventDefault();
-            if (e.key === "F3" && findOpen && find.trim()) stepFind(e.shiftKey ? -1 : 1);
+            if (e.key === "F3" && matches.length > 0) stepFind(e.shiftKey ? -1 : 1);
             else openFind();
             return;
           }
@@ -417,14 +422,15 @@ export function GridView(props: Props) {
         </div>
         {rows.length === 0 && !placeholderRow && props.emptyText && <div className="empty grid-empty"><p>{props.emptyText}</p></div>}
       </div>
-      {findOpen && (
-        <div className="grid-find" role="search">
+      {props.findSlot && findOpen && createPortal(
+        <label className="grid-find" role="search">
           <Search size={13} />
           <input
             ref={findRef}
             value={find}
             placeholder="Find column"
             aria-label="Find column"
+            title="Find column (Ctrl+F / F3)"
             spellCheck={false}
             onChange={(e) => {
               const query = e.target.value;
@@ -447,14 +453,17 @@ export function GridView(props: Props) {
             }}
           />
           {find.trim() && (
-            <span className={`grid-find-count${matches.length ? "" : " none"}`}>{matches.length ? `${foundAt + 1} of ${matches.length}` : "No results"}</span>
+            <>
+              <span className={`grid-find-count${matches.length ? "" : " none"}`}>{matches.length ? `${foundAt + 1}/${matches.length}` : "0/0"}</span>
+              {/* Buttons keep the keyboard in the input. */}
+              <button className="icon-btn" aria-label="Previous match (Shift+F3)" title="Previous match (Shift+F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(-1)}><ChevronUp size={13} /></button>
+              <button className="icon-btn" aria-label="Next match (F3)" title="Next match (F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(1)}><ChevronDown size={13} /></button>
+            </>
           )}
-          {/* Buttons keep the keyboard in the input. */}
-          <button className="icon-btn" aria-label="Previous match (Shift+F3)" title="Previous match (Shift+F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(-1)}><ChevronUp size={14} /></button>
-          <button className="icon-btn" aria-label="Next match (F3)" title="Next match (F3)" disabled={matches.length < 2} onMouseDown={(e) => e.preventDefault()} onClick={() => stepFind(1)}><ChevronDown size={14} /></button>
-          <button className="icon-btn" aria-label="Close (Esc)" title="Close (Esc)" onMouseDown={(e) => e.preventDefault()} onClick={closeFind}><X size={14} /></button>
-        </div>
+          <button className="icon-btn" aria-label="Close (Esc)" title="Close (Esc)" onMouseDown={(e) => e.preventDefault()} onClick={closeFind}><X size={12} /></button>
+        </label>,
+        props.findSlot,
       )}
-    </div>
+    </>
   );
 }

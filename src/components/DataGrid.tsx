@@ -101,6 +101,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
     placeholderData: keepPreviousData,
   });
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const [findSlot, setFindSlot] = useState<HTMLDivElement | null>(null);
   // Placeholder rows from the previous page/sort/filter must not count as a refetch of the new one.
   useRefetchFlash(gridRef, JSON.stringify(["page", ...base, req]), page.isPlaceholderData ? 0 : page.dataUpdatedAt, page.isSuccess);
   const count = useQuery({
@@ -314,6 +315,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
         <button className={`obj-btn${showFilters || filters.length ? " active-filter" : ""}`} disabled={committing} onClick={() => setShowFilters((v) => !v)}>
           <FilterIcon size={15} className="ob-open" />Filter{filters.length ? ` (${filters.length})` : ""}
         </button>
+        <div className="grid-find-slot" ref={setFindSlot} />
       </div>
       {showFilters && (
         <div className="filter-bar">
@@ -348,6 +350,7 @@ export function DataGrid({ tab }: { tab: TableTab }) {
       ) : (
         <GridView
           ref={gridRef}
+          findSlot={findSlot}
           columns={columns}
           rows={rows}
           savedRowCount={saved}

@@ -205,6 +205,7 @@ function Results({ tabId }: { tabId: string }) {
   const patch = useQueryResults((s) => s.patch);
   const [selected, setSelected] = useState<number | "summary">("summary");
   const [loading, setLoading] = useState(false);
+  const [findSlot, setFindSlot] = useState<HTMLDivElement | null>(null);
   const lastRun = useRef<number | null>(null);
   const outcomes = run?.result?.outcomes ?? [];
   const rowResults = outcomes.map((o, i) => ({ o, i })).filter((x) => x.o.kind === "rows");
@@ -250,11 +251,12 @@ function Results({ tabId }: { tabId: string }) {
       </div>
       {current?.kind === "rows" ? (
         <div className="result-grid">
-          <GridView columns={current.columns} rows={current.rows} resetKey={current} emptyText="The query returned no rows." />
+          <GridView columns={current.columns} rows={current.rows} resetKey={current} emptyText="The query returned no rows." findSlot={findSlot} />
           <div className="result-footer">
             <span>{plural(current.rows.length, "row")}{current.hasMore ? " (more available)" : ""} · {current.durationMs} ms</span>
             {current.hasMore && <button className="btn sm" disabled={loading || !rerunnable} title={rerunnable ? undefined : notRerunnable} onClick={() => void loadMore(selected as number)}>Load {ROW_LIMIT} more</button>}
             <div className="grow" />
+            <div className="grid-find-slot" ref={setFindSlot} />
             <button
               className="btn sm"
               disabled={!run.database || !rerunnable}
