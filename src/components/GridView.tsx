@@ -89,6 +89,23 @@ export function GridView(props: Props) {
     window.addEventListener("mouseup", up);
     return () => window.removeEventListener("mouseup", up);
   }, []);
+  // Without a vertical scrollbar, the mouse wheel scrolls the grid sideways. React's onWheel is passive, so the
+  // listener is attached directly to be able to cancel the browser's default handling.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.shiftKey || e.deltaY === 0 || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+      if (el.scrollHeight > el.clientHeight || el.scrollWidth <= el.clientWidth) return;
+      // An open multi-line cell editor scrolls its own text.
+      if (e.target instanceof Element && e.target.closest("textarea, select, [contenteditable]")) return;
+      e.preventDefault();
+      const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? ROW_HEIGHT : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? el.clientWidth : 1;
+      el.scrollLeft += e.deltaY * unit;
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, []);
 
   const rect = anchor && focus
     ? { r0: Math.min(anchor.r, focus.r), r1: Math.max(anchor.r, focus.r), c0: Math.min(anchor.c, focus.c), c1: Math.max(anchor.c, focus.c) }
