@@ -353,7 +353,8 @@ select.input.sm, input.input.sm { height: 24px; font-size: var(--fs-sm); padding
 .th-type { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; }
 .resizer:hover, .resizer.on { background: var(--accent); }
-.grid-row { position: absolute; left: 0; top: 0; display: flex; }
+/* Rows are transformed, so Chromium may composite them; an opaque background keeps ClearType (LCD) text on every row. */
+.grid-row { position: absolute; left: 0; top: 0; display: flex; background: var(--surface); }
 .grid-row.odd { background: var(--grid-row-odd); }
 .grid-row:hover { background: var(--grid-row-hover); }
 .grid-rownum { width: 50px; flex: none; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: var(--text-faint); font-size: 11px; border-right: 1px solid var(--border); background: var(--surface-2); position: sticky; left: 0; z-index: 1; font-variant-numeric: tabular-nums; }
